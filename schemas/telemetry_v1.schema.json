@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hrc-safety-log.local/schemas/telemetry_v1.schema.json",
+  "title": "Telemetry payload v1",
+  "description": "Một mẫu đo HC-SR04 từ thiết bị ESP32, topic hrc/v1/devices/{device_id}/telemetry (QoS1). Khóa mẫu: (device_id, boot_id, sequence).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "device_id",
+    "boot_id",
+    "sequence",
+    "monotonic_us",
+    "measured_at",
+    "time_synced",
+    "distance_mm",
+    "echo_us",
+    "valid",
+    "error_code"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "device_id": { "type": "string", "minLength": 1 },
+    "boot_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "monotonic_us": { "type": "integer", "minimum": 0 },
+    "measured_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO-8601 UTC tại lúc bắt đầu đo; null khi chưa sync SNTP (không thay bằng giờ backend)."
+    },
+    "time_synced": { "type": "boolean" },
+    "distance_mm": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 4500,
+      "description": "null khi đo lỗi (timeout)."
+    },
+    "echo_us": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 30000,
+      "description": "Độ rộng xung echo (µs); giữ giá trị nếu đo được dù mẫu invalid."
+    },
+    "valid": { "type": "boolean" },
+    "error_code": {
+      "enum": [null, "ECHO_TIMEOUT", "ECHO_STUCK_LOW", "ECHO_STUCK_HIGH", "TRIG_FAIL"]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "valid": { "const": true } }, "required": ["valid"] },
+      "then": {
+        "properties": {
+          "distance_mm": { "type": "integer", "minimum": 0, "maximum": 4500 }
+        },
+        "required": ["distance_mm"]
+      }
+    },
+    {
+      "if": { "properties": { "time_synced": { "const": true } }, "required": ["time_synced"] },
+      "then": {
+        "properties": { "measured_at": { "type": "string", "format": "date-time" } },
+        "required": ["measured_at"]
+      }
+    },
+    {
+      "if": { "properties": { "time_synced": { "const": false } }, "required": ["time_synced"] },
+      "then": {
+        "properties": { "measured_at": { "const": null } },
+        "required": ["measured_at"]
+      }
+    }
+  ]
+}

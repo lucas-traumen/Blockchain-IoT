@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hrc-safety-log.local/schemas/ack_v1.schema.json",
+  "title": "Ack v1",
+  "description": "Xác nhận lệnh control từ device → backend, topic hrc/v1/devices/{device_id}/ack (QoS1). Ranh giới session lấy từ ack này.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "session_id",
+    "device_id",
+    "boot_id",
+    "sequence",
+    "monotonic_us",
+    "time_synced",
+    "accepted"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "command": { "enum": ["session_start", "session_stop"] },
+    "session_id": { "type": "string" },
+    "device_id": { "type": "string" },
+    "boot_id": { "type": "string" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "monotonic_us": { "type": "integer", "minimum": 0 },
+    "time_synced": { "type": "boolean" },
+    "accepted": { "type": "boolean" }
+  }
+}

@@ -1,0 +1,78 @@
+# Cấu hình firmware HRC Safety Log — đặt qua `idf.py menuconfig`.
+# Default khớp configs/sensor.yaml (device_id, sample period, GPIO HC-SR04).
+menu "HRC Safety Log Firmware"
+
+    config HRC_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            SSID của mạng Wi-Fi mà ESP32 kết nối (chế độ STA, M4c).
+            Để rỗng khi chưa cấu hình; nên đặt bằng menuconfig, không hardcode.
+
+    config HRC_WIFI_PASS
+        string "Wi-Fi password"
+        default ""
+        help
+            Mật khẩu Wi-Fi (WPA/WPA2). Ổ khóa mật khẩu trong menuconfig,
+            lưu vào sdkconfig cục bộ, không commit.
+
+    config HRC_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtt://192.168.1.10:1883"
+        help
+            URI broker MQTT dùng ở M4c, ví dụ mqtt://192.168.1.10:1883.
+            Topic telemetry: hrc/v1/devices/<device_id>/telemetry (QoS1).
+
+    config HRC_DEVICE_ID
+        string "Device ID"
+        default "esp32_01"
+        help
+            Định danh thiết bị, khớp device_id trong configs/sensor.yaml.
+            Dùng trong topic MQTT và trường device_id của payload telemetry_v1.
+
+    config HRC_SAMPLE_PERIOD_MS
+        int "Sample period (ms)"
+        default 100
+        range 10 60000
+        help
+            Chu kỳ đo khoảng cách và publish telemetry (ms).
+            Default 100 ms khớp sample_period_ms trong configs/sensor.yaml.
+
+    config HRC_TRIG_GPIO
+        int "HC-SR04 TRIG GPIO"
+        default 4
+        range 0 33
+        help
+            GPIO phát xung trigger 10 µs tới chân TRIG của HC-SR04.
+            TRIG cần output nên giới hạn 0–33 (GPIO 34–39 chỉ input).
+            Tránh GPIO 6–11 (nối flash nội bộ).
+            Default 4 khớp trig_gpio trong configs/sensor.yaml.
+
+    config HRC_ECHO_GPIO
+        int "HC-SR04 ECHO GPIO"
+        default 5
+        range 0 39
+        help
+            GPIO đọc xung echo của HC-SR04 (độ rộng xung tỉ lệ khoảng cách).
+            Tránh GPIO 6–11 (nối flash nội bộ).
+            Default 5 khớp echo_gpio trong configs/sensor.yaml.
+
+    config HRC_ECHO_TIMEOUT_MS
+        int "HC-SR04 echo timeout (ms)"
+        default 30
+        range 1 30
+        help
+            Thời gian tối đa chờ xung echo trước khi báo ECHO_TIMEOUT.
+            Giới hạn trên 30 ms khớp echo_us maximum 30000 (µs) trong
+            schemas/telemetry_v1.schema.json.
+            Default 30 ms khớp echo_timeout_ms trong configs/sensor.yaml.
+
+    config HRC_SOUND_SPEED_M_S
+        int "Speed of sound (m/s)"
+        default 343
+        range 300 400
+        help
+            Tốc độ truyền âm dùng để quy đổi echo_us sang distance_mm (m/s).
+            Default 343 m/s (~20 °C) khớp sound_speed_m_s trong configs/sensor.yaml.
+
+endmenu

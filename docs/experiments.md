@@ -1,0 +1,257 @@
+# Sổ tay thí nghiệm (tái lập được)
+
+Bốn thí nghiệm kiểm chứng pipeline HRC Safety Log từ sinh dữ liệu đến cảnh
+báo. Mọi lệnh chạy từ repo root bằng venv `.venv/`, không cần phần cứng
+trừ khi ghi rõ. Dữ liệu đầu vào là **dataset synthetic có nhãn**
+(`"synthetic": true` — xem [data-collection.md](data-collection.md) mục 4a):
+không đại diện cho thực nghiệm phần cứng, chỉ dùng để kiểm chứng cấu trúc
+pipeline và hành vi thuật toán.
+
+## Thí nghiệm 1 — Pipeline smoke: sinh → ingest → replay
+
+**Mục tiêu:** chạy trọn pipeline không phần cứng: sinh JSONL → nạp DB (tính
+safety live) → replay offline → chứng minh replay idempotent.
+
+**Điều kiện:** venv sẵn sàng; DB ghi vào đường dẫn riêng (`--db`) để không
+đụng `data/hrc.db`; không cần broker; không cần model artifact (thiếu
+artifact → prediction `MODEL_UNAVAILABLE`, safety vẫn tính).
+
+**Lệnh:**
+
+```bash
+# 1. Sinh dataset synthetic 12 session × 80 mẫu, seed 42 (deterministic)
+.venv/bin/python -m scripts.synthetic_dataset --out data/sim_smoke.jsonl \
+    --sessions 12 --samples-per-session 80 --seed 42
+
+# 2. Tách 3 nhãn metadata (synthetic/scenario/session_label) trước khi ingest
+#    — schema telemetry_v1 cài additionalProperties: false
+.venv/bin/python - <<'PY'
+import json
+META = ("synthetic", "scenario", "session_label")
+with open("data/sim_smoke.jsonl", encoding="utf-8") as fin, \
+     open("data/sim_smoke_ingest.jsonl", "w", encoding="utf-8") as fout:
+    for raw in fin:
+        row = json.loads(raw)
+        fout.write(json.dumps({k: v for k, v in row.items() if k not in META}) + "\n")
+PY
+
+# 3. Ingest vào DB riêng (tính safety live, processor_version = safety-v1)
+.venv/bin/python -m scripts.ingest_jsonl --input data/sim_smoke_ingest.jsonl \
+    --db data/exp1.db
+
+# 4. Replay offline toàn bộ raw (processor_version = replay-safety-v1)
+.venv/bin/python -m scripts.replay --db data/exp1.db --processor-version replay-safety-v1
+
+# 5. Replay lần nữa CÙNG version — phải không tạo thêm bản ghi nào
+.venv/bin/python -m scripts.replay --db data/exp1.db --processor-version replay-safety-v1
+```
+
+**Kết quả kỳ vọng (cấu trúc):**
+
+- Bước 1: summary JSON `n_sessions=12`, `n_samples=960`,
+  `scenario_counts` đều 240 mỗi kịch bản; `n_error_samples` khoảng 2% mẫu
+  (dao động theo seed — với seed 42 là 14).
+- Bước 3: `stored = 960`, `rejected = 0`, `invalid_lines = 0`. Mẫu
+  `valid=false` (ECHO_TIMEOUT) **vẫn stored** vì đúng schema — được đánh giá
+  UNKNOWN, không bị từ chối. Sau bước này DB có 960 bản ghi `safety-v1`
+  (mode `live`).
+- Bước 4: `processed = 960` bản ghi `replay-safety-v1` mới (mode `offline`);
+  `by_status` chia CLEAR/VIOLATION/UNKNOWN, trong đó **UNKNOWN = số mẫu lỗi**
+  (khớp `n_error_samples`), phần còn lại là kết quả ngưỡng trên kịch bản
+  approach/mixed (có crossing dưới Sp) và recede/noise (không chạm ngưỡng).
+- Bước 5: `processed = 0` — idempotent trong cùng `processor_version`.
+
+**Số liệu quan sát thật** (seed 42, chạy ngày 2026-09-23, DB ghi vào thư mục
+tạm — đường dẫn không ảnh hưởng kết quả): ingest `{"stored": 960,
+"duplicate": 0, "rejected": 0, "invalid_lines": 0}`; replay lần 1
+`{"processed": 960, "by_status": {"CLEAR": 750, "VIOLATION": 196,
+"UNKNOWN": 14}, "mode": "offline"}`; replay lần 2 `{"processed": 0, ...}`.
+UNKNOWN = 14 đúng bằng `n_error_samples` của dataset.
+
+**Ghi chú giới hạn:** số lượng CLEAR/VIOLATION là đặc tính của dữ liệu tổng
+hợp (kịch bản `approach` cố tình xuyên qua ngưỡng Sp demo 0.44 m), không
+phải tỷ lệ vi phạm thực tế. Bản ghi trong thí nghiệm này không kèm dự báo
+(không `--model-dir`).
+
+## Thí nghiệm 2 — Train + evaluate model
+
+**Mục tiêu:** train RandomForest v1 với grid hyperparameter mặc định, đánh
+giá cùng baselines trên split test, đọc đúng các số liệu report.
+
+**Điều kiện:** venv (scikit-learn/pandas); dataset lớn hơn smoke để split
+70/15/15 theo session có ý nghĩa; không cần backend.
+
+**Lệnh:**
+
+```bash
+# 1. Sinh dataset train 30 session × 200 mẫu, seed 42
+.venv/bin/python -m scripts.synthetic_dataset --out data/sim_train.jsonl \
+    --sessions 30 --samples-per-session 200 --seed 42
+
+# 2. Train RF (grid mặc định n_estimators × max_depth = [50,100,200] × [None,8],
+#    6 tổ hợp, chọn theo MAE validation; refit trên train+val)
+.venv/bin/python -m ai_model.train --dataset data/sim_train.jsonl \
+    --out-dir ai_model/artifacts
+
+# 3. Đánh giá RF + persistence + constant-velocity trên split test
+.venv/bin/python -m ai_model.evaluate --dataset data/sim_train.jsonl \
+    --model-dir ai_model/artifacts
+```
+
+`evaluate` nhận thêm `--config` (mặc định `configs/model.yaml`), `--sp`
+(mặc định 0.44), `--horizon-index` (mặc định 4 = horizon 500 ms). Cùng
+dataset + cùng seed → split test trùng khớp split lúc train; chỉ split test
+được dùng để báo cáo.
+
+**Cách đọc report JSON:**
+
+- `mae`: MAE (mét) theo từng horizon cho 3 mô hình — `rf`, `persistence`,
+  `constant_velocity` — mỗi cái 5 số theo thứ tự `horizons_ms`
+  (100–500 ms); so sánh RF với 2 baseline theo từng cột.
+- `n_test_windows`: số cửa sổ split test (15% session).
+- `event_metrics`: `n_events` (lần khoảng cách thực chạm/crossing ≤ Sp từ
+  trên xuống), `n_episodes` (đợt cảnh báo đã gộp), `n_tp_episodes`,
+  `n_matched_events`, `precision` = TP/n_episodes, `recall` =
+  matched/n_events, `false_alarms_per_min`, `lead_time_s`
+  (`mean/min/max`). **Null khi không xác định được — không bịa:** không có
+  Event → `recall = null` (precision vẫn tính được); không có Episode →
+  `precision = null`; không có cặp match → `lead_time_s = null`. Match chỉ
+  đếm khi sự kiện nằm trong `[start_episode, end_episode + horizon_s]`.
+- `synthetic: true` — nguồn dữ liệu được ghi nhận trong report.
+- `sp_m`, `horizon_index` — tham số đã dùng cho cảnh báo/lead time.
+
+**Kết quả đã quan sát trên dataset smoke (12×80, seed 42 — PLAN mục M5):**
+RF MAE @100 ms ≈ 0.017 m, constant-velocity ≈ 0.013 m (RF MAE
+[0.017..0.084] m theo horizon, constant-velocity [0.013..0.072] m); event
+metrics precision 1.0 / recall 0.5 / lead time 0.1 s. **RF chưa thắng
+constant-velocity trên dữ liệu synthetic** — chuyển động nội suy tuyến tính
+làm baseline ngoại suy rất mạnh; kết quả này không phải cam kết, các lần
+chạy/dataset khác có thể khác.
+
+**Ghi chú giới hạn:** synthetic có nhãn chuyển động lý tưởng + nhiễu
+Gaussian nhỏ; model có thể học được quy luật sinh dữ liệu — kết quả không
+ngoại suy cho dữ liệu đo thật. Firmware/HC-SR04 chưa kiểm chứng trên board
+(xem [wiring.md](wiring.md)).
+
+## Thí nghiệm 3 — Cảnh báo sớm live
+
+**Mục tiêu:** quan sát `prediction.status` chuyển WARMUP → OK và
+`early_warning = true` khi chuỗi approach tiến gần chạm Sp.
+
+**Điều kiện:** artifact model đã train (Thí nghiệm 2) hoặc đường dẫn
+`MODEL_ARTIFACT_DIR` có `model.joblib` + `manifest.json`. Hai biến thể:
+
+- **(a) Backend + device simulator:** `scripts/device_sim.py` **sẽ có ở
+  M7c** — hiện chưa có trong repo; khi có, khởi động backend theo
+  [wiring.md](wiring.md) rồi chạy simulator. Backend phải thấy artifact lúc
+  khởi động (`_build_predictor` — thiếu thì predictor tắt, mọi prediction
+  MODEL_UNAVAILABLE).
+- **(b) Ingest JSONL stream không cần broker** (kiểm chứng được ngay):
+
+```bash
+.venv/bin/python -m scripts.ingest_jsonl --input data/sim_smoke_ingest.jsonl \
+    --db data/exp3.db --model-dir ai_model/artifacts
+
+# Quan sát trạng thái prediction theo sequence
+.venv/bin/python - <<'PY'
+import sqlite3, json
+conn = sqlite3.connect("data/exp3.db")
+conn.row_factory = sqlite3.Row
+rows = conn.execute(
+    "SELECT result_json FROM processed_samples "
+    "WHERE processor_version='safety-v1' AND boot_id="
+    "(SELECT MIN(boot_id) FROM processed_samples) ORDER BY sequence"
+).fetchall()
+for row in rows[:25]:
+    r = json.loads(row["result_json"])
+    p, s = r["prediction"], r["safety"]
+    print(f"seq={r['sample_ref']['sequence']:3d} safety={s['status']:9s} "
+          f"pred={p['status']:17s} ew={p['early_warning']} stale={p['stale']}")
+PY
+```
+
+**Kết quả kỳ vọng:**
+
+- 9 mẫu đầu của mỗi run: `prediction.status = WARMUP` (chưa đủ cửa sổ 10
+  mẫu); từ mẫu 10: `OK` kèm `distance_m` (5 dự báo) và `window_ref`.
+- Trong pha approach (khoảng cách giảm về dưới Sp demo 0.44 m): các mẫu vẫn
+  CLEAR nhưng dự báo chạm ngưỡng → `early_warning = true`; khi khoảng cách
+  hiện tại ≤ Sp → `safety.status = VIOLATION` và `early_warning = false`
+  (đã vi phạm, không còn là cảnh báo sớm). Kịch bản `noise` không sinh
+  `early_warning` (min ≥ ~0.455 m).
+- `stale = true` ở mode live khi tuổi mẫu vượt `stale_after_s` (0.5 s) — với
+  dataset synthetic, `measured_at` cố định trong quá khứ (mốc 2026-01-01 của
+  generator) nên mọi mẫu nạp offline đều `stale = true`: đây là hành vi đúng
+  của cờ, không ảnh hưởng early_warning.
+- Mẫu lỗi ECHO_TIMEOUT đứt run → `INVALID_WINDOW` tại chính mẫu đó, sau đó
+  WARMUP lại cho tới khi run mới đủ 10 mẫu.
+
+**Ghi chú giới hạn:** predictor là instance riêng mỗi tiến trình — buffer
+không tồn qua lần chạy khác; quan sát qua backend live cần device_sim (M7c)
+hoặc thiết bị thật theo [wiring.md](wiring.md).
+
+## Thí nghiệm 4 — Replay khác processor_version trên cùng DB
+
+**Mục tiêu:** chứng minh (i) mỗi `processor_version` là một lần tính độc lập
+trên cùng raw, (ii) kết quả safety giống hệt giữa các version, (iii)
+idempotent trong cùng version.
+
+**Điều kiện:** DB đã có raw (Thí nghiệm 1); không cần model.
+
+**Lệnh:**
+
+```bash
+.venv/bin/python -m scripts.replay --db data/exp1.db --processor-version replay-exp4-a
+.venv/bin/python -m scripts.replay --db data/exp1.db --processor-version replay-exp4-b
+
+# Replay lại cùng version — phải 0 mẫu mới (idempotent)
+.venv/bin/python -m scripts.replay --db data/exp1.db --processor-version replay-exp4-a
+
+# So sánh hai version trên cùng một mẫu
+.venv/bin/python - <<'PY'
+import sqlite3, json
+conn = sqlite3.connect("data/exp1.db")
+conn.row_factory = sqlite3.Row
+rows = conn.execute(
+    "SELECT * FROM processed_samples WHERE processor_version IN "
+    "('replay-exp4-a','replay-exp4-b') AND device_id='esp32_sim' "
+    "AND sequence=10"
+).fetchall()
+recs = [json.loads(r["result_json"]) for r in rows]
+for r, rec in zip(rows, recs):
+    print(r["processor_version"], r["mode"], r["computed_at"],
+          rec["safety"]["status"], rec["safety"]["margin_m"])
+print("safety giống hệt:", recs[0]["safety"] == recs[1]["safety"])
+PY
+```
+
+**Kết quả kỳ vọng:**
+
+- Mỗi version tạo đúng một bộ bản ghi riêng (`mode = offline`); DB cùng lúc
+  chứa nhiều version cho cùng khóa mẫu — `UNIQUE (device_id, boot_id,
+  sequence, processor_version)` phân lập chúng.
+- Cùng raw + cùng config → khối `safety` **giống hệt** giữa các version; chỉ
+  `computed_at` (và khối prediction nếu model khác) khác nhau.
+- Replay lại cùng version → `processed = 0`.
+
+**Số liệu quan sát thật** (trên DB Thí nghiệm 1, seed 42): hai version
+`replay-exp4-a/b` mỗi cái `processed = 960` với `by_status` giống hệt
+`{CLEAR: 750, VIOLATION: 196, UNKNOWN: 14}`; so sánh mẫu
+`esp32_sim/sim_0000002a_0/seq 10` — khối safety đồng nhất
+(`margin_m = 0.587`, CLEAR), `computed_at` khác nhau theo từng lần chạy;
+DB chứa đồng thời 4 version (`safety-v1` live + 3 version replay).
+
+**Ghi chú giới hạn:** version nào "chuẩn" là quyết định của TV2/orchestrator
+dựa trên `processor_version` + `mode` + `computed_at`; backend không tự hợp
+nhất các version.
+
+## Giới hạn chung của mọi thí nghiệm
+
+- Dữ liệu synthetic **được ghi nhãn trên từng dòng** (`"synthetic": true`,
+  `scenario`, `session_label`) — tuyệt đối không trình bày như dữ liệu đo
+  thật; nhãn metadata phải tách ra trước khi ingest vào DB.
+- Mọi số liệu trong tài liệu này là kết quả đã chạy thật trên seed/config
+  nêu rõ, hoặc kỳ vọng cấu trúc khi chưa chạy — không giá trị nào bịa thêm.
+- Phần cứng (ESP32 + HC-SR04) chưa build/flash — các thí nghiệm ở đây không
+  phủ nhận phần chưa kiểm chứng của firmware
+  ([wiring.md](wiring.md), `iot_code/esp32/README.md`).

@@ -1,0 +1,15 @@
+# Python 3.12 — pin đúng phiên bản đã cài trong .venv (xem PLAN.md mục 6)
+paho-mqtt==2.1.0
+fastapi==0.141.1
+uvicorn==0.53.0
+pydantic==2.13.5
+jsonschema==4.26.0
+PyYAML==6.0.3
+scikit-learn==1.9.1
+scipy==1.18.1
+pandas==3.0.6
+numpy==2.5.3
+joblib==1.6.0
+python-dotenv==1.2.3
+httpx==0.28.1
+pytest==9.1.1

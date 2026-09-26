@@ -1,0 +1,13 @@
+.opencode/state/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*
+!data/samples/
+ai_model/artifacts/
+exports/
+iot_code/esp32/sdkconfig
+iot_code/esp32/managed_components/
+iot_code/esp32/build/
+

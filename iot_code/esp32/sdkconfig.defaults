@@ -1,0 +1,33 @@
+# sdkconfig.defaults — HRC Safety Log firmware (ESP32, ESP-IDF v5.5)
+# Các giá trị tại đây được áp dụng khi generate sdkconfig lần đầu
+# (hoặc khi xóa sdkconfig / chạy sdkconfig.defaults merge).
+# Các option HRC_* (Wi-Fi, MQTT, GPIO HC-SR04...) đặt riêng qua
+# `idf.py menuconfig`, xem main/Kconfig.projbuild.
+
+# --- Target ---
+CONFIG_IDF_TARGET="esp32"
+
+# --- Logging ---
+# Log level mặc định (INFO) — đủ để thấy boot log và cấu hình M4a.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# --- FreeRTOS / main task ---
+# Tick 1 kHz để định thời đo 100 ms và timeout echo chính xác hơn.
+CONFIG_FREERTOS_HZ=1000
+# Stack main task rộng hơn mặc định: M4d sẽ chạy app loop + build payload JSON.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- Wi-Fi (dùng ở M4c) ---
+# NVS lưu hiệu chuẩn Wi-Fi; giữ bật (mặc định) — không tắt.
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+
+# --- SNTP (dùng ở M4c) ---
+# 3 server NTP (pool.ntp.org + time.google.com + time.cloudflare.com):
+# lwIP mặc định chỉ biên dịch 1 server — thiếu dòng này, 2 server dự
+# phòng trong wifi_mqtt.c (index 1/2) bị compile-out.
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
+# --- MQTT (dùng ở M4c) ---
+# Broker trong LAN dùng mqtt:// (không TLS/websocket); bật lại khi cần.
+CONFIG_MQTT_TRANSPORT_SSL=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
