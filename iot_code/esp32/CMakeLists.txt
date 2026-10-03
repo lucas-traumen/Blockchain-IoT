@@ -1,10 +1,10 @@
-# HRC Safety Log — ESP32 firmware (ESP-IDF v5.x)
+# HRC Safety Log — ESP32 firmware (ESP-IDF v5.5 / v6.0)
 #
 # Project-level CMakeLists. Các component (mới có "main") được đăng ký
 # trong thư mục con và sẽ được ESP-IDF build tự động.
 #
-# Giai đoạn M4a: chỉ dựng khung project — chưa build/flash được trên máy
-# phát triển (không có toolchain), xem iot_code/esp32/README.md.
+# Build verified with ESP-IDF 6.0.1 for ESP32-S3; see README.md for the
+# dependency manifest, target selection and remaining hardware checks.
 
 cmake_minimum_required(VERSION 3.16)
 

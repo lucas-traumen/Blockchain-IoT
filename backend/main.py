@@ -22,9 +22,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import yaml
 
-from backend.inference.predictor import SafetyPredictor
+from backend.inference.predictor import SafetyPredictor, build_predictor
 from backend.ingestion.mqtt_listener import MqttListener
 from backend.ingestion.service import PROCESSOR_VERSION, IngestionService
 from backend.ingestion.store import Store
@@ -54,31 +53,10 @@ class SessionStartBody(BaseModel):
     session_id: str | None = None
 
 
-def _build_predictor(settings: Settings) -> SafetyPredictor | None:
-    """Tạo ``SafetyPredictor`` khi thư mục artifact đủ model.joblib +
-    manifest.json (M6b); thiếu → None (log info).
-
-    Model config nạp MỘT lần từ ``settings.model_config_path`` rồi truyền cho
-    predictor (predictor chỉ đọc window/horizon từ dict này). Predictor tự
-    nuốt lỗi nạp artifact (``available=False`` → prediction MODEL_UNAVAILABLE,
-    PLAN mục 4) nên thiếu/hỏng model không làm app chết. Thứ tự if kiểm file
-    TRƯỚC khi gọi SafetyPredictor chỉ để log rõ ràng; ngay cả khi file có
-    mà joblib hỏng, predictor vẫn degrade an toàn như trên.
-    """
-    artifact_dir = Path(settings.model_artifact_dir)
-    if not (
-        (artifact_dir / "model.joblib").is_file()
-        and (artifact_dir / "manifest.json").is_file()
-    ):
-        logger.info(
-            "Không có model artifact trong %s — predictor tắt "
-            "(prediction MODEL_UNAVAILABLE)",
-            artifact_dir,
-        )
-        return None
-    with Path(settings.model_config_path).open(encoding="utf-8") as handle:
-        model_config = yaml.safe_load(handle)
-    return SafetyPredictor(artifact_dir, model_config)
+def _build_predictor(settings: Settings) -> SafetyPredictor:
+    return build_predictor(
+        settings.model_artifact_dir, settings.model_config_path, settings.model_type
+    )
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -105,12 +83,13 @@ def create_app(settings: Settings) -> FastAPI:
             listener = MqttListener(service, settings.mqtt_host, settings.mqtt_port)
             control = MqttControlTransport(listener)  # tự đăng ký handler ack wildcard
             manager.set_control(control)
-            listener.start()
 
         try:
             recovered = service.catch_up()
             if recovered:
                 logger.info("catch_up: đã tính %d raw pending khi khởi động", recovered)
+            if listener is not None:
+                listener.start()
             app.state.settings = settings
             app.state.store = store
             app.state.service = service
@@ -140,6 +119,8 @@ def create_app(settings: Settings) -> FastAPI:
             "mqtt": request.app.state.listener is not None,
             "db": settings.db_path,
             "processor_version": PROCESSOR_VERSION,
+            "model_type": settings.model_type,
+            "model_available": request.app.state.predictor.available,
         }
 
     # ---------------------------------------------------------------- sessions
@@ -221,6 +202,19 @@ def create_app(settings: Settings) -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{session_id}.jsonl"'
             },
         )
+
+    @app.get("/events")
+    def events(request: Request, session_id: str | None = None,
+               processor_version: str = PROCESSOR_VERSION,
+               limit: int = Query(1000, ge=1, le=100000)) -> list[dict]:
+        return request.app.state.store.list_events(processor_version, session_id, limit)
+
+    @app.get("/events/{event_id}")
+    def event_package(event_id: str, request: Request) -> dict:
+        package = request.app.state.store.event_package(event_id)
+        if package is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy event")
+        return package
 
     # ------------------------------------------------------ assessments/samples
 

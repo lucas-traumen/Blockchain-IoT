@@ -40,6 +40,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -57,6 +58,12 @@
 
 #include "hcsr04.h"
 #include "wifi_mqtt.h"
+#include "diagnostics.h"
+
+#ifndef CONFIG_HRC_DISTANCE_LOG_PERIOD_MS
+/* Keep an old sdkconfig from silently compiling out the sensor diagnostics. */
+#define CONFIG_HRC_DISTANCE_LOG_PERIOD_MS 1000
+#endif
 
 static const char *TAG = "telemetry";
 
@@ -105,6 +112,22 @@ typedef struct
     char command_raw[HRC_CMD_RAW_LEN];
     char session_id[HRC_SESSION_ID_LEN]; /* rỗng = payload thiếu session_id */
 } hrc_control_msg_t;
+
+static hrc_fault_state_t s_sensor_fault, s_enqueue_fault;
+#if CONFIG_HRC_DISTANCE_LOG_PERIOD_MS > 0
+static int64_t s_distance_log_us;
+#endif
+static atomic_uint s_samples, s_invalid_samples, s_dropped_samples;
+static atomic_uint s_sensor_error;
+
+void telemetry_status(char *out, size_t capacity)
+{
+    snprintf(out, capacity, "sensor TRIG=GPIO%d ECHO=GPIO%d period=%d ms timeout=%d ms "
+             "samples=%u invalid=%u enqueue_dropped=%u sensor_error=%u\n",
+             CONFIG_HRC_TRIG_GPIO, CONFIG_HRC_ECHO_GPIO, CONFIG_HRC_SAMPLE_PERIOD_MS,
+             CONFIG_HRC_ECHO_TIMEOUT_MS, (unsigned)s_samples, (unsigned)s_invalid_samples,
+             (unsigned)s_dropped_samples, (unsigned)s_sensor_error);
+}
 
 static QueueHandle_t s_control_queue; /* NULL = telemetry_init chưa chạy */
 static uint32_t s_sequence;           /* số mẫu đã build; mẫu đầu tiên = 1 */
@@ -295,7 +318,7 @@ static void telemetry_ack_control(const hrc_control_msg_t *msg)
                  msg->command_raw, msg->session_id);
         return;
     }
-    ESP_LOGI(TAG, "ack %s session=%s accepted=%d sequence=%" PRIu32,
+    ESP_LOGI(TAG, "ack queued %s session=%s accepted=%d sequence=%" PRIu32,
              msg->command_raw, msg->session_id, accepted ? 1 : 0, ack_sequence);
 }
 
@@ -320,6 +343,7 @@ static void telemetry_sample_and_publish(void)
 
     /* (3) Mẫu đầu tiên là sequence 1 (schema minimum 1). */
     const uint32_t sequence = ++s_sequence;
+    s_samples = sequence;
     const int64_t monotonic_us = r.start_monotonic_us;
 
     /* (4) Quy đổi NGUYÊN: quãng đường = v·t/2 →
@@ -370,11 +394,36 @@ static void telemetry_sample_and_publish(void)
         }
     }
 
+    hcsr04_error_t sensor_error = valid ? HCSR04_OK :
+        (r.error == HCSR04_OK ? HCSR04_ERR_TIMEOUT : r.error);
+    s_sensor_error = (unsigned)sensor_error;
+    if (!valid) s_invalid_samples++;
+    uint32_t previous_errors = s_sensor_fault.consecutive;
+    hrc_fault_action_t sensor_action = hrc_fault_update(&s_sensor_fault, sensor_error, esp_timer_get_time());
+    if (sensor_action == HRC_FAULT_REPORT) {
+        ESP_LOGW(TAG, "HC-SR04 %s: consecutive=%" PRIu32 " (TRIG=GPIO%d ECHO=GPIO%d); "
+                      "invalid telemetry remains UNKNOWN; check wiring/power/Echo divider",
+                 telemetry_error_code_json(sensor_error), s_sensor_fault.consecutive,
+                 CONFIG_HRC_TRIG_GPIO, CONFIG_HRC_ECHO_GPIO);
+    } else if (sensor_action == HRC_FAULT_RECOVERED) {
+        ESP_LOGI(TAG, "HC-SR04 recovered after %" PRIu32 " invalid samples", previous_errors);
+    }
+
+#if CONFIG_HRC_DISTANCE_LOG_PERIOD_MS > 0
+    int64_t log_us = esp_timer_get_time();
+    if (!s_distance_log_us || log_us - s_distance_log_us >=
+                             (int64_t)CONFIG_HRC_DISTANCE_LOG_PERIOD_MS * 1000) {
+        s_distance_log_us = log_us;
+        ESP_LOGI(TAG, "distance_mm=%s echo_us=%s valid=%d error=%s sequence=%" PRIu32,
+                 distance_json, echo_json, (int)valid, error_code_json, sequence);
+    }
+#endif
+
     /* (6) measured_at: chỉ khi đã sync SNTP. Nếu format bất thường thất bại
      * thì hạ time_synced = false để giữ invariant schema: time_synced = true
      * ⟺ measured_at là chuỗi ISO-8601. KHÔNG thay bằng giờ khác. */
     char measured_at_iso[HRC_MEASURED_AT_LEN];
-    char measured_at_quoted[HRC_MEASURED_AT_LEN]; /* phỏng dưới dạng chuỗi JSON */
+    char measured_at_quoted[HRC_MEASURED_AT_LEN + 2]; /* ISO string + two JSON quotes */
     const char *measured_at_ptr = "null";
     bool time_synced_out = false;
     if (synced && telemetry_format_utc_ms(utc_ms, measured_at_iso,
@@ -406,16 +455,26 @@ static void telemetry_sample_and_publish(void)
         return;
     }
 
-    /* (8) Enqueue QoS1 non-blocking (retain=false, store=true bên trong
-     * wifi_mqtt): task đo không bị chặn network timeout ~10 s khi mạng xấu;
-     * esp-mqtt outbox giữ mẫu khi đứt mạng và tự gửi khi kết nối lại
-     * (giới hạn .outbox.limit trong hrc_mqtt_start). Fail chỉ warn —
-     * KHÔNG retry mẫu này; mẫu kế tiếp phát theo chu kỳ. */
-    if (hrc_mqtt_enqueue(s_topic_telemetry, buf, n) != ESP_OK)
-    {
-        ESP_LOGW(TAG, "enqueue telemetry %" PRIu32 " thất bại — bỏ mẫu này",
-                 sequence);
+    /* (8) Zero-wait RAM mailbox. The MQTT worker handles the SDK mutex,
+     * retransmission and outbox backpressure without blocking measurement. */
+    esp_err_t queued = hrc_mqtt_enqueue(s_topic_telemetry, buf, n);
+    uint32_t previous_drops = s_enqueue_fault.consecutive;
+    hrc_fault_action_t enqueue_action = hrc_fault_update(&s_enqueue_fault, (uint32_t)queued,
+                                                        esp_timer_get_time());
+    if (queued != ESP_OK) {
+        s_dropped_samples++;
+        if (enqueue_action == HRC_FAULT_REPORT) {
+            ESP_LOGW(TAG, "telemetry enqueue loss: %s, consecutive=%" PRIu32
+                          " total=%u last_sequence=%" PRIu32 " wifi=%d mqtt=%d control=%d pending=%u outbox=%d bytes",
+                     esp_err_to_name(queued), s_enqueue_fault.consecutive,
+                     (unsigned)s_dropped_samples, sequence, (int)hrc_wifi_connected(),
+                     (int)hrc_mqtt_connected(), (int)hrc_mqtt_control_ready(),
+                     hrc_mqtt_pending_count(), hrc_mqtt_outbox_size());
+        }
         return;
+    }
+    if (enqueue_action == HRC_FAULT_RECOVERED) {
+        ESP_LOGI(TAG, "telemetry enqueue recovered after %" PRIu32 " dropped samples", previous_drops);
     }
     ESP_LOGD(TAG, "sample %" PRIu32 ": %s", sequence, buf);
 }
@@ -514,7 +573,10 @@ void telemetry_task(void *arg)
     TickType_t last_wake = xTaskGetTickCount();
     for (;;)
     {
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_HRC_SAMPLE_PERIOD_MS));
+        if (xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_HRC_SAMPLE_PERIOD_MS)) != pdTRUE) {
+            /* Skip missed deadlines instead of bursting to catch up. */
+            last_wake = xTaskGetTickCount();
+        }
 
         /* (a) Mailbox control: xả hết hàng đợi hiện có trước khi đo. */
         if (s_control_queue != NULL)

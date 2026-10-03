@@ -1,8 +1,11 @@
 # Quy trình thu dữ liệu HRC Safety Log
 
 Ba cách thu dữ liệu: (1) thiết bị thật qua MQTT, (2) dataset synthetic không cần
-phần cứng, (3) device simulator (chưa có — dự kiến M7c). Sau đó nạp/replay/export
-bằng các CLI trong `scripts/`. Mọi lệnh chạy từ repo root bằng venv `.venv/`.
+phần cứng, (3) device simulator synthetic qua MQTT. Sau đó nạp/replay/export
+bằng các CLI trong `scripts/`. Các ví dụ venv dưới đây dành cho Python chạy
+trực tiếp. Với Docker, API ở cổng **8001** và DB trong named volume;
+[docker.md](docker.md) có lệnh session/export/AI tương ứng. Dùng API để
+điều khiển backend Docker đang chạy.
 
 ## 1. Quy ước session
 
@@ -113,8 +116,27 @@ PY
 
 ### 4b. Device simulator
 
-`scripts/device_sim.py` **chưa có trong repo** (dự kiến bổ sung ở M7c) — hiện
-chỉ có synthetic dataset là cách mô phỏng không cần phần cứng.
+`scripts/device_sim.py` phát telemetry QoS1, nhận control và ack sequence
+mới nhất. Mặc định device `esp32_sim`, boot `synthetic_*`; chạy trên DB demo
+riêng để không lẫn phép đo thật.
+
+```bash
+.venv/bin/python -m scripts.device_sim --host localhost --port 1883 \
+  --samples 200 --scenario approach --record-jsonl data/simulator.jsonl
+# Không cần broker: JSONL có nhãn để train/smoke
+.venv/bin/python -m scripts.device_sim --dry-run --samples 100 > data/simulator-dry.jsonl
+```
+
+Để session được ack, `--device-id` của simulator phải trùng device backend
+đang điều khiển (`DEVICE_ID` khi chạy trực tiếp, `HRC_DEVICE_ID` trong Compose).
+Ví dụ với backend mặc định, thêm `--device-id esp32_01`; với Docker host,
+thay port bằng **1885**, API bằng **8001**. Tách stack/DB synthetic khỏi DB
+thu số đo thật.
+
+MQTT payload giữ 11 field telemetry theo schema; synthetic/scenario/session
+label nằm trong recording JSONL và danh tính boot simulator, không thêm vào
+wire payload. Session điều khiển qua API backend như mục 2. Tạo session sau
+khi simulator đã phát mẫu đầu để ack có sequence >=1.
 
 ## 5. Nạp JSONL vào DB (`scripts/ingest_jsonl.py`)
 
@@ -189,3 +211,19 @@ Ghi chú: endpoint `/sessions/{id}/export` trả **raw samples** (11 field telem
 JSONL hoặc CSV); bản assessment_v1 (safety + prediction) trả dạng JSON qua
 `/assessments` và `/samples/...` — chưa có endpoint CSV riêng cho assessment.
 Chi tiết định dạng bàn giao xem [tv2_handoff.md](tv2_handoff.md).
+
+## 7. Export dataset cho LSTM và hiệu chuẩn
+
+Đóng toàn bộ session trước khi xuất:
+
+```bash
+.venv/bin/python -m scripts.export_dataset --db data/hrc.db \
+  --out data/closed-sessions.jsonl --source real
+```
+
+Chọn `--source synthetic` với simulator, giữ DB/dataset riêng. Tool thêm
+session_label, scenario và target_type (từ `sessions.object`) trên từng dòng,
+loại mẫu không được gán session, giữ mẫu lỗi để windowing thống kê drop.
+Training không nhận nhiều raw file thiếu session boundary. Dùng đủ session
+để mỗi train/val/test có dữ liệu; pipeline sẽ báo lỗi nếu split không có cửa sổ.
+Xem [lstm.md](lstm.md) và [calibration.md](calibration.md).

@@ -8,6 +8,7 @@ MQTT và thread pool FastAPI).
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,24 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
         self._lock = threading.RLock()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    @contextmanager
+    def transaction(self):
+        """Processed assessment + event/state atomic on the shared connection."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
 
     # ------------------------------------------------------------------ raw
 
@@ -139,6 +158,17 @@ class Store:
                 "ORDER BY sequence",
                 (device_id, boot_id),
             ).fetchall()
+
+    def get_raw(
+        self, device_id: str, boot_id: str, sequence: int
+    ) -> sqlite3.Row | None:
+        """Lấy một raw sample theo khóa đầy đủ cho worker hậu xử lý."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM raw_samples WHERE device_id=? AND boot_id=? "
+                "AND sequence=?",
+                (device_id, boot_id, sequence),
+            ).fetchone()
 
     def pending_raw(self, processor_version: str) -> list[sqlite3.Row]:
         """Raw chưa có processed_samples cho ``processor_version`` đã cho.
@@ -374,6 +404,58 @@ class Store:
             return 0
         return int(row["max_seq"])
 
+    def session_max_raw_sequence(self, session_id: str) -> int:
+        """MAX raw sequence trong boundary, kể cả row chưa compute xong.
+
+        MQTT commit raw trước khi worker tính assessment. Stop fallback phải
+        nhìn cả raw đã bền vững để không đóng session sớm hơn dữ liệu vừa nhận.
+        """
+        with self._lock:
+            session = self._conn.execute(
+                "SELECT device_id,start_boot_id,start_sequence,started_at "
+                "FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return 0
+            if session["start_boot_id"] is None:
+                # Session bắt đầu trên DB rỗng: chọn boot của raw mới nhất
+                # sau started_at, rồi lấy MAX cùng boot để không bị lệch bởi
+                # một message đến muộn có sequence nhỏ hơn.
+                latest = self._conn.execute(
+                    "SELECT boot_id FROM raw_samples WHERE device_id=? "
+                    "AND received_at>=? ORDER BY received_at DESC,rowid DESC LIMIT 1",
+                    (session["device_id"], session["started_at"]),
+                ).fetchone()
+                if latest is None:
+                    raw_max = 0
+                else:
+                    raw_row = self._conn.execute(
+                        "SELECT MAX(sequence) AS max_seq FROM raw_samples "
+                        "WHERE device_id=? AND boot_id=? AND received_at>=?",
+                        (session["device_id"], latest["boot_id"], session["started_at"]),
+                    ).fetchone()
+                    raw_max = 0 if raw_row is None or raw_row["max_seq"] is None else int(raw_row["max_seq"])
+            else:
+                row = self._conn.execute(
+                    "SELECT MAX(sequence) AS max_seq FROM raw_samples "
+                    "WHERE device_id=? AND boot_id=? "
+                    "AND (? IS NULL OR sequence>=?)",
+                    (
+                        session["device_id"],
+                        session["start_boot_id"],
+                        session["start_sequence"],
+                        session["start_sequence"],
+                    ),
+                ).fetchone()
+                raw_max = 0 if row is None or row["max_seq"] is None else int(row["max_seq"])
+            assigned_max = self._conn.execute(
+                "SELECT MAX(sequence) AS max_seq FROM session_samples WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        assigned = 0 if assigned_max is None or assigned_max["max_seq"] is None else int(assigned_max["max_seq"])
+        return max(raw_max, assigned)
+
     def session_raw_rows(self, session_id: str) -> list[sqlite3.Row]:
         """Raw samples đã gán vào session, JOIN qua session_samples.
 
@@ -524,6 +606,101 @@ class Store:
                 "AND sequence=? AND processor_version=?",
                 (device_id, boot_id, sequence, processor_version),
             ).fetchone()
+
+    # -------------------------------------------------------------- events
+
+    def event_state(self, key: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state_json FROM event_detector_state WHERE state_key=?",(key,)
+            ).fetchone()
+            return None if row is None else json.loads(row["state_json"])
+
+    def save_event_state(self, key: str, state: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO event_detector_state VALUES (?,?) ON CONFLICT(state_key) "
+                "DO UPDATE SET state_json=excluded.state_json",
+                (key,json.dumps(state,allow_nan=False)),
+            )
+
+    def insert_event(self, event: dict) -> bool:
+        ref=event["trigger_ref"]
+        with self._lock:
+            cur=self._conn.execute(
+                "INSERT OR IGNORE INTO event_packages VALUES (?,?,?,?,?,?,?)",
+                (event["event_id"],ref["device_id"],ref["boot_id"],event["session_id"],
+                 event["processor_version"],ref["sequence"],json.dumps(event,allow_nan=False)),
+            )
+            return cur.rowcount > 0
+
+    def list_events(self, processor_version: str, session_id: str | None = None,
+                    limit: int = 1000) -> list[dict]:
+        with self._lock:
+            rows=self._conn.execute(
+                "SELECT event_json FROM event_packages WHERE processor_version=? "
+                "AND (? IS NULL OR session_id=?) ORDER BY device_id,boot_id,trigger_sequence LIMIT ?",
+                (processor_version,session_id,session_id,limit),
+            ).fetchall()
+        return [json.loads(r["event_json"]) for r in rows]
+
+    def event_package(self, event_id: str) -> dict | None:
+        """Raw coverage is computed from processed samples of the same scope.
+
+        Waiting packages become ready as post samples are processed. Session
+        boundaries filter raw using stored assessments, including session=None;
+        event trigger/first assessment never changes. Late raw can fill gaps.
+        """
+        with self._lock:
+            row=self._conn.execute("SELECT event_json FROM event_packages WHERE event_id=?",(event_id,)).fetchone()
+            if row is None:
+                return None
+            event=json.loads(row["event_json"])
+            ref=event["trigger_ref"]
+            rows=self._conn.execute(
+                "SELECT r.* FROM raw_samples r JOIN processed_samples p "
+                "ON r.device_id=p.device_id AND r.boot_id=p.boot_id AND r.sequence=p.sequence "
+                "WHERE r.device_id=? AND r.boot_id=? AND p.processor_version=? "
+                "AND json_extract(p.result_json,'$.session_id') IS ? ORDER BY r.sequence",
+                (ref["device_id"],ref["boot_id"],event["processor_version"],event["session_id"]),
+            ).fetchall()
+        start=event["trigger_monotonic_us"] - event["pre_ms"]*1000
+        end=event["trigger_monotonic_us"] + event["post_ms"]*1000
+        # Include nearest samples bracketing the requested interval. With
+        # real sampling jitter, selecting only points inside [start,end]
+        # would never provide a full two/one seconds of measured coverage.
+        earlier=[r["monotonic_us"] for r in rows
+                 if r["monotonic_us"] <= start and r["sequence"] <= ref["sequence"]]
+        later=[r["monotonic_us"] for r in rows
+               if r["monotonic_us"] >= end and r["sequence"] >= ref["sequence"]]
+        lower=max(earlier) if earlier else start
+        upper=min(later) if later else end
+        selected=[r for r in rows if lower <= r["monotonic_us"] <= upper]
+        before=[r for r in selected if r["sequence"] <= ref["sequence"]]
+        after=[r for r in selected if r["sequence"] >= ref["sequence"]]
+        sequences=[r["sequence"] for r in selected]
+        gaps=sum(max(0,b-a-1) for a,b in zip(sequences,sequences[1:]))
+        timing_gaps=sum(not (abs((b["monotonic_us"]-a["monotonic_us"])/1e6 - .1) <= .03)
+                        for a,b in zip(selected,selected[1:]))
+        pre_span=(event["trigger_monotonic_us"]-min(r["monotonic_us"] for r in before))/1000 if before else 0
+        post_span=(max(r["monotonic_us"] for r in after)-event["trigger_monotonic_us"])/1000 if after else 0
+        pre_complete=pre_span >= event["pre_ms"]
+        post_complete=post_span >= event["post_ms"]
+        # If source has advanced beyond the requested post window, no more
+        # in-order post samples can arrive; gaps remain explicit.
+        settled=bool(rows and max(r["monotonic_us"] for r in rows) >= end)
+        if event["session_id"] is not None:
+            session = self.get_session(event["session_id"])
+            settled = settled or bool(session is not None and session["status"] == "closed")
+        event["raw_samples"]=[json.loads(r["payload_json"]) for r in selected]
+        event["coverage"]={
+            "pre_complete":pre_complete,"post_complete":post_complete,
+            "pre_available_ms":pre_span,"post_available_ms":post_span,
+            "sequence_gap_count":gaps,"timing_gap_count":timing_gaps,
+            "complete":pre_complete and post_complete and gaps==0 and timing_gaps==0,
+        }
+        event["package_status"]="ready" if settled else "collecting"
+        return event
 
     # ------------------------------------------------------------------ khác
 

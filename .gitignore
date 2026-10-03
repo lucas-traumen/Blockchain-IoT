@@ -8,6 +8,14 @@ data/*
 ai_model/artifacts/
 exports/
 iot_code/esp32/sdkconfig
+iot_code/esp32/sdkconfig.old
 iot_code/esp32/managed_components/
 iot_code/esp32/build/
 
+.venv-ai/
+core
+core.*
+
+compose.env
+
+iot_code/esp32/main/network_config.local.h

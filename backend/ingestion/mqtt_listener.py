@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,13 @@ class MqttListener:
         # Handler topic chính xác (dict) và theo pattern wildcard (danh sách).
         self._topic_handlers: dict[str, Callable[[str, str], None]] = {}
         self._wildcard_handlers: list[tuple[re.Pattern[str], Callable[[str, str], None]]] = []
+        # Không xử lý telemetry trực tiếp trên paho network thread: START/STOP
+        # có thể chờ ACK trong lúc một mẫu đang bay tới. Worker tuần tự giữ
+        # thứ tự telemetry nhưng để callback ACK tiếp tục chạy.
+        self._telemetry_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="hrc-telemetry"
+        )
+        self._telemetry_executor_stopped = False
 
     def add_topic_handler(self, topic: str, handler: Callable[[str, str], None]) -> None:
         """Đăng ký handler cho MỘT topic chính xác (không wildcard).
@@ -90,7 +98,12 @@ class MqttListener:
             self._client.loop_stop()
             self._client.disconnect()
             self._client = None
-            logger.info("MQTT listener đã dừng.")
+        # Chờ telemetry đã nhận xử lý xong để không mất hàng đợi khi app
+        # đóng. ACK vẫn được callback trực tiếp trên paho thread.
+        if not self._telemetry_executor_stopped:
+            self._telemetry_executor.shutdown(wait=True)
+            self._telemetry_executor_stopped = True
+        logger.info("MQTT listener đã dừng.")
 
     def publish(self, topic: str, payload: str, qos: int = 1) -> None:
         """Publish một message (dành cho M3 gửi control); log nếu thất bại."""
@@ -123,6 +136,14 @@ class MqttListener:
         """Log khi mất kết nối — paho tự reconnect (1..60s)."""
         logger.warning("MQTT disconnected (reason_code=%s)", reason_code)
 
+    def _process_telemetry(self, sample_ref: dict[str, Any]) -> None:
+        """Tính safety/AI ngoài paho network thread sau khi raw đã commit."""
+        try:
+            summary = self._service.process_sample(sample_ref)
+            logger.debug("%s → %s", sample_ref, summary)
+        except Exception:  # noqa: BLE001 — log đầy đủ, không làm sập worker
+            logger.exception("Lỗi compute telemetry %s", sample_ref)
+
     def _on_message(self, client, userdata, message) -> None:
         """Dispatch message: telemetry → service, còn lại → handler đã đăng ký.
 
@@ -131,8 +152,13 @@ class MqttListener:
         text = bytes(message.payload).decode("utf-8", errors="replace")
         try:
             if TELEMETRY_TOPIC_RE.match(message.topic):
-                summary = self._service.handle_message(message.topic, message.payload)
-                logger.debug("%s → %s", message.topic, summary)
+                accepted = self._service.accept_message(message.topic, message.payload)
+                if accepted.get("action") == "accepted":
+                    self._telemetry_executor.submit(
+                        self._process_telemetry, accepted["sample_ref"]
+                    )
+                else:
+                    logger.debug("%s → %s", message.topic, accepted)
                 return
             handler = self._topic_handlers.get(message.topic)
             if handler is None:
@@ -160,7 +186,12 @@ def main() -> None:
     settings: Settings = load_settings()
     store = Store(settings.db_path)
     configs = load_safety_configs(settings.safety_config_path)
-    service = IngestionService(store, configs)
+    from backend.inference.predictor import build_predictor
+    from backend.sessions.manager import SessionManager
+    service = IngestionService(
+        store, configs, session_assigner=SessionManager(store, settings.device_id, control=None),
+        predictor=build_predictor(settings.model_artifact_dir, settings.model_config_path, settings.model_type),
+    )
     # M3c m-5: restart recovery — tính nốt raw pending của lần chạy trước
     # (mẫu đã lưu raw nhưng chưa kịp compute) trước khi vào vòng lặp chờ.
     recovered = service.catch_up()

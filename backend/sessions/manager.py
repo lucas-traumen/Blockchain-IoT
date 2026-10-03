@@ -2,9 +2,9 @@
 
 Ranh giới session: lệnh ``session_start``/``session_stop`` qua MQTT control,
 thiết bị trả ack ``{boot_id, sequence}`` (schema ack_v1). Không có control/broker
-→ fallback từ DB (max sequence đã nhận / đã gán). Giới hạn demo: có race nhỏ
-giữa ack và phép đo đang bay (mẫu bay đúng lúc ranh giới có thể lệch 1 mẫu) —
-chấp nhận, không xử lý transaction phân tán với thiết bị.
+→ fallback từ DB (max sequence đã nhận / đã gán). Trong lúc chờ ACK,
+``SessionManager`` giữ boundary gate; MQTT commit raw trước, worker compute sau
+để mẫu đang bay không bị tính ngoài session.
 """
 
 import json
@@ -224,6 +224,11 @@ class SessionManager:
         self._control = control
         self._ack_timeout_s = ack_timeout_s
         self._safety_configs_snapshot = safety_configs_snapshot
+        # START/STOP chờ ACK trong khi telemetry vẫn có thể tới.  Ingestion
+        # worker sẽ tạm chờ condition này để mẫu bay không bị tính trước khi
+        # session boundary được ghi vào DB.
+        self._boundary_condition = threading.Condition()
+        self._boundary_in_progress: str | None = None
 
     def set_control(self, control: ControlTransport | None) -> None:
         """Gán control transport sau khi tạo (dùng trong lifespan của FastAPI)."""
@@ -245,54 +250,64 @@ class SessionManager:
         fallback: boot + max sequence đã nhận của device trong DB; DB rỗng →
         ``start_boot_id/start_sequence = NULL`` (mọi mẫu sau đều gán được).
         """
-        existing = self._store.running_session(self._device_id)
-        if existing is not None:
-            raise ValueError(
-                f"Session {existing['session_id']} đang chạy, stop trước khi start"
-            )
-        if session_id is None:
-            session_id = (
-                f"run_{datetime.now(UTC):%Y%m%d_%H%M%S}_{uuid4().hex[:4]}"
-            )
+        with self._boundary_condition:
+            if self._boundary_in_progress is not None:
+                raise ValueError("đang chốt ranh giới session, thử lại sau")
+            existing = self._store.running_session(self._device_id)
+            if existing is not None:
+                raise ValueError(
+                    f"Session {existing['session_id']} đang chạy, stop trước khi start"
+                )
+            if session_id is None:
+                session_id = (
+                    f"run_{datetime.now(UTC):%Y%m%d_%H%M%S}_{uuid4().hex[:4]}"
+                )
+            self._boundary_in_progress = f"start:{session_id}"
         started_at = utc_now_iso()
 
-        ack: dict | None = None
-        if self._control is not None:
-            ack = self._control.session_boundary(
-                self._device_id, "session_start", session_id, self._ack_timeout_s
-            )
-        if ack is not None:
-            start_boot_id: str | None = ack["boot_id"]
-            start_sequence: int | None = int(ack["sequence"]) + 1
-            boundary_source = "device_ack"
-        else:
-            latest = self._store.latest_raw(self._device_id)
-            if latest is not None:
-                start_boot_id = latest["boot_id"]
-                start_sequence = int(latest["sequence"]) + 1
+        try:
+            ack: dict | None = None
+            if self._control is not None:
+                ack = self._control.session_boundary(
+                    self._device_id, "session_start", session_id, self._ack_timeout_s
+                )
+            if ack is not None:
+                start_boot_id: str | None = ack["boot_id"]
+                start_sequence: int | None = int(ack["sequence"]) + 1
+                boundary_source = "device_ack"
             else:
-                start_boot_id = None
-                start_sequence = None
-            boundary_source = "db_fallback"
+                latest = self._store.latest_raw(self._device_id)
+                if latest is not None:
+                    start_boot_id = latest["boot_id"]
+                    start_sequence = int(latest["sequence"]) + 1
+                else:
+                    start_boot_id = None
+                    start_sequence = None
+                boundary_source = "db_fallback"
 
-        config_json = (
-            json.dumps(self._safety_configs_snapshot, sort_keys=True)
-            if self._safety_configs_snapshot is not None
-            else None
-        )
-        self._store.insert_session(
-            session_id,
-            self._device_id,
-            scenario,
-            obj,
-            zone_note,
-            started_at,
-            config_json,
-            start_boot_id,
-            start_sequence,
-            boundary_source,
-        )
-        return self.get_session(session_id)
+            config_json = (
+                json.dumps(self._safety_configs_snapshot, sort_keys=True)
+                if self._safety_configs_snapshot is not None
+                else None
+            )
+            self._store.insert_session(
+                session_id,
+                self._device_id,
+                scenario,
+                obj,
+                zone_note,
+                started_at,
+                config_json,
+                start_boot_id,
+                start_sequence,
+                boundary_source,
+            )
+            return self.get_session(session_id)
+        finally:
+            with self._boundary_condition:
+                if self._boundary_in_progress == f"start:{session_id}":
+                    self._boundary_in_progress = None
+                    self._boundary_condition.notify_all()
 
     def stop_session(self, session_id: str | None = None) -> SessionInfo:
         """Đóng session (mặc định session đang chạy); chốt ranh giới stop.
@@ -304,35 +319,45 @@ class SessionManager:
         TRƯỚC khi gửi ``session_stop`` xuống device — ``stop_sequence`` /
         ``ended_at`` không bị ghi đè lần hai.
         """
-        if session_id is None:
-            row = self._store.running_session(self._device_id)
-            if row is None:
-                raise ValueError(
-                    f"Không có session đang chạy cho device {self._device_id}"
+        with self._boundary_condition:
+            if self._boundary_in_progress is not None:
+                raise ValueError("đang chốt ranh giới session, thử lại sau")
+            if session_id is None:
+                row = self._store.running_session(self._device_id)
+                if row is None:
+                    raise ValueError(
+                        f"Không có session đang chạy cho device {self._device_id}"
+                    )
+                session_id = row["session_id"]
+            else:
+                row = self._store.get_session(session_id)
+                if row is None:
+                    raise ValueError(f"Không tìm thấy session {session_id}")
+
+            if row["status"] == "closed":
+                raise SessionAlreadyClosed(f"Session {row['session_id']} đã đóng")
+            self._boundary_in_progress = f"stop:{session_id}"
+
+        try:
+            device_id = row["device_id"]
+            ack: dict | None = None
+            if self._control is not None:
+                ack = self._control.session_boundary(
+                    device_id, "session_stop", session_id, self._ack_timeout_s
                 )
-            session_id = row["session_id"]
-        else:
-            row = self._store.get_session(session_id)
-            if row is None:
-                raise ValueError(f"Không tìm thấy session {session_id}")
+            if ack is not None:
+                stop_sequence: int = int(ack["sequence"])
+            else:
+                stop_sequence = self._store.session_max_raw_sequence(session_id)
 
-        if row["status"] == "closed":
-            raise SessionAlreadyClosed(f"Session {row['session_id']} đã đóng")
-
-        device_id = row["device_id"]
-        ack: dict | None = None
-        if self._control is not None:
-            ack = self._control.session_boundary(
-                device_id, "session_stop", session_id, self._ack_timeout_s
-            )
-        if ack is not None:
-            stop_sequence: int = int(ack["sequence"])
-        else:
-            stop_sequence = self._store.session_max_sequence(session_id)
-
-        ended_at = utc_now_iso()
-        self._store.close_session(session_id, ended_at, stop_sequence)
-        return self.get_session(session_id)
+            ended_at = utc_now_iso()
+            self._store.close_session(session_id, ended_at, stop_sequence)
+            return self.get_session(session_id)
+        finally:
+            with self._boundary_condition:
+                if self._boundary_in_progress == f"stop:{session_id}":
+                    self._boundary_in_progress = None
+                    self._boundary_condition.notify_all()
 
     # ------------------------------------------------------------ đọc dữ liệu
 
@@ -367,6 +392,13 @@ class SessionManager:
         (cập nhật có điều kiện, chỉ lần đầu thắng); từ mẫu thứ hai của boot
         khác → không gán + ``set_boot_change`` như logic hiện tại.
         """
+        # Không để telemetry đang xử lý chạy qua khoảng giữa ACK và INSERT
+        # session. MqttListener xử lý telemetry trong worker riêng nên việc
+        # chờ này không chặn thread paho nhận ACK.
+        with self._boundary_condition:
+            while self._boundary_in_progress is not None:
+                self._boundary_condition.wait()
+
         session_id = self._store.session_for_sample(device_id, boot_id, sequence)
         if session_id is not None:
             # INSERT OR IGNORE — catch_up/replay gọi lại không nhân bản.

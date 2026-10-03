@@ -1,11 +1,80 @@
-# Cấu hình cửa sổ + inference (dùng chung cho train và runtime).
+# Cấu hình model — dùng chung cho train và runtime.
+#
+# Cấu trúc 3 phần (M8:contract):
+# 1. DÙNG CHUNG — windowing + chất lượng dữ liệu, cả RF legacy lẫn LSTM đích
+#    đều đọc các key này (ai_model/windows.py, backend/inference/predictor.py).
+# 2. RF LEGACY — các key flat đang được code hiện tại đọc trực tiếp
+#    (ai_model/train.py: model_version/preprocessing_version/features;
+#    ai_model/features.py: feature_names yêu cầu đúng 10 tên d0..d9).
+#    Giữ nguyên để RF còn chạy và làm rollback path khi chuyển sang LSTM.
+# 3. KHỐI `lstm:` — CONFIG ĐÍCH TV3–TV4. Train/evaluate trong environment AI
+#    riêng (TensorFlow 2.20.0/Keras 3.15.1); backend .venv KHÔNG cài
+#    TensorFlow ở giai đoạn này (chốt ở M13). Giá trị khớp PROJECT_MEMORY:
+#    timestep [distance_m, delta_distance_m] với delta[0]=0, shape
+#    (batch, 10, 2) → (batch, 5).
+
+# ------------------------------------------------------------------ dùng chung
 window_size: 10
 delta_s: 0.1
 horizons_ms: [100, 200, 300, 400, 500]
 max_time_jitter_s: 0.03
 max_gap_s: 0.25
-features: [d0, d1, d2, d3, d4, d5, d6, d7, d8, d9]
 stale_after_s: 0.5
+random_seed: 42
+
+# ------------------------------------------------------------------ RF legacy
+model_type: rf
 model_version: rf-v1
 preprocessing_version: pp-v1
-random_seed: 42
+# 10 khoảng cách quá khứ (m), d0 cũ nhất → d9 mới nhất; contract
+# feature_names (ai_model/features.py) bắt buộc đúng 10 phần tử.
+features: [d0, d1, d2, d3, d4, d5, d6, d7, d8, d9]
+
+# ------------------------------------------------------------------ LSTM đích
+lstm:
+  model_type: lstm
+  model_version: lstm-v1
+  preprocessing_version: pp-lstm-v1
+  # Window đích trùng khối dùng chung (khai lại để khối tự đóng gói;
+  # contract test chặn hai nơi lệch nhau).
+  window_size: 10
+  delta_s: 0.1
+  horizons_ms: [100, 200, 300, 400, 500]
+  # Feature mỗi timestep: [khoảng cách (m), delta khoảng cách (m)];
+  # delta của timestep đầu = 0 (quy ước preprocessing pp-lstm-v1).
+  features: [distance_m, delta_distance_m]
+  input_shape: [10, 2]
+  output_shape: [5]
+  # Kiến trúc (PLAN mục 4): LSTM 32 → Dropout 0.2 → Dense 32 ReLU → Dense 5.
+  # Key đặt `lstm_units` (không phải `units`) để không ambiguity với
+  # `units: m` (đơn vị) trong model_manifest_v1.schema.json.
+  lstm_units: 32
+  dropout: 0.2
+  dense_units: 32
+  dense_activation: relu
+  batch_size: 32
+  max_epochs: 100
+  learning_rate: 0.001
+  early_stopping_patience: 10
+  loss: huber
+  optimizer: adam
+  metrics: [mae]
+  callbacks:
+    early_stopping:
+      monitor: val_loss
+      mode: min
+      patience: 10
+      restore_best_weights: true
+    reduce_lr:
+      monitor: val_loss
+      mode: min
+      factor: 0.5
+      patience: 5
+      min_lr: 0.000001
+    model_checkpoint:
+      monitor: val_loss
+      mode: min
+      save_best_only: true
+      # Placeholder artifact-relative: ghi cạnh manifest trong out_dir
+      # (ai_model/artifacts/lstm-v1/model.keras theo PLAN mục 4).
+      filepath: model.keras

@@ -87,7 +87,12 @@
       "properties": {
         "status": { "enum": ["OK", "WARMUP", "INVALID_WINDOW", "MODEL_UNAVAILABLE"] },
         "model_version": { "type": ["string", "null"] },
-        "horizons_ms": { "type": "array", "items": { "type": "integer" } },
+        "horizons_ms": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 5,
+          "maxItems": 5
+        },
         "distance_m": {
           "type": ["array", "null"],
           "items": { "type": "number" },
@@ -117,8 +122,51 @@
             "max_age_ms": { "type": "number", "minimum": 0 }
           }
         },
-        "mode": { "enum": ["live", "offline"] }
-      }
+        "mode": { "enum": ["live", "offline"] },
+        "preprocessing_version": {
+          "type": ["string", "null"],
+          "description": "Phiên bản preprocessing tạo dự báo (vd pp-lstm-v1). Optional cho bản ghi RF cũ; null/khiếm mặt khi status != OK."
+        },
+        "predicted_violation_ms": {
+          "type": ["integer", "null"],
+          "enum": [100, 200, 300, 400, 500, null],
+          "description": "Horizon sớm nhất (ms) dự báo vi phạm Sp — bắt buộc là một trong các horizon của config; null khi không dự báo được vi phạm hoặc status != OK."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "OK" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "distance_m": { "type": "array" },
+              "early_warning": { "type": "boolean" },
+              "window_ref": { "type": "object" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["WARMUP", "INVALID_WINDOW", "MODEL_UNAVAILABLE"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "distance_m": { "type": "null" },
+              "early_warning": { "type": "null" },
+              "window_ref": { "type": "null" },
+              "preprocessing_version": { "type": "null" },
+              "predicted_violation_ms": { "type": "null" }
+            }
+          }
+        }
+      ]
     }
   }
 }

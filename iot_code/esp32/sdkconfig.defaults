@@ -1,11 +1,11 @@
-# sdkconfig.defaults — HRC Safety Log firmware (ESP32, ESP-IDF v5.5)
+# sdkconfig.defaults — HRC Safety Log firmware (ESP32-S3, ESP-IDF v5.5 / v6.0)
 # Các giá trị tại đây được áp dụng khi generate sdkconfig lần đầu
 # (hoặc khi xóa sdkconfig / chạy sdkconfig.defaults merge).
 # Các option HRC_* (Wi-Fi, MQTT, GPIO HC-SR04...) đặt riêng qua
 # `idf.py menuconfig`, xem main/Kconfig.projbuild.
 
 # --- Target ---
-CONFIG_IDF_TARGET="esp32"
+CONFIG_IDF_TARGET="esp32s3"
 
 # --- Logging ---
 # Log level mặc định (INFO) — đủ để thấy boot log và cấu hình M4a.
@@ -26,6 +26,10 @@ CONFIG_ESP_WIFI_NVS_ENABLED=y
 # lwIP mặc định chỉ biên dịch 1 server — thiếu dòng này, 2 server dự
 # phòng trong wifi_mqtt.c (index 1/2) bị compile-out.
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
+# --- Telemetry diagnostics ---
+# Print one measured distance snapshot per second; set 0 to disable.
+CONFIG_HRC_DISTANCE_LOG_PERIOD_MS=1000
 
 # --- MQTT (dùng ở M4c) ---
 # Broker trong LAN dùng mqtt:// (không TLS/websocket); bật lại khi cần.

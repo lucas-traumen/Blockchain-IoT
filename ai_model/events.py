@@ -33,6 +33,7 @@ __all__ = [
     "Episode",
     "Event",
     "event_metrics",
+    "event_metrics_extended",
     "find_events",
     "find_warning_points",
     "merge_warning_points",
@@ -163,6 +164,31 @@ def _run_episode(start: int, end: int, times: Sequence[float]) -> Episode:
     )
 
 
+def _match_episodes_events(
+    episodes: Sequence[Episode], events: Sequence[Event], horizon_s: float
+) -> tuple[int, set[Event], list[float]]:
+    """Đếm TP/matched/lead time theo định nghĩa match của module.
+
+    Trả ``(n_tp, matched, leads)``: số Episode TP; tập Event bị match
+    (mỗi Event đếm 1 lần cho recall dù rơi vào nhiều Episode); lead time
+    của mỗi Episode TP (Event ĐẦU TIÊN trong khoảng của nó). Hàm nội bộ
+    dùng chung cho ``event_metrics`` và ``event_metrics_extended``.
+    """
+    ordered = sorted(events, key=lambda e: (e.time_s, e.index))
+    n_tp = 0
+    matched: set[Event] = set()
+    leads: list[float] = []
+    for episode in episodes:
+        window_end = episode.end_time_s + horizon_s
+        hits = [e for e in ordered if episode.start_time_s <= e.time_s <= window_end]
+        if not hits:
+            continue
+        n_tp += 1
+        matched.update(hits)
+        leads.append(hits[0].time_s - episode.start_time_s)
+    return n_tp, matched, leads
+
+
 def event_metrics(
     episodes: Sequence[Episode], events: Sequence[Event], horizon_s: float
 ) -> dict[str, Any]:
@@ -193,19 +219,8 @@ def event_metrics(
         raise ValueError(f"horizon_s phải >= 0, nhận {horizon_s}")
     n_episodes = len(episodes)
     n_events = len(events)
-    ordered = sorted(events, key=lambda e: (e.time_s, e.index))
 
-    n_tp = 0
-    matched: set[Event] = set()
-    leads: list[float] = []
-    for episode in episodes:
-        window_end = episode.end_time_s + horizon_s
-        hits = [e for e in ordered if episode.start_time_s <= e.time_s <= window_end]
-        if not hits:
-            continue
-        n_tp += 1
-        matched.update(hits)
-        leads.append(hits[0].time_s - episode.start_time_s)
+    n_tp, matched, leads = _match_episodes_events(episodes, events, horizon_s)
 
     precision = n_tp / n_episodes if n_episodes else None
     recall = len(matched) / n_events if n_events else None
@@ -235,4 +250,106 @@ def event_metrics(
         "recall": recall,
         "false_alarms_per_min": false_alarms_per_min,
         "lead_time_s": lead_time_s,
+    }
+
+
+def event_metrics_extended(
+    episodes: Sequence[Episode], events: Sequence[Event], horizon_s: float
+) -> dict[str, Any]:
+    """Superset số liệu episode/event cho M12b — cùng định nghĩa match với
+    ``event_metrics`` (xem docstring hàm đó), cộng thêm F1, false-warning
+    rate, miss rate, lead time ms; KHÔNG để ``inf`` trong output.
+
+    Quy ước (mọi giá trị None nghĩa là "không xác định — không bịa"):
+
+    - ``precision`` = TP episodes / tổng episodes; không có Episode → None.
+      Có Episode nhưng không TP → 0.0.
+    - ``recall`` = matched unique events / tổng events; không có Event →
+      None. Có Event nhưng không match → 0.0.
+    - ``f1`` = harmonic mean 2·p·r/(p+r) khi cả precision và recall đều
+      xác định và (p+r) > 0; thiếu một trong hai → None. Trường hợp có
+      Episode nhưng không TP VÀ có Event: precision=0, recall=0, f1=0.
+    - ``false_warning_rate`` = (episodes − TP) / tổng episodes; không có
+      Episode → None.
+    - ``miss_rate`` = 1 − recall khi có Event; không có Event → None.
+    - ``false_alarms_per_min``: giữ semantics ``event_metrics`` (n_fa chia
+      tổng span mọi Episode + horizon_s, đổi ra phút; 0.0 khi n_fa = 0)
+      NHƯNG nếu span = 0 với n_fa > 0 → trả None (không ``inf``) và đặt
+      ``undefined_reason`` giải thích; các lý do khác → undefined_reason
+      là None.
+    - ``lead_time_s`` / ``lead_time_ms``: dict mean/min/max của các cặp
+      match (ms = s × 1000, cùng giá trị); không có cặp match → None.
+
+    ``horizon_s`` phải >= 0 (ValueError nếu âm). Hàm thuần: KHÔNG ghép
+    Episode với Event xuyên session — caller phải truyền các Episode/Event
+    đã cùng phạm vi (xem ``ai_model/evaluate.py``).
+    """
+    if horizon_s < 0:
+        raise ValueError(f"horizon_s phải >= 0, nhận {horizon_s}")
+    n_episodes = len(episodes)
+    n_events = len(events)
+    n_tp, matched, leads = _match_episodes_events(episodes, events, horizon_s)
+
+    precision: float | None = None
+    if n_episodes:
+        precision = n_tp / n_episodes
+    recall: float | None = None
+    if n_events:
+        recall = len(matched) / n_events
+
+    f1: float | None = None
+    if precision is not None and recall is not None:
+        total = precision + recall
+        f1 = 0.0 if total == 0 else 2.0 * precision * recall / total
+
+    false_warning_rate: float | None = None
+    if n_episodes:
+        false_warning_rate = (n_episodes - n_tp) / n_episodes
+
+    miss_rate: float | None = None
+    if n_events:
+        miss_rate = 1.0 - recall  # recall xác định khi có Event
+
+    n_fa = n_episodes - n_tp
+    undefined_reason: str | None = None
+    if n_fa == 0:
+        false_alarms_per_min: float | None = 0.0
+    else:
+        span_s = sum(e.end_time_s - e.start_time_s for e in episodes) + horizon_s
+        if span_s > 0:
+            false_alarms_per_min = n_fa / (span_s / 60.0)
+        else:
+            # Trường hợp lý thuyết (Episode điểm + horizon 0): không định
+            # nghĩa được FA/min — trả None, không ``inf`` trong report JSON.
+            false_alarms_per_min = None
+            undefined_reason = (
+                "false_alarms_per_min không xác định: span tổng = 0 giây "
+                f"với {n_fa} cảnh báo sai"
+            )
+
+    lead_time_s: dict[str, float] | None = (
+        {"mean": fmean(leads), "min": min(leads), "max": max(leads)}
+        if leads
+        else None
+    )
+    lead_time_ms: dict[str, float] | None = (
+        {key: value * 1000.0 for key, value in lead_time_s.items()}
+        if lead_time_s is not None
+        else None
+    )
+
+    return {
+        "n_events": n_events,
+        "n_episodes": n_episodes,
+        "n_tp_episodes": n_tp,
+        "n_matched_events": len(matched),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "false_warning_rate": false_warning_rate,
+        "miss_rate": miss_rate,
+        "false_alarms_per_min": false_alarms_per_min,
+        "undefined_reason": undefined_reason,
+        "lead_time_s": lead_time_s,
+        "lead_time_ms": lead_time_ms,
     }

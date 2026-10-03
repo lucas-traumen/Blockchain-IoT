@@ -141,11 +141,9 @@ ngoại suy cho dữ liệu đo thật. Firmware/HC-SR04 chưa kiểm chứng tr
 **Điều kiện:** artifact model đã train (Thí nghiệm 2) hoặc đường dẫn
 `MODEL_ARTIFACT_DIR` có `model.joblib` + `manifest.json`. Hai biến thể:
 
-- **(a) Backend + device simulator:** `scripts/device_sim.py` **sẽ có ở
-  M7c** — hiện chưa có trong repo; khi có, khởi động backend theo
-  [wiring.md](wiring.md) rồi chạy simulator. Backend phải thấy artifact lúc
-  khởi động (`_build_predictor` — thiếu thì predictor tắt, mọi prediction
-  MODEL_UNAVAILABLE).
+- **(a) Backend + device simulator:** khởi động backend theo
+  [wiring.md](wiring.md), chạy `python -m scripts.device_sim` với broker đã
+  chọn và `--record-jsonl` để giữ nhãn synthetic. Chọn LSTM theo [lstm.md](lstm.md).
 - **(b) Ingest JSONL stream không cần broker** (kiểm chứng được ngay):
 
 ```bash
@@ -187,7 +185,7 @@ PY
   WARMUP lại cho tới khi run mới đủ 10 mẫu.
 
 **Ghi chú giới hạn:** predictor là instance riêng mỗi tiến trình — buffer
-không tồn qua lần chạy khác; quan sát qua backend live cần device_sim (M7c)
+không tồn qua lần chạy khác; quan sát qua backend live dùng device_sim
 hoặc thiết bị thật theo [wiring.md](wiring.md).
 
 ## Thí nghiệm 4 — Replay khác processor_version trên cùng DB
@@ -252,6 +250,36 @@ nhất các version.
   thật; nhãn metadata phải tách ra trước khi ingest vào DB.
 - Mọi số liệu trong tài liệu này là kết quả đã chạy thật trên seed/config
   nêu rõ, hoặc kỳ vọng cấu trúc khi chưa chạy — không giá trị nào bịa thêm.
-- Phần cứng (ESP32 + HC-SR04) chưa build/flash — các thí nghiệm ở đây không
+- Firmware đã build PASS trên ESP-IDF 6.0.1 cho ESP32-S3 (2026-10-02),
+  nhưng flash/chạy đo HC-SR04 chưa kiểm chứng; các thí nghiệm ở đây không
   phủ nhận phần chưa kiểm chứng của firmware
   ([wiring.md](wiring.md), `iot_code/esp32/README.md`).
+
+## Thí nghiệm 5 — LSTM, RF và event package
+
+Theo [lstm.md](lstm.md), train LSTM rồi evaluate với `--model-type lstm` và
+`--rf-model-dir` nếu RF train cùng session split. Đọc MAE/RMSE per horizon,
+F1/miss/FWR/lead-time và breakdown scenario/target_type. Kết quả LSTM thua
+baseline vẫn giữ nguyên report; không dùng test để chọn epoch hay sửa config.
+
+Chạy simulator qua broker riêng, dùng API mở/đóng session, kiểm tra:
+`/health.model_available`, `/assessments` (WARMUP→OK), `/events` và gói raw.
+Replay `--model-type lstm --processor-version replay-lstm-v1` hai lần: lần
+đầu sinh bộ offline, lần hai `processed=0`. Source recording/dataset phải giữ
+nhãn synthetic. Evidence phiên 02/10/2026 nằm trong PLAN.md; smoke không thay
+cho dữ liệu board thật, broker reconnect hay hiệu chuẩn trong phòng thí nghiệm.
+
+### Evidence chạy ngày 02/10/2026
+
+Dataset synthetic 12×80, seed42, test96 windows thuộc sess_2/sess_8; LSTM
+3 epochs smoke, RF grid n_estimators=10/max_depth=4. MAE mean qua 5 horizon:
+LSTM **0.097709m**, RF **0.056047m**, persistence **0.056925m**, constant
+velocity **0.040475m**. LSTM thua baseline trong smoke này; chưa chốt model
+nghiệm thu hay chất lượng trên board. Event recall @500ms: LSTM/RF/persistence
+0.0, constant velocity1.0 (2 events); không có episode thì precision/F1 null.
+
+Broker Mosquitto2.0.22 trên cổng riêng11883 + simulator70 mẫu: device_ack
+start6/stop55, session50 mẫu; LSTM OK31, VIOLATION11, UNKNOWN2. Replay cùng
+DB/model lần đầu70, lần hai0; raw event packages đủ pre/post sau khi bracket
+biên do jitter. Đó là smoke software/local broker, chưa kiểm reconnect/soak
+trên board. Test cuối: backend310 pass/11 skip, AI321 pass/0 skip.

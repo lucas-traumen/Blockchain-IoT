@@ -61,3 +61,20 @@ CREATE TABLE IF NOT EXISTS session_samples (
   boot_id TEXT NOT NULL, sequence INTEGER NOT NULL,
   PRIMARY KEY (session_id, device_id, boot_id, sequence)
 );
+
+-- M14: durable detector state and idempotent event handoff.
+CREATE TABLE IF NOT EXISTS event_detector_state (
+  state_key TEXT PRIMARY KEY,
+  state_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_packages (
+  event_id TEXT PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  boot_id TEXT NOT NULL,
+  session_id TEXT,
+  processor_version TEXT NOT NULL,
+  trigger_sequence INTEGER NOT NULL,
+  event_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_session_version
+  ON event_packages(session_id, processor_version);

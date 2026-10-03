@@ -5,6 +5,7 @@ trả ack canned (hoặc None) theo command qua constructor.
 """
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,24 @@ class StubControlTransport:
     ) -> dict | None:
         self.calls.append((device_id, command, session_id))
         return self.acks.get(command)
+
+
+class BlockingControlTransport:
+    """Control giả để giữ ACK và tái hiện telemetry bay qua boundary."""
+
+    def __init__(self):
+        self.entered: dict[str, threading.Event] = {
+            "session_start": threading.Event(),
+            "session_stop": threading.Event(),
+        }
+        self.release = threading.Event()
+
+    def session_boundary(
+        self, device_id: str, command: str, session_id: str, timeout_s: float
+    ) -> dict | None:
+        self.entered[command].set()
+        assert self.release.wait(2.0), f"timeout chờ test release cho {command}"
+        return {"boot_id": "b1", "sequence": 5 if command == "session_start" else 6}
 
 
 def make_payload(**overrides) -> dict:
@@ -468,3 +487,113 @@ def test_session_stats_processor_version_filter(store, safety_configs):
     assert (
         store.session_stats(info.session_id, "replay-safety-x")["violation_count"] == 1
     )
+
+
+# ---------------------------------------------------------------------------
+# 17. Boundary START/STOP không để telemetry bay bị tính sai session
+# ---------------------------------------------------------------------------
+
+
+def test_start_boundary_waits_for_ack_before_assigning_inflight_sample(
+    store, safety_configs
+):
+    control = BlockingControlTransport()
+    manager = SessionManager(store, "esp32_01", control=control)
+    service = make_service(store, safety_configs, manager)
+    started: dict[str, object] = {}
+
+    start_thread = threading.Thread(
+        target=lambda: started.setdefault("info", manager.start_session(session_id="start-race"))
+    )
+    start_thread.start()
+    assert control.entered["session_start"].wait(1.0)
+
+    ingested: dict[str, object] = {}
+    ingest_thread = threading.Thread(
+        target=lambda: ingested.setdefault(
+            "result",
+            service.handle_message(
+                TOPIC, json.dumps(make_payload(sequence=6, monotonic_us=1_600_000))
+            ),
+        )
+    )
+    ingest_thread.start()
+    # Raw đã commit nhưng compute/assign phải chờ boundary hoàn tất.
+    for _ in range(100):
+        if store.fetch_raw("esp32_01", "b1"):
+            break
+        threading.Event().wait(0.005)
+    assert store.fetch_raw("esp32_01", "b1")
+    assert "result" not in ingested
+
+    control.release.set()
+    start_thread.join(1.0)
+    ingest_thread.join(1.0)
+    assert not start_thread.is_alive()
+    assert not ingest_thread.is_alive()
+    assert started["info"].start_sequence == 6
+    assert ingested["result"]["action"] == "stored"
+
+    record = json.loads(
+        store.get_processed("esp32_01", "b1", 6, PROCESSOR_VERSION)["result_json"]
+    )
+    assert record["session_id"] == "start-race"
+    assert [r["sequence"] for r in store.session_raw_rows("start-race")] == [6]
+
+
+def test_stop_boundary_waits_for_ack_before_assigning_inflight_sample(
+    store, safety_configs
+):
+    control = BlockingControlTransport()
+    manager = SessionManager(store, "esp32_01", control=control)
+    service = make_service(store, safety_configs, manager)
+
+    # Hoàn tất START trước, sau đó giữ ACK STOP.
+    start_result: dict[str, object] = {}
+    control.release.set()
+    start_thread = threading.Thread(
+        target=lambda: start_result.setdefault("info", manager.start_session(session_id="stop-race"))
+    )
+    start_thread.start()
+    assert control.entered["session_start"].wait(1.0)
+    start_thread.join(1.0)
+    assert not start_thread.is_alive()
+    control.release.clear()
+
+    stop_result: dict[str, object] = {}
+    stop_thread = threading.Thread(
+        target=lambda: stop_result.setdefault("info", manager.stop_session("stop-race"))
+    )
+    stop_thread.start()
+    assert control.entered["session_stop"].wait(1.0)
+
+    ingested: dict[str, object] = {}
+    ingest_thread = threading.Thread(
+        target=lambda: ingested.setdefault(
+            "result",
+            service.handle_message(
+                TOPIC, json.dumps(make_payload(sequence=6, monotonic_us=1_600_000))
+            ),
+        )
+    )
+    ingest_thread.start()
+    for _ in range(100):
+        if store.fetch_raw("esp32_01", "b1"):
+            break
+        threading.Event().wait(0.005)
+    assert store.fetch_raw("esp32_01", "b1")
+    assert "result" not in ingested
+
+    control.release.set()
+    stop_thread.join(1.0)
+    ingest_thread.join(1.0)
+    assert not stop_thread.is_alive()
+    assert not ingest_thread.is_alive()
+    assert stop_result["info"].stop_sequence == 6
+    assert ingested["result"]["action"] == "stored"
+
+    record = json.loads(
+        store.get_processed("esp32_01", "b1", 6, PROCESSOR_VERSION)["result_json"]
+    )
+    assert record["session_id"] == "stop-race"
+    assert [r["sequence"] for r in store.session_raw_rows("stop-race")] == [6]

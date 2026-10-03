@@ -21,7 +21,7 @@ Bản ghi gồm đúng **9 nhóm field** (thiếu/thừa field là vi phạm sch
 | `received_at` | string | giờ backend nhận message | Thời điểm MQTT/ingest nhận payload; catch_up/replay tái dùng giá trị đã lưu trong `raw_samples.received_at`, không đè bằng giờ mới |
 | `distance_m` | number/null | `distance_mm / 1000` | Khoảng cách đo (SI tại biên); `null` khi mẫu lỗi (`sensor_valid=false`) |
 | `safety` | object | `backend/safety` | Kết quả đánh giá ngưỡng an toàn — 9 field con, xem bảng dưới |
-| `prediction` | object | `backend/inference` | Dự báo + cảnh báo sớm — 8 field con, xem bảng dưới |
+| `prediction` | object | `backend/inference` | Dự báo + cảnh báo sớm — 8 field cũ và 2 field LSTM optional, xem bảng dưới |
 
 ### 1.1 Khối `safety` (9 field con)
 
@@ -37,18 +37,23 @@ Bản ghi gồm đúng **9 nhóm field** (thiếu/thừa field là vi phạm sch
 | `components` | object/null | 6 thành phần của Sp tính theo config: `sh_m`, `sr_m`, `ss_m`, `c_m`, `zd_m`, `zr_m` (mét); `null` khi UNKNOWN |
 | `config_fit_warnings` | array[string] | Cảnh báo cấu hình (không chặn, không giảm Sp), ví dụ Sp nằm ngoài vùng đo đã kiểm chứng `measurement_zone_m` |
 
-### 1.2 Khối `prediction` (8 field con)
+### 1.2 Khối `prediction` (RF legacy + LSTM)
 
 | Field | Kiểu | Ý nghĩa |
 |-------|------|---------|
 | `status` | `OK` \| `WARMUP` \| `INVALID_WINDOW` \| `MODEL_UNAVAILABLE` | Đủ 10 mẫu run liền mạch → OK; chưa đủ → WARMUP; mẫu lỗi/đứt run (sequence, gap, jitter) → INVALID_WINDOW; không nạp được artifact → MODEL_UNAVAILABLE. Thứ tự ưu tiên khi đánh giá: MODEL_UNAVAILABLE → INVALID_WINDOW → WARMUP → OK |
 | `model_version` | string/null | Từ manifest artifact (vd `rf-v1`); `null` khi `status != OK` |
 | `horizons_ms` | array[int] | Luôn từ `configs/model.yaml`: `[100, 200, 300, 400, 500]` |
-| `distance_m` | array[5 number]/null | 5 dự báo khoảng cách (mét, làm tròn 3 chữ số) tương ứng `horizons_ms`; `null` khi `status != OK` |
+| `distance_m` | array[5 number]/null | 5 dự báo khoảng cách (mét, giữ float đầy đủ) tương ứng `horizons_ms`; `null` khi `status != OK` |
 | `early_warning` | bool/null | `true` iff hiện tại còn CLEAR (`distance_m > Sp`) **và** min dự báo `<= Sp`; hiện tại đã VIOLATION → `false` (đã vi phạm, không phải cảnh báo sớm); `null` khi `status != OK`; Sp không xác định (UNKNOWN) → `false`, không bịa ngưỡng thay thế |
 | `stale` | bool | Mode live: tuổi mẫu `now − measured_at > stale_after_s` (0.5 s) → `true`; `measured_at=null` → `false` (không đoán tuổi); mode offline → luôn `false`. Ghi chú: khi không có model artifact, khối prediction do service dựng fallback (MODEL_UNAVAILABLE) với `stale=false` cố định |
-| `window_ref` | object/null | Nguồn 10 mẫu đầu vào: `device_id`, `boot_id`, `sequence_first`, `sequence_last`, `sample_count`, `max_age_ms` (mặc định `(10−1)×0.1 s×1000 = 900`); `null` khi `status != OK` |
+| `window_ref` | object/null | Nguồn 10 mẫu đầu vào: `device_id`, `boot_id`, `sequence_first`, `sequence_last`, `sample_count`, `max_age_ms` (tính từ monotonic thật của hai đầu cửa sổ; nhịp lý tưởng là 900ms); `null` khi `status != OK` |
 | `mode` | `live` \| `offline` | `live`: tính lúc ingest (MQTT/ingest_jsonl/catch_up); `offline`: tính lại bởi replay |
+
+LSTM bổ sung `preprocessing_version` (vd `pp-lstm-v1`) và
+`predicted_violation_ms` (horizon đầu dự báo <= Sp, hoặc null). Cả hai null
+khi prediction không OK. Schema vẫn nhận assessment RF cũ thiếu hai field.
+So threshold trước mọi phép làm tròn; không dùng giá trị trình bày thay số gốc.
 
 ### 1.3 Ví dụ (shape thật, giá trị minh họa)
 
@@ -208,12 +213,41 @@ Những gì TV2 được giả định an toàn khi tiêu thụ dữ liệu:
 - **Replay tạo bản ghi riêng, không sửa lịch sử**: mỗi lần replay ghi bản ghi
   `mode = "offline"` với `processor_version` riêng; bản ghi live của cùng mẫu
   giữ nguyên.
-- **Race ranh giới session**: mẫu đang bay đúng lúc `session_start`/`stop`
-  có thể lệch 1 mẫu so với ranh giới ack (giới hạn demo đã chấp nhận, xem
-  `backend/sessions/manager.py`).
+- **Boundary session**: MQTT commit raw trước; trong lúc `session_start`/`stop`
+  chờ ACK, compute worker tạm chờ boundary gate. Mẫu đang bay được gán theo
+  đúng boundary sau khi ACK, và stop fallback nhìn cả raw pending
+  (`backend/sessions/manager.py`, `backend/ingestion/mqtt_listener.py`).
 - **Chưa có endpoint CSV cho assessment** và không có phân trang sâu — DB
   lớn thì TV2 đọc SQLite trực tiếp (2c).
 
 Xem thêm: quy trình thu và các lệnh CLI ở
 [data-collection.md](data-collection.md); kịch bản tái lập ở
 [experiments.md](experiments.md).
+
+## 5. Event package v1
+
+`GET /events?processor_version=safety-v1&session_id=run_001` trả các trigger;
+`GET /events/{event_id}` trả gói theo
+[schemas/event_package_v1.schema.json](../schemas/event_package_v1.schema.json).
+
+- `VIOLATION`/`UNKNOWN` phát khi safety chuyển vào trạng thái đó trong run.
+- `PREDICTED_WARNING` cần ít nhất 2 cảnh báo trong 3 mẫu liên tiếp, safety
+  hiện tại CLEAR và prediction OK không stale. Giữ assessment của cảnh báo
+  đầu tiên (`trigger_ref`), cùng mẫu xác nhận (`confirmed_ref`). Ba mẫu không
+  warning liên tiếp rearm; gap/jitter/config/model/session/boot đổi cắt state.
+- `event_id` deterministic theo processor/scope/type/trigger sequence. State,
+  event và processed sample commit cùng transaction; restart không nhân bản.
+- `raw_samples` giữ telemetry gốc ít nhất 2s trước/1s sau trigger theo monotonic,
+  kèm mẫu chặn biên gần nhất khi timestamp không trùng biên do jitter,
+  chỉ cùng device/boot/session và processor version. Gói không bịa mẫu thiếu.
+- `package_status=collecting` khi nguồn chưa đi hết post window;
+  `ready` khi đã đi hết hoặc session đóng. Ready vẫn có thể thiếu dữ liệu:
+  đọc `coverage.complete`, `pre/post_complete`, available_ms và gap counts.
+- `/events` là danh sách trigger gọn; coverage/raw nằm ở endpoint chi tiết,
+  được đọc từ dữ liệu đã lưu. Mẫu tới muộn có thể lấp gap raw, nhưng không
+  quay ngược detector live để tạo cảnh báo.
+
+Đây là gói đầu vào tối thiểu cho bộ gom TV2; không phải blockchain outbox
+đã gửi lên chain. TV2 tự canonicalize/hash, định nghĩa chính sách tiêu thụ và
+xử lý các gói incomplete. Các field `computed_at` và model/config version
+được giữ trong assessment đầu tiên.

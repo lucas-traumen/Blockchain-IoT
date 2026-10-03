@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 from typing import TYPE_CHECKING, Any, Protocol
 
 from backend.ingestion.store import Store
@@ -54,6 +55,9 @@ class IngestionService:
         self._safety_configs = safety_configs
         self._session_assigner = session_assigner
         self._predictor = predictor
+        from backend.events import EventDetector
+        self._events = EventDetector(store)
+        self._compute_lock = threading.RLock()
 
     def handle_message(
         self,
@@ -61,12 +65,57 @@ class IngestionService:
         payload_bytes: bytes | str,
         received_at: str | None = None,
     ) -> dict:
-        """Xử lý một message telemetry; không raise với dữ liệu xấu.
+        """Lưu raw và tính safety/AI đồng bộ cho caller không phải MQTT."""
+        raw_row, response = self._persist_message(topic, payload_bytes, received_at)
+        if raw_row is None:
+            return response
+        summary = self._compute_and_store(raw_row)
+        return {
+            **response,
+            "action": "stored",
+            "safety_status": summary["safety_status"],
+            "assessment_valid": summary["assessment_valid"],
+        }
 
-        Trả về dict tóm tắt với ``action`` ∈ rejected/duplicate/stored.
-        Message xấu (JSON hỏng, topic sai, device lệch, schema sai) được ghi
-        vào ``rejected_messages`` rồi bỏ qua.
+    def accept_message(
+        self,
+        topic: str,
+        payload_bytes: bytes | str,
+        received_at: str | None = None,
+    ) -> dict:
+        """Validate + commit raw, chưa chạy compute nặng.
+
+        MQTT gọi method này ngay trong callback để broker chỉ nhận ACK sau khi
+        raw đã bền vững trong SQLite. Phần safety/AI/event được worker xử lý
+        sau; nếu process dừng giữa hai bước, ``catch_up`` sẽ tính lại row còn
+        thiếu processed assessment.
         """
+        raw_row, response = self._persist_message(topic, payload_bytes, received_at)
+        if raw_row is None:
+            return response
+        return response
+
+    def process_sample(self, sample_ref: dict[str, Any]) -> dict:
+        """Tính một raw sample đã commit, dùng bởi MQTT worker."""
+        raw_row = self._store.get_raw(
+            sample_ref["device_id"], sample_ref["boot_id"], int(sample_ref["sequence"])
+        )
+        if raw_row is None:
+            raise KeyError(f"Không tìm thấy raw sample {sample_ref}")
+        summary = self._compute_and_store(raw_row)
+        return {
+            "sample_ref": summary["sample_ref"],
+            "safety_status": summary["safety_status"],
+            "assessment_valid": summary["assessment_valid"],
+        }
+
+    def _persist_message(
+        self,
+        topic: str,
+        payload_bytes: bytes | str,
+        received_at: str | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Parse/validate/chèn raw và trả row cho bước compute tiếp theo."""
         if received_at is None:
             received_at = utc_now_iso()
         if isinstance(payload_bytes, (bytes, bytearray)):
@@ -80,23 +129,22 @@ class IngestionService:
             payload: Any = json.loads(text)
         except ValueError:
             self._store.mark_rejected(topic, "invalid_json", text, received_at)
-            return {"action": "rejected", "reason": "invalid_json", "received_at": received_at}
+            return None, {"action": "rejected", "reason": "invalid_json", "received_at": received_at}
 
-        # Bước 2: topic và khớp device_id (payload không phải object sẽ bị
-        # schema từ chối ở bước sau, nên chỉ so sánh khi là dict).
+        # Bước 2: topic và khớp device_id.
         topic_device = parse_topic(topic)
         if topic_device is None:
             self._store.mark_rejected(topic, "bad_topic", text, received_at)
-            return {"action": "rejected", "reason": "bad_topic", "received_at": received_at}
+            return None, {"action": "rejected", "reason": "bad_topic", "received_at": received_at}
         if isinstance(payload, dict) and payload.get("device_id") != topic_device:
             self._store.mark_rejected(topic, "device_mismatch", text, received_at)
-            return {"action": "rejected", "reason": "device_mismatch", "received_at": received_at}
+            return None, {"action": "rejected", "reason": "device_mismatch", "received_at": received_at}
 
         # Bước 3: schema telemetry_v1.
         schema_ok, reason = validate_telemetry(payload)
         if not schema_ok:
             self._store.mark_rejected(topic, reason, text, received_at)
-            return {"action": "rejected", "reason": reason, "received_at": received_at}
+            return None, {"action": "rejected", "reason": reason, "received_at": received_at}
 
         # Bước 4: lưu raw (chống trùng, phát hiện mẫu muộn).
         raw_result = self._store.insert_raw(payload, received_at)
@@ -106,26 +154,45 @@ class IngestionService:
             "sequence": payload["sequence"],
         }
         if not raw_result.inserted:
-            logger.debug("Trùng mẫu %s (QoS1 redelivery)", sample_ref)
+            # QoS1 redelivery sau khi raw đã commit nhưng worker chưa kịp
+            # compute vẫn cần được đưa lại vào worker; row processed đã có thì
+            # giữ semantics duplicate cũ.
+            existing = self._store.get_processed(
+                payload["device_id"], payload["boot_id"], payload["sequence"], PROCESSOR_VERSION
+            )
+            if existing is not None:
+                logger.debug("Trùng mẫu %s (QoS1 redelivery)", sample_ref)
+                return None, {
+                    "action": "duplicate",
+                    "reason": raw_result.reason,
+                    "sample_ref": sample_ref,
+                    "received_at": received_at,
+                }
+            raw_row = self._store.get_raw(
+                payload["device_id"], payload["boot_id"], payload["sequence"]
+            )
+            if raw_row is None:
+                raise RuntimeError(f"raw duplicate không đọc lại được {sample_ref}")
             return {
-                "action": "duplicate",
-                "reason": raw_result.reason,
+                "device_id": raw_row["device_id"],
+                "boot_id": raw_row["boot_id"],
+                "sequence": raw_row["sequence"],
+            }, {
+                "action": "accepted",
                 "sample_ref": sample_ref,
+                "is_late": raw_result.is_late,
                 "received_at": received_at,
             }
 
-        # Bước 5: tính safety + lưu processed (dùng chung code với catch_up).
         raw_row: dict[str, Any] = {
             "payload_json": json.dumps(payload, sort_keys=True),
             "received_at": received_at,
         }
-        summary = self._compute_and_store(raw_row)
-        return {
-            "action": "stored",
-            "sample_ref": summary["sample_ref"],
+        return raw_row, {
+            "action": "accepted",
+            "sample_ref": sample_ref,
             "is_late": raw_result.is_late,
-            "safety_status": summary["safety_status"],
-            "assessment_valid": summary["assessment_valid"],
+            "received_at": received_at,
         }
 
     def catch_up(self) -> int:
@@ -135,7 +202,17 @@ class IngestionService:
         processed đã insert mới.
         """
         count = 0
-        for row in self._store.pending_raw(PROCESSOR_VERSION):
+        pending = self._store.pending_raw(PROCESSOR_VERSION)
+        pending_keys = {(r["device_id"],r["boot_id"],r["sequence"]) for r in pending}
+        for row in self._store.all_raw_rows():
+            key = (row["device_id"],row["boot_id"],row["sequence"])
+            if key not in pending_keys:
+                if self._predictor is not None:
+                    payload = json.loads(row["payload_json"])
+                    existing = self._store.get_processed(*key, PROCESSOR_VERSION)
+                    session_id = json.loads(existing["result_json"])["session_id"]
+                    self._predictor.push_sample(payload, session_id)
+                continue
             summary = self._compute_and_store(row)
             if summary["processed_inserted"]:
                 count += 1
@@ -169,7 +246,11 @@ class IngestionService:
             for row in rows
         ]
 
-    def _compute_and_store(
+    def _compute_and_store(self, raw_row, processor_version=PROCESSOR_VERSION, mode="live") -> dict:
+        with self._compute_lock:
+            return self._compute_and_store_locked(raw_row, processor_version, mode)
+
+    def _compute_and_store_locked(
         self,
         raw_row: "sqlite3.Row | dict[str, Any]",
         processor_version: str = PROCESSOR_VERSION,
@@ -275,15 +356,19 @@ class IngestionService:
             },
             "prediction": prediction,
         }
-        inserted = self._store.insert_processed(
-            device_id=payload["device_id"],
-            boot_id=payload["boot_id"],
-            sequence=payload["sequence"],
-            processor_version=processor_version,
-            computed_at=record["computed_at"],
-            mode=mode,
-            result_json=json.dumps(record, sort_keys=True),
-        )
+        with self._store.transaction():
+            inserted = self._store.insert_processed(
+                device_id=payload["device_id"],
+                boot_id=payload["boot_id"],
+                sequence=payload["sequence"],
+                processor_version=processor_version,
+                computed_at=record["computed_at"],
+                mode=mode,
+                result_json=json.dumps(record, sort_keys=True, allow_nan=False),
+            )
+            if inserted:
+                self._events.observe(record, payload, processor_version)
+
         return {
             "sample_ref": record["sample_ref"],
             "safety_status": sa.status,

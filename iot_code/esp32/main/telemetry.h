@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +54,9 @@ void telemetry_handle_control(const char *topic, const char *payload, int len);
  *   arg — không dùng (truyền NULL).
  */
 void telemetry_task(void *arg);
+
+/* Snapshot for serial diagnostics; counters are atomic. */
+void telemetry_status(char *out, size_t capacity);
 
 #ifdef __cplusplus
 }

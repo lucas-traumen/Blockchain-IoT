@@ -18,13 +18,13 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-import yaml
 
 from backend.ingestion.service import IngestionService
 from backend.ingestion.store import Store
-from backend.inference.predictor import SafetyPredictor
+from backend.inference.predictor import SafetyPredictor, build_predictor
 from backend.safety import load_safety_configs
 from backend.settings import load_settings
+from backend.sessions.manager import SessionManager
 from dotenv import load_dotenv
 
 __all__ = ["main"]
@@ -32,29 +32,8 @@ __all__ = ["main"]
 logger = logging.getLogger(__name__)
 
 
-def _make_predictor(model_dir: str, model_config_path: str) -> SafetyPredictor | None:
-    """SafetyPredictor instance RIÊNG cho lần chạy CLI này (M6b).
-
-    Instance mới mỗi lần chạy: buffer cửa sổ trượt chỉ sống trong tiến trình
-    replay, KHÔNG chia sẻ state với backend live. Thiếu model.joblib hoặc
-    manifest.json → None (prediction MODEL_UNAVAILABLE như trước M6b).
-    Mode 'offline' của replay được service truyền xuống predictor qua tham số
-    ``mode`` của ``_compute_and_store`` — cờ stale luôn False khi offline.
-    """
-    directory = Path(model_dir)
-    if not (
-        (directory / "model.joblib").is_file()
-        and (directory / "manifest.json").is_file()
-    ):
-        logger.info(
-            "Không có model artifact trong %s — replay không kèm dự báo "
-            "(prediction MODEL_UNAVAILABLE)",
-            directory,
-        )
-        return None
-    with Path(model_config_path).open(encoding="utf-8") as handle:
-        model_config = yaml.safe_load(handle)
-    return SafetyPredictor(directory, model_config)
+def _make_predictor(model_dir: str, model_config_path: str, model_type: str = "rf") -> SafetyPredictor:
+    return build_predictor(model_dir, model_config_path, model_type)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         "--model-dir",
         default=None,
         help=(
-            "Thư mục artifact model (model.joblib + manifest.json); mặc định "
+            "Thư mục artifact RF/LSTM; mặc định "
             "lấy settings.model_artifact_dir (env MODEL_ARTIFACT_DIR). "
             "Thiếu artifact → replay không kèm dự báo (MODEL_UNAVAILABLE)."
         ),
@@ -92,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env-file", default=None, help="File .env tùy chọn để nạp biến môi trường"
     )
+    parser.add_argument("--model-type", choices=("rf", "lstm"), default=None)
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -110,9 +90,13 @@ def main(argv: list[str] | None = None) -> int:
         model_dir = (
             args.model_dir if args.model_dir is not None else settings.model_artifact_dir
         )
-        predictor = _make_predictor(model_dir, settings.model_config_path)
+        predictor = _make_predictor(
+            model_dir, settings.model_config_path, args.model_type or settings.model_type
+        )
         service = IngestionService(
-            store, load_safety_configs(safety_config), predictor=predictor
+            store, load_safety_configs(safety_config),
+            session_assigner=SessionManager(store, settings.device_id, control=None),
+            predictor=predictor,
         )
         if args.session_id is not None:
             if store.get_session(args.session_id) is None:

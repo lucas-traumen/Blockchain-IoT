@@ -299,7 +299,9 @@ def train_model(
         json.dumps(split_manifest, sort_keys=True).encode("utf-8")
     ).hexdigest()
 
+    from ai_model.preprocessing import sha256_file
     manifest = {
+        "dataset_sha256": sha256_file(dataset_path),
         "feature_names": list(feat_names),
         "units": "m",
         "window_size": window_config.window_size,

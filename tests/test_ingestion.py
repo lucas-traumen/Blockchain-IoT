@@ -1,12 +1,15 @@
 """Kiểm thử M2: ingestion core — store, validate, service, catch_up, dedup/gap/late."""
 
 import json
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
 
 from backend.ingestion import PROCESSOR_VERSION, IngestionService, Store
+from backend.ingestion.mqtt_listener import MqttListener
 from backend.safety import SafetyConfigVersion, load_safety_configs
 from backend.sessions import SessionManager
 
@@ -531,3 +534,61 @@ def test_mqtt_listener_main_catch_up_on_start(tmp_path, monkeypatch):
         assert [row["sequence"] for row in rows] == [1]
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# 20. Telemetry không chạy trực tiếp trên paho callback thread
+# ---------------------------------------------------------------------------
+
+
+def test_mqtt_listener_queues_telemetry_off_network_thread():
+    entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+    completed = threading.Event()
+
+    class BlockingService:
+        def accept_message(self, topic, payload):
+            return {"action": "accepted", "sample_ref": {"sequence": 1}}
+
+        def process_sample(self, sample_ref):
+            entered.set()
+            assert release.wait(2.0)
+            completed.set()
+            return {"safety_status": "CLEAR"}
+
+    listener = MqttListener(BlockingService(), "localhost", 1883)
+    message = SimpleNamespace(topic=TOPIC, payload=b"{}")
+    callback = threading.Thread(
+        target=lambda: (listener._on_message(None, None, message), returned.set())
+    )
+    callback.start()
+    try:
+        assert returned.wait(1.0)
+        assert entered.wait(1.0)
+        assert not completed.is_set()
+        release.set()
+        callback.join(1.0)
+        assert not callback.is_alive()
+    finally:
+        release.set()
+        listener.stop()
+    assert completed.is_set()
+
+
+# ---------------------------------------------------------------------------
+# 21. Raw commit trước compute: startup catch_up khôi phục worker bị dừng
+# ---------------------------------------------------------------------------
+
+
+def test_accept_message_commits_raw_before_compute_and_catch_up(store, safety_configs):
+    service = IngestionService(store, safety_configs)
+    accepted = service.accept_message(TOPIC, json.dumps(make_payload(sequence=9)))
+
+    assert accepted["action"] == "accepted"
+    assert store.fetch_raw("esp32_01", "b1")[0]["sequence"] == 9
+    assert store.get_processed("esp32_01", "b1", 9, PROCESSOR_VERSION) is None
+
+    restored = IngestionService(store, safety_configs)
+    assert restored.catch_up() == 1
+    assert store.get_processed("esp32_01", "b1", 9, PROCESSOR_VERSION) is not None

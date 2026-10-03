@@ -22,6 +22,7 @@ class Settings:
     # M3: bật/tắt MQTT (test chạy không broker) và timeout chờ ack thiết bị.
     mqtt_enabled: bool = True
     ack_timeout_s: float = 2.0
+    model_type: str = "rf"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -52,6 +53,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         safety_config_path=os.environ.get("SAFETY_CONFIG", "configs/safety.yaml"),
         model_config_path=os.environ.get("MODEL_CONFIG", "configs/model.yaml"),
         model_artifact_dir=os.environ.get("MODEL_ARTIFACT_DIR", "ai_model/artifacts"),
+        model_type=os.environ.get("MODEL_TYPE", "rf"),
         mqtt_enabled=_env_bool("HRC_MQTT_ENABLED", True),
         ack_timeout_s=float(os.environ.get("HRC_ACK_TIMEOUT_S", "2.0")),
     )

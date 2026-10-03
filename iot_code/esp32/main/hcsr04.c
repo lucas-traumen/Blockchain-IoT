@@ -38,6 +38,7 @@
  */
 
 #include "hcsr04.h"
+#include "diagnostics.h"
 
 #include <stddef.h>
 
@@ -57,6 +58,7 @@
 #include "driver/rmt_rx.h"
 
 static const char *TAG = "hcsr04";
+static hrc_fault_state_t s_reset_fault;
 
 /* RMT tick = 1 µs: độ phân giải của độ rộng echo trả về. */
 #define HCSR04_RMT_RESOLUTION_HZ 1000000u
@@ -79,6 +81,7 @@ static const char *TAG = "hcsr04";
 /* Độ rộng xung TRIG (µs) — HC-SR04 yêu cầu >= 10 µs. */
 #define HCSR04_TRIG_PULSE_US 10u
 
+static bool s_rx_enabled;
 static rmt_channel_handle_t s_rx_chan;   /* NULL = chưa init */
 static SemaphoreHandle_t s_done_sem;     /* give đúng 1 lần mỗi phiên nhận */
 static rmt_symbol_word_t s_rx_symbols[HCSR04_RX_MAX_SYMBOLS]; /* RAM nội bộ */
@@ -194,6 +197,7 @@ esp_err_t hcsr04_init(void)
         goto fail_chan;
     }
 
+    s_rx_enabled = true;
     ESP_LOGI(TAG, "HC-SR04 ready: TRIG=GPIO%d ECHO=GPIO%d timeout=%d ms",
              CONFIG_HRC_TRIG_GPIO, CONFIG_HRC_ECHO_GPIO,
              CONFIG_HRC_ECHO_TIMEOUT_MS);
@@ -205,6 +209,28 @@ fail_chan:
 fail:
     vSemaphoreDelete(s_done_sem);
     s_done_sem = NULL;
+    return err;
+}
+
+/* Recover unfinished receives, including a TRIG error before recv_done. */
+static esp_err_t reset_receiver(void)
+{
+    esp_err_t err = ESP_OK;
+    if (s_rx_enabled) {
+        err = rmt_disable(s_rx_chan);
+        if (err == ESP_OK) s_rx_enabled = false;
+    }
+    if (err == ESP_OK) {
+        err = rmt_enable(s_rx_chan);
+        if (err == ESP_OK) s_rx_enabled = true;
+    }
+    hrc_fault_action_t action = hrc_fault_update(&s_reset_fault, (uint32_t)err,
+                                                esp_timer_get_time());
+    if (err != ESP_OK && action == HRC_FAULT_REPORT)
+        ESP_LOGE(TAG, "RMT reset failed: %s (consecutive=%lu)",
+                 esp_err_to_name(err), (unsigned long)s_reset_fault.consecutive);
+    else if (action == HRC_FAULT_RECOVERED)
+        ESP_LOGI(TAG, "RMT receiver reset recovered");
     return err;
 }
 
@@ -252,12 +278,18 @@ hcsr04_result_t hcsr04_measure_once(void)
         .signal_range_max_ns = (uint32_t)CONFIG_HRC_ECHO_TIMEOUT_MS * 1000000u,
     };
     s_rx_num_symbols = 0;
+    if (!s_rx_enabled && reset_receiver() != ESP_OK) {
+        result.start_monotonic_us = esp_timer_get_time();
+        result.error = HCSR04_ERR_TRIG_FAIL;
+        return result;
+    }
     if (rmt_receive(s_rx_chan, s_rx_symbols, sizeof(s_rx_symbols), &recv_cfg) != ESP_OK)
     {
         /* Không khởi động được phiên nhận (ví dụ phiên trước chưa kết thúc
          * khi gọi dày hơn 2 × timeout) — chuỗi đo không phát được: TRIG_FAIL. */
         result.start_monotonic_us = esp_timer_get_time();
         result.error = HCSR04_ERR_TRIG_FAIL;
+        (void)reset_receiver();
         return result;
     }
 
@@ -268,12 +300,15 @@ hcsr04_result_t hcsr04_measure_once(void)
     if (gpio_set_level((gpio_num_t)CONFIG_HRC_TRIG_GPIO, 1) != ESP_OK)
     {
         result.error = HCSR04_ERR_TRIG_FAIL;
+        (void)gpio_set_level((gpio_num_t)CONFIG_HRC_TRIG_GPIO, 0);
+        (void)reset_receiver();
         return result;
     }
     esp_rom_delay_us(HCSR04_TRIG_PULSE_US);
     if (gpio_set_level((gpio_num_t)CONFIG_HRC_TRIG_GPIO, 0) != ESP_OK)
     {
         result.error = HCSR04_ERR_TRIG_FAIL;
+        (void)reset_receiver();
         return result;
     }
 
@@ -299,22 +334,8 @@ hcsr04_result_t hcsr04_measure_once(void)
          * lần gọi rmt_receive() sau sẽ trả ESP_ERR_INVALID_STATE mãi mãi.
          * disable → enable đưa channel về trạng thái khởi động được phiên
          * mới, chu kỳ đo sau chạy lại bình thường. */
-        esp_err_t reset_err = rmt_disable(s_rx_chan);
-        if (reset_err == ESP_OK)
-        {
-            reset_err = rmt_enable(s_rx_chan);
-        }
-        if (reset_err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "reset RMT receiver thất bại: %s",
-                     esp_err_to_name(reset_err));
-        }
-        else
-        {
-            ESP_LOGW(TAG, "phiên nhận RMT không có recv_done (ECHO %s) — "
-                          "đã reset receiver",
-                     (echo_level != 0) ? "cao" : "thấp");
-        }
+        if (reset_receiver() != ESP_OK) result.error = HCSR04_ERR_TRIG_FAIL;
+        else ESP_LOGD(TAG, "no recv_done, receiver reset (ECHO=%d)", echo_level);
         return result;
     }
 
