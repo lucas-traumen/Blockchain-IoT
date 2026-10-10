@@ -7,14 +7,14 @@ không xóa RF ngay mà chuyển dần sang LSTM theo các mốc nhỏ, có roll
 TV1–TV2 (Smart Contract, canonicalize, hash, dashboard và bộ gom sự kiện
 chính thức) nằm ngoài phạm vi; TV3/TV4 chỉ bàn giao assessment/event package.
 
-**Trạng thái kế hoạch: phần mềm đến M16/V1, M4j sensor log config/task startup (sửa M4i), M17 Docker và M18 session-boundary/ingestion đã triển khai/kiểm chứng ngày 2026-10-03. Firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; MQTT/backend Docker đang healthy. Bản firmware mới, đo/hiệu chuẩn/dữ liệu thật, train model thật và soak trên bo còn mở. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
+**Trạng thái kế hoạch: M1–M21 đã hoàn tất ở mức software/demo local. M4 firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; MQTT/iot_backend Docker, Hardhat local, blockchain API và dashboard đang healthy. Hardware flash, đo/hiệu chuẩn thật, dữ liệu thật bổ sung và soak trên bo vẫn là các gate nghiệm thu phần cứng riêng. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
 
 ## 1. Kiến trúc
 
 ```
-ESP32 + HC-SR04 ──MQTT QoS1──> Mosquitto ──> backend/ingestion (validate → lưu raw SQLite → compute)
-                                               ├─ backend/safety   (Sp, CLEAR/VIOLATION/UNKNOWN)
-                                                ├─ backend/inference (LSTM hoặc RF legacy → 5 horizon)
+ESP32 + HC-SR04 ──MQTT QoS1──> Mosquitto ──> iot_backend/ingestion (validate → lưu raw SQLite → compute)
+                                               ├─ iot_backend/safety   (Sp, CLEAR/VIOLATION/UNKNOWN)
+                                                ├─ iot_backend/inference (LSTM hoặc RF legacy → 5 horizon)
                                                 └─ processed_samples + event_packages (API bàn giao TV2)
 ai_model/  : windows/features dùng chung train+runtime, prepare/split, scaler,
              baselines, train/evaluate LSTM, RF legacy adapter
@@ -25,30 +25,30 @@ scripts/   : session CLI, export, replay (offline), ingest JSONL, device simulat
 
 ## 2. Quy ước chung (bắt buộc mọi milestone)
 
-- Python: venv `.venv/` (đã tạo, Python 3.12.3). Chạy từ repo root: `.venv/bin/python -m pytest tests/ -q`, `.venv/bin/python -m scripts.session_cli ...`, `.venv/bin/uvicorn backend.main:app`.
-- Import: package top-level `backend`, `ai_model`, `scripts` (có `__init__.py`); không cài đặt, chạy từ repo root.
+- Python: venv `.venv/` (đã tạo, Python 3.12.3). Chạy từ repo root: `.venv/bin/python -m pytest tests/ -q`, `.venv/bin/python -m scripts.session_cli ...`, `.venv/bin/uvicorn iot_backend.main:app`.
+- Import: package top-level `iot_backend`, `ai_model`, `scripts` (có `__init__.py`); không cài đặt, chạy từ repo root.
 - Cấu hình qua env + `.env.example` (không bí mật): `MQTT_HOST=localhost`, `MQTT_PORT=1883`, `HRC_DB_PATH=data/hrc.db`, `DEVICE_ID=esp32_01`, `SAFETY_CONFIG=configs/safety.yaml`, `MODEL_CONFIG=configs/model.yaml`, `MODEL_ARTIFACT_DIR=ai_model/artifacts`. Nạp bằng `python-dotenv`.
-- Topic: telemetry `hrc/v1/devices/{device_id}/telemetry` (QoS1, retain=false); control `hrc/v1/devices/{device_id}/control` (backend→device); ack `hrc/v1/devices/{device_id}/ack` (device→backend).
+- Topic: telemetry `hrc/v1/devices/{device_id}/telemetry` (QoS1, retain=false); control `hrc/v1/devices/{device_id}/control` (iot_backend→device); ack `hrc/v1/devices/{device_id}/ack` (device→iot_backend).
 - Khóa mẫu: `(device_id, boot_id, sequence)`. Không dùng thứ tự nhận MQTT làm thứ tự đo.
 - Schema JSON: `schemas/telemetry_v1.schema.json`, `schemas/assessment_v1.schema.json`, `schemas/control_v1.schema.json`, `schemas/ack_v1.schema.json`. Validation bằng `jsonschema` (Draft 2020-12).
-- DB: SQLite WAL tại `HRC_DB_PATH`; DDL duy nhất trong `backend/ingestion/schema.sql`; mọi truy cập qua `backend/ingestion/store.py`.
+- DB: SQLite WAL tại `HRC_DB_PATH`; DDL duy nhất trong `iot_backend/ingestion/schema.sql`; mọi truy cập qua `iot_backend/ingestion/store.py`.
 - Dữ liệu/artifact không commit: `data/` (trừ `data/samples/` mẫu nhỏ), `ai_model/artifacts/`, `.venv/`, `sdkconfig`, `managed_components/`.
 - Không tự giảm Sp; không biến UNKNOWN thành CLEAR; không bịa kết quả thực nghiệm — dữ liệu synthetic phải ghi nhãn `synthetic` rõ ràng.
 
 ## 2b. Baseline trước khi chuyển LSTM (lịch sử; trạng thái mới ở mục 6/8)
 
-- M1–M6 đã có code backend/safety, ingestion SQLite WAL, session, firmware
+- M1–M6 đã có code iot_backend/safety, ingestion SQLite WAL, session, firmware
   ESP-IDF source, RF pipeline, runtime inference và 147 test pass tại thời điểm
   lập kế hoạch.
 - Tại baseline M6, firmware ESP32/HC-SR04 chưa build/flash vì chưa có
   toolchain. Ngày 2026-10-02, M4f đã build PASS trên ESP-IDF 6.0.1 cho
   ESP32-S3; flash/chạy đo vẫn chưa kiểm chứng. Không ghi nhận hardware DoD
   hoàn thành chỉ từ log build.
-- `.venv` backend dùng Python 3.12.3, NumPy 2.5.3 và không cài TensorFlow.
+- `.venv` iot_backend dùng Python 3.12.3, NumPy 2.5.3 và không cài TensorFlow.
   P0 đã kiểm chứng trong environment tạm: TensorFlow 2.20.0 + Keras 3.15.1
   tương thích thực tế, model `(10,2)→(5,)` fit/predict/save/load pass. Quyết
   định vận hành: dùng environment AI riêng (`tensorflow==2.20.0`) để không
-  phình/can thiệp `.venv` backend; chỉ đưa TensorFlow vào backend runtime nếu
+  phình/can thiệp `.venv` iot_backend; chỉ đưa TensorFlow vào iot_backend runtime nếu
   M13 chứng minh cần thiết.
 - Tại baseline M6, pipeline dùng `d0..d9`, `model.joblib`, `rf-v1`; chưa có tensor
   `(10, 2)`, scaler train-only, `model.keras`, metrics RMSE/F1/lead-time đầy đủ,
@@ -56,7 +56,7 @@ scripts/   : session CLI, export, replay (offline), ingest JSONL, device simulat
 - Chưa coi dữ liệu synthetic là dữ liệu đo thật. Calibration `Z_d`, event
   debounce/pre-post raw package và kiểm chứng broker/board sẽ là các gate riêng.
 
-### Bảng DB (DDL chuẩn trong `backend/ingestion/schema.sql`)
+### Bảng DB (DDL chuẩn trong `iot_backend/ingestion/schema.sql`)
 
 - `raw_samples(id, device_id, boot_id, sequence, received_at, is_late, payload_json, measured_at, monotonic_us, time_synced, distance_mm, echo_us, valid, error_code)` — UNIQUE(device_id, boot_id, sequence).
 - `rejected_messages(id, received_at, topic, reason, payload_text)`.
@@ -74,7 +74,7 @@ scripts/   : session CLI, export, replay (offline), ingest JSONL, device simulat
 }
 ```
 
-Quy tắc: `measured_at` tại lúc bắt đầu đo; chưa sync → `measured_at=null, time_synced=false` (không thay bằng giờ backend). Timeout → `distance_mm=null, valid=false, error_code` thuộc enum `ECHO_TIMEOUT|ECHO_STUCK_LOW|ECHO_STUCK_HIGH|TRIG_FAIL`; `echo_us` giữ nếu đo được. Miền giá trị: `sequence>=1`, `monotonic_us>=0`, `distance_mm` 0..4500, `echo_us` 1..30000. Mẫu `valid=false` đúng schema vẫn lưu raw.
+Quy tắc: `measured_at` tại lúc bắt đầu đo; chưa sync → `measured_at=null, time_synced=false` (không thay bằng giờ iot_backend). Timeout → `distance_mm=null, valid=false, error_code` thuộc enum `ECHO_TIMEOUT|ECHO_STUCK_LOW|ECHO_STUCK_HIGH|TRIG_FAIL`; `echo_us` giữ nếu đo được. Miền giá trị: `sequence>=1`, `monotonic_us>=0`, `distance_mm` 0..4500, `echo_us` 1..30000. Mẫu `valid=false` đúng schema vẫn lưu raw.
 
 ### Bản ghi bàn giao TV2 (assessment_v1) — đúng hình spec §8
 
@@ -101,7 +101,7 @@ Quy tắc: `measured_at` tại lúc bắt đầu đo; chưa sync → `measured_a
 - `window_ref`: `{device_id, boot_id, sequence_first, sequence_last, sample_count, max_age_ms}` của 10 mẫu đầu vào.
 - `config_time_source`: `measured_at` khi đã sync; fallback `received_at` khi `measured_at=null` (ghi chú xấp xỉ trong docs).
 
-## 3. Thuật toán ngưỡng (backend/safety)
+## 3. Thuật toán ngưỡng (iot_backend/safety)
 
 Hàm thuần, SI: `Sh = vh*(Tr+Ts)`, `Sr = vr*Tr`, `Ss = vr*Ts/2`, `Sp = Sh+Sr+Ss+C+Zd+Zr`, `margin_m = distance_m - Sp`.
 
@@ -110,7 +110,7 @@ Hàm thuần, SI: `Sh = vh*(Tr+Ts)`, `Sr = vr*Tr`, `Ss = vr*Ts/2`, `Sp = Sh+Sr+S
 - Cảnh báo cấu hình (không chặn, không giảm Sp): `sp_m <= measurement_zone_m.min` (không còn vùng quan sát trước ngưỡng) hoặc `sp_m > measurement_zone_m.max` (Sp ngoài vùng đã kiểm chứng) → thêm chuỗi vào `config_fit_warnings`.
 - Fixture đối chiếu: vh=1, vr=0.2, Tr=0.1, Ts=0.2, C=0.05, Zd=0.03, Zr=0.02 → Sp = 0.44 m chính xác.
 
-## 4. Dataset, model, inference (ai_model + backend/inference)
+## 4. Dataset, model, inference (ai_model + iot_backend/inference)
 
 - Cửa sổ kết thúc tại `t`: `X = [d(t-9Δ), ..., d(t)]`,
   `y = [d(t+Δ), ..., d(t+5Δ)]`, `Δ=0.1 s`; horizons
@@ -142,7 +142,7 @@ Hàm thuần, SI: `Sh = vh*(Tr+Ts)`, `Sr = vr*Tr`, `Ss = vr*Ts/2`, `Sp = Sh+Sr+S
   `null`.
 - Safety hiện tại luôn có ưu tiên: lỗi sensor → `UNKNOWN`; distance hiện tại
   `<= Sp` → `VIOLATION`; AI chỉ tạo `PREDICTED_WARNING` khi hiện tại còn
-  `CLEAR`. Model hỏng không được làm backend/safety chết.
+  `CLEAR`. Model hỏng không được làm iot_backend/safety chết.
 - Đánh giá bắt buộc MAE **và RMSE theo từng horizon** cho LSTM, persistence,
   constant-velocity; cảnh báo phải có precision, recall, F1, false-warning
   rate, miss rate và lead time (ms), tổng hợp và theo scenario/target_type.
@@ -153,12 +153,12 @@ Hàm thuần, SI: `Sh = vh*(Tr+Ts)`, `Sr = vr*Tr`, `Ss = vr*Ts/2`, `Sp = Sh+Sr+S
 
 | ID | Nội dung | Files chính | Kiểm tra |
 |----|----------|-------------|----------|
-| M1 | Scaffold + schemas + configs + module safety + test safety | `requirements.txt`, `.env.example`, `configs/*`, `schemas/*`, `backend/safety/*`, `tests/test_safety.py` | `pytest tests/test_safety.py -q` |
-| M2 | Ingestion core: validate, store, dedup, gap/late, catch-up, ingest_jsonl + test | `backend/ingestion/*`, `scripts/ingest_jsonl.py`, `tests/test_ingestion.py` | `pytest tests/test_ingestion.py -q` |
-| M3 | Sessions (control MQTT + fallback), CLI, FastAPI, replay + test | `backend/sessions/*`, `backend/main.py`, `scripts/session_cli.py`, `scripts/replay.py`, `tests/test_sessions.py`, `tests/test_api.py` | `pytest tests/test_sessions.py tests/test_api.py -q` |
-| M4 | Firmware ESP-IDF + Wi-Fi macro/mảng hai chiều | `iot_code/esp32/**`, `tests/test_firmware_*.py` | M4j: build IDF 6.0.1 PASS ESP32/S3, 65 native firmware cases; bản sửa mới chưa flash/chạy đo |
+| M1 | Scaffold + schemas + configs + module safety + test safety | `requirements.txt`, `.env.example`, `configs/*`, `schemas/*`, `iot_backend/safety/*`, `tests/test_safety.py` | `pytest tests/test_safety.py -q` |
+| M2 | Ingestion core: validate, store, dedup, gap/late, catch-up, ingest_jsonl + test | `iot_backend/ingestion/*`, `scripts/ingest_jsonl.py`, `tests/test_ingestion.py` | `pytest tests/test_ingestion.py -q` |
+| M3 | Sessions (control MQTT + fallback), CLI, FastAPI, replay + test | `iot_backend/sessions/*`, `iot_backend/main.py`, `scripts/session_cli.py`, `scripts/replay.py`, `tests/test_sessions.py`, `tests/test_api.py` | `pytest tests/test_sessions.py tests/test_api.py -q` |
+| M4 | Firmware ESP-IDF + Wi-Fi macro/mảng hai chiều | `firmware/esp32/**`, `tests/test_firmware_*.py` | M4j: build IDF 6.0.1 PASS ESP32/S3, 65 native firmware cases; bản sửa mới chưa flash/chạy đo |
 | M5 | ai_model: windows/features, synthetic, split, baselines, train, evaluate + test | `ai_model/*`, `scripts/synthetic_dataset.py`, `tests/test_windows.py`, `tests/test_model.py`, `tests/test_events.py` | `pytest tests/test_windows.py tests/test_model.py tests/test_events.py -q` |
-| M6 | backend/inference + tích hợp compute + bàn giao TV2 + stale + test tích hợp | `backend/inference/*`, sửa `backend/ingestion/service.py`, `tests/test_inference.py`, `tests/test_integration.py` | `pytest tests/test_inference.py tests/test_integration.py -q` |
+| M6 | iot_backend/inference + tích hợp compute + bàn giao TV2 + stale + test tích hợp | `iot_backend/inference/*`, sửa `iot_backend/ingestion/service.py`, `tests/test_inference.py`, `tests/test_integration.py` | `pytest tests/test_inference.py tests/test_integration.py -q` |
 | M7 | README, docs (wiring, thu dữ liệu, tv2_handoff, experiments), dọn dẹp | `README.md`, `docs/*`, `scripts/device_sim.py` | `pytest tests/ -q` toàn bộ + soát lệnh README khớp code |
 
 Tiêu chí nghiệm thu chi tiết: bảng ở spec điều hành §9 — mọi dòng phải có test tương ứng hoặc ghi rõ chưa kiểm chứng được (firmware trên phần cứng).
@@ -174,21 +174,21 @@ Tiêu chí nghiệm thu chi tiết: bảng ở spec điều hành §9 — mọi 
 Review độc lập M1–M3 (M1M2M3:reviewer): PASS WITH NOTES — 0 BLOCKER, 1 MAJOR (M-1 double-stop), 7 MINOR, nhiều INFO. Orchestrator spot-check 6/9 finding chính bằng đọc trực tiếp code — tất cả khớp. Fix gom vào task M3c (bảng trên); biên session `seq <= stop_sequence` đã cập nhật PLAN mục 2 cho khớp chủ ý code (m-1).
 | M4 | done (code + build) | M4j: Wi-Fi macro 2D, distance log/config fallback/task startup, MQTT TX worker/priority/reserve/SUBACK retry/PUBACK watchdog; 65 native cases PASS; IDF 6.0.1 build ESP32/S3 PASS. Serial/NVS chỉ mode cũ; bản sửa mới chưa flash/chạy F2/F3 trên bo |
 | M5 | done | M5a windows/features (24 test) + M5b synthetic dataset/split (12) + M5c train RF + baselines + artifact (10) + M5d1 events logic (22) + M5d2 evaluate CLI (1) — 134 passed tổng. Kết quả thật trên dataset synthetic smoke (12×80): RF MAE [0.017..0.084]m thắng persistence, thua constant-velocity [0.013..0.072]m; event metrics precision 1.0 / recall 0.5 / lead 0.1s. M5d nguyên khối rỗng 1 lần → tách M5d1/M5d2 chạy ngay (bài học flash đúng lần 2) |
-| M6 | done | M6a1 predictor (backend/inference/predictor.py) + M6a2 test (10) + M6b tích hợp _compute_and_store + main.py + replay/ingest_jsonl --model-dir + test_integration (3) — 147 passed. Orchestrator tự chạy E2E độc lập: WARMUP/OK/VIOLATION+early_warning/replay offline idempotent đều đúng. sp None → inf (early_warning False, không bịa). Predictor CLI là instance riêng từng lần chạy |
+| M6 | done | M6a1 predictor (iot_backend/inference/predictor.py) + M6a2 test (10) + M6b tích hợp _compute_and_store + main.py + replay/ingest_jsonl --model-dir + test_integration (3) — 147 passed. Orchestrator tự chạy E2E độc lập: WARMUP/OK/VIOLATION+early_warning/replay offline idempotent đều đúng. sp None → inf (early_warning False, không bịa). Predictor CLI là instance riêng từng lần chạy |
 | M7 | done (docs baseline) | README/docs wiring, data collection, TV2 handoff và experiments đã được cập nhật; `scripts/device_sim.py` là gap lúc M7, đã bổ sung ở M16 |
-| P0 | done | Environment tạm TensorFlow 2.20.0/Keras 3.15.1 trên Python 3.12.3/NumPy 2.5.3; fit/predict/save/load smoke pass; không sửa repo; backend 147 test pass |
+| P0 | done | Environment tạm TensorFlow 2.20.0/Keras 3.15.1 trên Python 3.12.3/NumPy 2.5.3; fit/predict/save/load smoke pass; không sửa repo; iot_backend 147 test pass |
 | M8 | done (PASS WITH NOTES) | Config LSTM + RF legacy, assessment fields, model manifest và 20 contract tests; full suite 167 pass. Date-time `FormatChecker` chưa enforce vì env thiếu validator; các note còn lại chuyển sang M9/M11/M13 |
 | M9 | done (PASS WITH NOTES) | LSTM feature API `(N,10,2)`, distance+delta, exact config contract, finite/malformed guards, RF không hồi quy; full suite 183 pass |
 | M10 | done (PASS WITH NOTES) | Dataset JSONL/generic theo session, split trước windowing, scaler train-only và hash helpers; targeted 53 pass, full suite 208 pass, independent smoke 9/9. Hai minor fail-loud/documentation notes không chặn M11 |
-| M11a | done (PASS WITH NOTES) | Training LSTM lazy-TensorFlow + 5 artifact (`model.keras`, `scaler.json`, `split_manifest.json`, `manifest.json`, `metrics.json`), schema/hash/shape loader và staging; backend 214 passed/8 skipped, AI env 13 passed/1 skipped, smoke độc lập 36/36. Không commit artifact; còn minor metrics-integrity/zero-ratio/config-read/import-boundary notes |
+| M11a | done (PASS WITH NOTES) | Training LSTM lazy-TensorFlow + 5 artifact (`model.keras`, `scaler.json`, `split_manifest.json`, `manifest.json`, `metrics.json`), schema/hash/shape loader và staging; iot_backend 214 passed/8 skipped, AI env 13 passed/1 skipped, smoke độc lập 36/36. Không commit artifact; còn minor metrics-integrity/zero-ratio/config-read/import-boundary notes |
 | M12a | done (PASS WITH NOTES) | Metric primitives MAE/RMSE, grouped regression, extended event metrics (F1/FWR/miss/lead ms) với null/finite semantics; targeted 55 pass, full 236 pass/8 skipped; smoke độc lập 36/36. Ba minor test/documentation notes không chặn M12b |
 | M12b | done (direct) | Lazy-import test, train/evaluate CLI, artifact metrics/hash/config gate, cùng test split RF/LSTM, MAE/RMSE/event/breakdown; AI thật pass |
 | M13 | done (code) | MODEL_TYPE chọn LSTM/RF; shared preprocessing, unrounded threshold/horizon, fail-safe, session replay, restart prime; API + MQTT artifact thật pass |
 | M14 | done (code) | Debounce 2/3, first assessment, state/event/processed atomic, deterministic ID, raw bracket 2s/1s + coverage; 10 event-package tests pass |
 | M15 | done (tool) | Calibration bias/MAE/sample sigma/proposal Zd theo điều kiện; source explicit, không tự sửa config. Board calibration NOT VERIFIED |
 | M16 | done | Simulator MQTT control/ack + labelled recording, closed-session export, requirements-ai và docs |
-| V1 | software verified | Sau M4j: backend 375 passed/11 skipped; AI Docker 58 targeted passed; full AI trước đó 321 passed/0 skipped. Self-review trực tiếp, hardware/real-data acceptance còn mở |
-| M17 | done (Docker) | MQTT/backend healthy, named-volume persistence, broker-only restart và 50 raw/boot + device_ack PASS; AI image integration 58 pass |
+| V1 | software verified | Sau M4j: iot_backend 375 passed/11 skipped; AI Docker 58 targeted passed; full AI trước đó 321 passed/0 skipped. Self-review trực tiếp, hardware/real-data acceptance còn mở |
+| M17 | done (Docker) | MQTT/iot_backend healthy, named-volume persistence, broker-only restart và 50 raw/boot + device_ack PASS; AI image integration 58 pass |
 | M18 | done (direct) | MQTT raw commit đồng bộ trước ACK; compute safety/AI/event tuần tự ngoài paho thread; START/STOP boundary chờ ACK không lệch session; fallback stop nhìn raw pending; 379 passed/11 skipped |
 | M3c | done | Fix đủ 8 finding review M1–M3 (double-stop 409, latest_raw theo boot mới, pin NULL-boot + boot_change, .env, catch_up CLI/mqtt_listener, PK conflict 409, .env.example, session_stats bỏ hardcode). 65 passed (55+10 test mới) |
 
@@ -235,7 +235,7 @@ M8 notes cần giữ cho milestone sau:
   chính là `train_lstm(...)` và `load_lstm_artifact(...)`; artifact chỉ sinh ở
   thư mục operator truyền vào và không commit. Review không có blocker/major;
   minor đã ghi nhận: zero-ratio val/test nên fail sớm hơn, `lstm.metrics` đang
-  khóa thực tế về MAE, trainer còn import `backend.util`, và loader chưa hash/
+  khóa thực tế về MAE, trainer còn import `iot_backend.util`, và loader chưa hash/
   parse nội dung `metrics.json`. Các điểm này không chặn offline evaluation,
   nhưng phải được cân nhắc trước M13 runtime.
 - M12a đã thêm metric primitives thuần trong `ai_model.evaluate` và
@@ -258,14 +258,14 @@ sinh code lớn.
 
 | Task | Mục tiêu và phạm vi file | Tiêu chí đạt / kiểm tra | Phụ thuộc |
 |------|---------------------------|-------------------------|-----------|
-| P0:env | Kiểm tra tương thích Python 3.12, NumPy hiện tại và TensorFlow/Keras; quyết định pin `requirements.txt` hoặc environment AI riêng; không phá `.venv` backend | Có lệnh cài tái lập, import TensorFlow + train/predict smoke hoặc ghi rõ environment riêng; baseline `pytest tests/ -q` vẫn pass | — |
+| P0:env | Kiểm tra tương thích Python 3.12, NumPy hiện tại và TensorFlow/Keras; quyết định pin `requirements.txt` hoặc environment AI riêng; không phá `.venv` iot_backend | Có lệnh cài tái lập, import TensorFlow + train/predict smoke hoặc ghi rõ environment riêng; baseline `pytest tests/ -q` vẫn pass | — |
 | M8:contract | Cập nhật `configs/model.yaml`, schema assessment (preprocessing/model metadata, `predicted_violation_ms`), model-version contract; giữ RF legacy rõ ràng | Schema validate cả assessment cũ và mới theo quyết định tương thích; config đủ window/features/LSTM/train params; test contract | P0 |
 | M9:window | Chuyển representation LSTM sang `(10,2)` `[distance_m, delta_distance_m]`, `delta[0]=0`; giữ adapter RF d0..d9; sửa `ai_model/windows.py`, `features.py` và test | Không nối qua session/boot/gap/error; shape/order/delta đúng ở train-runtime; test window cũ không hồi quy | M8 |
 | M10:data (DONE) | Hỗ trợ JSONL + export session/SQLite, split session trước window aggregation, scaler train-only, hash dataset/split; `ai_model/prepare.py` và module preprocessing mới | Không leakage; scaler không đọc val/test; dropped-window stats; `split_manifest.json` và SHA-256 tái lập; 208 test pass | M9 |
-| M11a:train (DONE) | Bổ sung Keras LSTM baseline theo kiến trúc chốt; EarlyStopping, ReduceLR, checkpoint; lưu 5 artifact; giữ RF train path | Output `(N,5)`, artifact đủ file/field/version/hash, loader fail-loud, smoke cross-environment pass; 214 backend tests + 36/36 independent checks | M10, P0 |
+| M11a:train (DONE) | Bổ sung Keras LSTM baseline theo kiến trúc chốt; EarlyStopping, ReduceLR, checkpoint; lưu 5 artifact; giữ RF train path | Output `(N,5)`, artifact đủ file/field/version/hash, loader fail-loud, smoke cross-environment pass; 214 iot_backend tests + 36/36 independent checks | M10, P0 |
 | M12a:metrics (DONE) | Thêm MAE/RMSE primitives, grouped helpers và event metrics mở rộng mà không phá API M5 | Shape/nonfinite guards, finite/null JSON semantics, F1/FWR/miss/lead ms; 55 targeted + 236 full pass | M11a |
 | M12b:evaluate (DONE software) | Wiring evaluator LSTM/RF/persistence/constant-velocity trên cùng session test split; RMSE/MAE từng horizon, event metrics extended và breakdown scenario/target_type | Báo cáo test theo session; không tune test; metric `null` khi không xác định; không che trường hợp LSTM thua baseline; artifact LSTM chỉ đọc qua loader/hash gate | M12a, M11a |
-| M13:runtime (DONE software) | Cập nhật `backend/inference/predictor.py`, `backend/main.py`, ingestion và scripts replay: buffer LSTM, preprocessing giống train, `predicted_violation_ms`, WARMUP/INVALID/MODEL_UNAVAILABLE; RF fallback tách biệt | 9→WARMUP, mẫu 10→OK, reset gap/error/boot/session, inverse scaling không round trước threshold, safety sống khi model hỏng | M11, M8 |
+| M13:runtime (DONE software) | Cập nhật `iot_backend/inference/predictor.py`, `iot_backend/main.py`, ingestion và scripts replay: buffer LSTM, preprocessing giống train, `predicted_violation_ms`, WARMUP/INVALID/MODEL_UNAVAILABLE; RF fallback tách biệt | 9→WARMUP, mẫu 10→OK, reset gap/error/boot/session, inverse scaling không round trước threshold, safety sống khi model hỏng | M11, M8 |
 | M14:event (DONE software) | Bổ sung debounce AI 2/3, assessment/event trigger và gói pre/post raw tối thiểu cho bàn giao TV2; không canonicalize/hash thay TV2 | Trigger không trùng, lưu assessment đầu tiên, đủ raw 2 s trước + 1 s sau khi có dữ liệu; test replay/idempotency | M13 |
 | M15:calibration (DONE software) | Tạo công cụ/format báo cáo hiệu chuẩn HC-SR04 và đề xuất `Z_d` từ bias/MAE/σ; không tự ghi đè safety config demo | Tính đúng công thức, giữ điều kiện thử/target/session, phân biệt demo với thực nghiệm; test dữ liệu mẫu + tài liệu thao tác | M2, M7 |
 | M16:docs (DONE software) | Cập nhật README/docs theo LSTM, environment AI, dataset thật, wiring, TV2 handoff; thêm simulator nếu còn thiếu | Mọi lệnh docs chạy được hoặc ghi rõ human/hardware gate; không tuyên bố ISO/board đã xác minh | M12–M15 |
@@ -309,12 +309,12 @@ trạng thái mới trong mục này; không dispatch lại tester cũ chỉ vì
 
 | Task trực tiếp | Phạm vi file | Tiêu chí/lệnh kiểm tra | Trạng thái |
 |---|---|---|---|
-| M12b:orchestrator | ai_model/evaluate.py, ai_model/lstm_train.py, ai_model/train.py, ai_model/features.py, ai_model/prepare.py, ai_model/preprocessing.py, schemas/model_manifest_v1.schema.json, tests/test_lstm_*.py, tests/test_evaluation.py | Evaluator + CLI chung split, lazy import, hash/shape/finite gate; backend pytest + AI env integration | done |
-| M13:orchestrator | backend/inference/*, backend/settings.py, backend/main.py, backend/ingestion/{service.py,mqtt_listener.py}, scripts/replay.py, scripts/ingest_jsonl.py, .env.example, requirements-ai.txt, tests/test_lstm_inference.py | Preprocessing train/runtime giống nhau; reset boundary; fail-safe; API/replay test và artifact thật | done (software) |
-| M14:orchestrator | backend/events/*, backend/ingestion/{schema.sql,store.py,service.py}, backend/main.py, schemas/event_package_v1.schema.json, tests/test_event_packages.py | Debounce 2/3, sự kiện idempotent, pre 2s/post 1s cùng session/boot, persistence/recovery | done (software) |
+| M12b:orchestrator | ai_model/evaluate.py, ai_model/lstm_train.py, ai_model/train.py, ai_model/features.py, ai_model/prepare.py, ai_model/preprocessing.py, schemas/model_manifest_v1.schema.json, tests/test_lstm_*.py, tests/test_evaluation.py | Evaluator + CLI chung split, lazy import, hash/shape/finite gate; iot_backend pytest + AI env integration | done |
+| M13:orchestrator | iot_backend/inference/*, iot_backend/settings.py, iot_backend/main.py, iot_backend/ingestion/{service.py,mqtt_listener.py}, scripts/replay.py, scripts/ingest_jsonl.py, .env.example, requirements-ai.txt, tests/test_lstm_inference.py | Preprocessing train/runtime giống nhau; reset boundary; fail-safe; API/replay test và artifact thật | done (software) |
+| M14:orchestrator | iot_backend/events/*, iot_backend/ingestion/{schema.sql,store.py,service.py}, iot_backend/main.py, schemas/event_package_v1.schema.json, tests/test_event_packages.py | Debounce 2/3, sự kiện idempotent, pre 2s/post 1s cùng session/boot, persistence/recovery | done (software) |
 | M15:orchestrator | scripts/calibrate.py, tests/test_calibration.py, docs/calibration.md | Bias/MAE/sigma/Zd, nhãn nguồn/điều kiện thử, không tự sửa safety config | done (software) |
 | M16:orchestrator | README.md, docs/*, scripts/device_sim.py, scripts/export_dataset.py, tests/test_device_sim.py, tests/test_export_dataset.py, .gitignore | CLI/docs/simulator hoạt động, hardware gates rõ | done (software) |
-| V1:orchestrator | PLAN.md, PROJECT_MEMORY.md; review các diff trên | Full suite backend + AI, smoke offline/API, báo hardware/real-data/reconnect gate chưa kiểm chứng | done (software) |
+| V1:orchestrator | PLAN.md, PROJECT_MEMORY.md; review các diff trên | Full suite iot_backend + AI, smoke offline/API, báo hardware/real-data/reconnect gate chưa kiểm chứng | done (software) |
 
 ### Evidence chốt ngày 2026-10-02
 
@@ -325,7 +325,7 @@ trạng thái mới trong mục này; không dispatch lại tester cũ chỉ vì
   **321 passed, 0 skipped**, 41 dependency deprecation warnings (FastAPI
   TestClient/httpx và Keras/NumPy); không có test failure.
 - Môi trường AI tái lập bằng `python3 -m venv /tmp/blockchain-ai-env` rồi pip
-  `-r requirements-ai.txt`; `.venv` backend không cài TensorFlow.
+  `-r requirements-ai.txt`; `.venv` iot_backend không cài TensorFlow.
 - CLI train LSTM 3 epochs + evaluator (LSTM/RF/persistence/CV) chạy thật trên
   synthetic 12 session × 80 mẫu, seed 42, 96 test windows, test sessions
   `sess_2`, `sess_8`. RF smoke grid `[10] × [4]`, cùng dataset/split; không tune test.
@@ -365,7 +365,7 @@ hyperparameter dựa trên test này để sửa kết quả báo cáo.
    safety config version mới; công cụ đã có, chưa có số đo thật.
 3. Train/chọn model bằng train/validation trên real dataset, báo test cố định
    và so baselines; chưa chốt LSTM thắng baseline hay thông số robot đạt ISO.
-4. Docker persistence và backend reconnect sau restart riêng broker đã PASS
+4. Docker persistence và iot_backend reconnect sau restart riêng broker đã PASS
    (M17). Reconnect khi mất mạng và soak trên ESP32 thật vẫn chưa kiểm chứng.
    M18 đã khóa race START/STOP bằng worker compute tuần tự và boundary gate;
    raw commit trước ACK, assessment/session/predictor/event dùng cùng session scope.
@@ -377,7 +377,7 @@ hyperparameter dựa trên test này để sửa kết quả báo cáo.
 
 | Task trực tiếp | Mục tiêu/phạm vi | Tiêu chí và evidence | Trạng thái |
 |---|---|---|---|
-| M4f:orchestrator | iot_code/esp32/{CMakeLists.txt,sdkconfig.defaults,dependencies.lock,main/CMakeLists.txt,main/idf_component.yml,main/telemetry.c,.vscode/settings.json,README.md}, .gitignore và docs/plan/memory liên quan | `idf.py -C iot_code/esp32 set-target esp32s3` + `build` exit 0; app/bootloader/partition size checks PASS; `esptool --port /dev/ttyACM0 chip-id` nhận diện ESP32-S3 revision v0.2 | done (build); flash/runtime chưa kiểm chứng |
+| M4f:orchestrator | firmware/esp32/{CMakeLists.txt,sdkconfig.defaults,dependencies.lock,main/CMakeLists.txt,main/idf_component.yml,main/telemetry.c,.vscode/settings.json,README.md}, .gitignore và docs/plan/memory liên quan | `idf.py -C firmware/esp32 set-target esp32s3` + `build` exit 0; app/bootloader/partition size checks PASS; `esptool --port /dev/ttyACM0 chip-id` nhận diện ESP32-S3 revision v0.2 | done (build); flash/runtime chưa kiểm chứng |
 
 - Lỗi đã tái hiện: CMake không resolve `mqtt` trong IDF 6.0.1, sau đó GCC
   `-Werror=format-truncation` tại telemetry.c khi bọc timestamp bằng quote.
@@ -402,8 +402,8 @@ Tiếp tục triển khai trực tiếp theo ủy quyền, không subagent/check
 
 | Task trực tiếp | Phạm vi file | Tiêu chí/lệnh kiểm tra | Trạng thái |
 |---|---|---|---|
-| M4g:orchestrator | iot_code/esp32/main/{wifi_mqtt,network_setup,network_console,diagnostics,hcsr04,telemetry,app_main}.*, main/{CMakeLists.txt,Kconfig.projbuild}, tests/firmware/**, tests/test_firmware_*.py, firmware README và docs liên quan | Scan/list, masked join, NVS commit sau IP, rollback join lỗi, retry, broker đổi runtime, sensor/enqueue fault/recovery; UART/USB receive tests; IDF build esp32s3 + esp32; full pytest | done (code/build/native); board acceptance mở |
-| M17:orchestrator | Dockerfile, .dockerignore, compose.yaml, compose.env.example, docker/mosquitto/mosquitto.conf, .gitignore, README.md, docs/{docker,wiring,data-collection}.md, PLAN.md, PROJECT_MEMORY.md | Compose config/build/up PASS; mqtt/backend healthy; telemetry/control/ack, SQLite + MQTT persistence và broker-only reconnect; AI TensorFlow integration | done (Docker); service tiếp tục chạy |
+| M4g:orchestrator | firmware/esp32/main/{wifi_mqtt,network_setup,network_console,diagnostics,hcsr04,telemetry,app_main}.*, main/{CMakeLists.txt,Kconfig.projbuild}, tests/firmware/**, tests/test_firmware_*.py, firmware README và docs liên quan | Scan/list, masked join, NVS commit sau IP, rollback join lỗi, retry, broker đổi runtime, sensor/enqueue fault/recovery; UART/USB receive tests; IDF build esp32s3 + esp32; full pytest | done (code/build/native); board acceptance mở |
+| M17:orchestrator | Dockerfile, .dockerignore, compose.yaml, compose.env.example, docker/mosquitto/mosquitto.conf, .gitignore, README.md, docs/{docker,wiring,data-collection}.md, PLAN.md, PROJECT_MEMORY.md | Compose config/build/up PASS; mqtt/iot_backend healthy; telemetry/control/ack, SQLite + MQTT persistence và broker-only reconnect; AI TensorFlow integration | done (Docker); service tiếp tục chạy |
 
 ### Firmware và test
 
@@ -425,7 +425,7 @@ Tiếp tục triển khai trực tiếp theo ủy quyền, không subagent/check
   trên chip, độ chính xác đo, mạch Echo hoặc reconnect khi mất radio thật.
 - `.venv/bin/python -m pytest tests/ -q`: **344 passed, 11 skipped**, 2
   dependency deprecation warnings; 11 skip là test cần TensorFlow.
-- ESP32-S3 build `iot_code/esp32/build/hrc_esp32.bin`: **947680 bytes**, app
+- ESP32-S3 build `firmware/esp32/build/hrc_esp32.bin`: **947680 bytes**, app
   1MiB còn10%; log `/tmp/blockchain-firmware-check/serial-setup-build.log`.
 - ESP32 build riêng `/tmp/blockchain-firmware-esp32/build/hrc_esp32.bin`:
   **935776 bytes**, app còn11%; log `/tmp/blockchain-firmware-check/esp32-build.log`.
@@ -436,15 +436,15 @@ Tiếp tục triển khai trực tiếp theo ủy quyền, không subagent/check
 
 ### Docker và smoke thực tế
 
-- Project `blockchain-hrc`, Mosquitto2.0.22 host1885→1883; backend API8001→8000,
+- Project `blockchain-hrc`, Mosquitto2.0.22 host1885→1883; iot_backend API8001→8000,
   SQLite volume `backend_data`. Giữ các service dự án khác trên1883/1884/8000.
-  MQTT volume `mqtt_data`, configs/artifacts backend chỉ đọc, restart/log rotation.
-- Dockerfile target `backend` không có TF; target/profile `ai` thêm TF2.20.0 /
+  MQTT volume `mqtt_data`, configs/artifacts iot_backend chỉ đọc, restart/log rotation.
+- Dockerfile target `iot_backend` không có TF; target/profile `ai` thêm TF2.20.0 /
   Keras3.15.1. Backend LSTM chọn target ai + MODEL_TYPE=lstm + subdir=lstm-v1.
   Không đưa artifact synthetic smoke vào runtime mặc định; /health hiện
   model_type=rf, model_available=false, safety vẫn tính.
-- `docker compose config --quiet`, `build backend`, `--profile ai build ai`,
-  `up -d --wait mqtt backend` PASS; hai container healthy. Backend và AI
+- `docker compose config --quiet`, `build iot_backend`, `--profile ai build ai`,
+  `up -d --wait mqtt iot_backend` PASS; hai container healthy. Backend và AI
   `python -m pip --no-cache-dir check` PASS.
 - AI image chạy `tests/test_lstm_{train,inference,evaluation}.py` qua mount
   read-only: **58 passed**, gồm train/save/load/predict thật; 41 dependency
@@ -453,9 +453,9 @@ Tiếp tục triển khai trực tiếp theo ủy quyền, không subagent/check
   **50/50 raw sequence1..50** mỗi boot, START/STOP device_ack, các lượt có
   20–21 session samples. Lượt đầu fail stats0 do simulator mặc định esp32_sim
   khác DEVICE_ID, không phải bằng chứng SQLite ingest hỏng.
-- Restart mqtt+backend giữ nguyên phiên SQLite 21 mẫu và retained test topic.
+- Restart mqtt+iot_backend giữ nguyên phiên SQLite 21 mẫu và retained test topic.
   Retained topic test đã clear. Restart **riêng mqtt** cũng PASS control/ack
-  và 50 raw sau reconnect của backend (không restart backend để hồi phục).
+  và 50 raw sau reconnect của iot_backend (không restart iot_backend để hồi phục).
 - Ghi nhận race session hiện có: ack START seq5 nhưng tạo row session sau khi
   seq6 đã processed, session [6..26] chỉ gán7..26 (20 mẫu), raw vẫn đủ50.
   SessionManager đã ghi giới hạn race một mẫu từ baseline; không coi smoke
@@ -511,7 +511,7 @@ serial/NVS của M4g; evidence cũ ở mục 10 giữ nguyên theo lịch sử.
   ESP32 app **937808 bytes**, còn 11%; log
   `/tmp/blockchain-firmware-check/wifi-list-esp32-build.log`. ESP32 build tại
   `/tmp/blockchain-firmware-esp32`, không đổi sdkconfig/lock S3 trong repo.
-- `git diff --check` PASS; private local header ignored; MQTT/backend Docker
+- `git diff --check` PASS; private local header ignored; MQTT/iot_backend Docker
   vẫn healthy ở cổng 1885/8001. Không commit, không flash, không can thiệp
   serial monitor đang mở. Hardware gate tiếp theo: điền credentials, build/
   flash đúng chip/cổng, kiểm tra scan/IP/MQTT, fallback và reconnect trên bo
@@ -526,7 +526,7 @@ thêm log khoảng cách và sửa MQTT; triển khai trực tiếp, không suba
 
 | Task trực tiếp | Phạm vi file | Tiêu chí/lệnh kiểm tra | Trạng thái |
 |---|---|---|---|
-| M4i:orchestrator | iot_code/esp32/main/{wifi_mqtt.c,wifi_mqtt.h,telemetry.c,Kconfig.projbuild}, tests/{test_firmware_network.py,test_firmware_telemetry.py,firmware/network_harness.c,firmware/telemetry_harness.c,firmware/stubs/idf_stub.h,firmware/stubs/freertos/{task.h,queue.h},firmware/stubs/esp_random.h}, firmware README, docs/wiring.md, PLAN.md, PROJECT_MEMORY.md | Repro red trên code cũ cho SDK mutex trong task đo và outbox vượt ngưỡng; zero-wait producer, bounded transfer/reserve, subscribe retry/SUBACK gate, PUBACK watchdog, ACK priority, log valid/invalid/disabled; full pytest; ESP32/S3 build; broker probe riêng | done (code/build/native); bản mới chưa flash/soak trên bo |
+| M4i:orchestrator | firmware/esp32/main/{wifi_mqtt.c,wifi_mqtt.h,telemetry.c,Kconfig.projbuild}, tests/{test_firmware_network.py,test_firmware_telemetry.py,firmware/network_harness.c,firmware/telemetry_harness.c,firmware/stubs/idf_stub.h,firmware/stubs/freertos/{task.h,queue.h},firmware/stubs/esp_random.h}, firmware README, docs/wiring.md, PLAN.md, PROJECT_MEMORY.md | Repro red trên code cũ cho SDK mutex trong task đo và outbox vượt ngưỡng; zero-wait producer, bounded transfer/reserve, subscribe retry/SUBACK gate, PUBACK watchdog, ACK priority, log valid/invalid/disabled; full pytest; ESP32/S3 build; broker probe riêng | done (code/build/native); bản mới chưa flash/soak trên bo |
 
 - Feedback loop trước sửa: `pytest tests/test_firmware_network.py -q -k
   mqtt_nonblocking` FAIL vì task đo gọi SDK enqueue; `-k mqtt_headroom` FAIL
@@ -567,7 +567,7 @@ thêm log khoảng cách và sửa MQTT; triển khai trực tiếp, không suba
   synthetic raw/session. Cùng phép probe nhận 23 telemetry real, đều valid.
   Evidence `mqtt-recovery-broker-probe.json`. Đây là health tại host/current
   firmware; không phải smoke bản M4i hoặc bằng chứng mạng sẽ không timeout.
-- Docker mqtt/backend vẫn healthy, không restart; private header ignored,
+- Docker mqtt/iot_backend vẫn healthy, không restart; private header ignored,
   diff check PASS; không commit/flash hay sửa global OpenCode/state. Next:
   nạp bản M4i đúng chip/cổng, xem distance/control ready/PUBACK, thử mất mạng/
   broker/reconnect và F2/F3/Echo/SNTP/soak; real dataset/calibration vẫn mở.
@@ -584,7 +584,7 @@ Echo không chạy — chỉ là log đã bị compile-out.
 
 | Task trực tiếp | Phạm vi file | Tiêu chí/lệnh kiểm tra | Trạng thái |
 |---|---|---|---|
-| M4j:orchestrator | `iot_code/esp32/{sdkconfig.defaults,sdkconfig}`, `main/{app_main.c,telemetry.c}`, PLAN/MEMORY | Option log mặc định 1000 ms; fallback khi sdkconfig cũ thiếu; log task startup; full pytest; build S3/ESP32 không warning/error | done (source/config/build); chưa flash bản M4j |
+| M4j:orchestrator | `firmware/esp32/{sdkconfig.defaults,sdkconfig}`, `main/{app_main.c,telemetry.c}`, PLAN/MEMORY | Option log mặc định 1000 ms; fallback khi sdkconfig cũ thiếu; log task startup; full pytest; build S3/ESP32 không warning/error | done (source/config/build); chưa flash bản M4j |
 
 - Thêm `CONFIG_HRC_DISTANCE_LOG_PERIOD_MS=1000` vào `sdkconfig.defaults` và
   sdkconfig hiện tại. `sdkconfig` là ignored/runtime file; defaults bảo đảm
@@ -613,7 +613,7 @@ phạm vi AI nhất quán.
 
 | Task trực tiếp | Phạm vi file | Tiêu chí/lệnh kiểm tra | Trạng thái |
 |---|---|---|---|
-| M18:orchestrator | `backend/sessions/manager.py`, `backend/ingestion/{mqtt_listener.py,service.py,store.py}`, `tests/{test_sessions.py,test_ingestion.py}`, PLAN/MEMORY/docs | Raw commit trước MQTT callback return; compute không chạy trên paho thread; START/STOP mẫu bay chờ boundary; fallback stop không bỏ raw pending; full pytest | done |
+| M18:orchestrator | `iot_backend/sessions/manager.py`, `iot_backend/ingestion/{mqtt_listener.py,service.py,store.py}`, `tests/{test_sessions.py,test_ingestion.py}`, PLAN/MEMORY/docs | Raw commit trước MQTT callback return; compute không chạy trên paho thread; START/STOP mẫu bay chờ boundary; fallback stop không bỏ raw pending; full pytest | done |
 
 - `MqttListener` dùng một worker tuần tự cho compute. Callback MQTT gọi
   `IngestionService.accept_message()` để validate và commit raw trước, sau đó
@@ -643,3 +643,328 @@ phạm vi AI nhất quán.
   từng scenario/target, hiệu chuẩn HC-SR04, export các session đã đóng, rồi
   train/evaluate LSTM cùng persistence/constant-velocity/RF trên split theo
   session.
+
+
+## 15. M19 — runner thu dataset có tín hiệu START/STOP (2026-10-08)
+
+**Trạng thái: done (code + tests). Người dùng duyệt triển khai trực tiếp,
+không gọi agent. Lượt thu mới trên bo cần người vận hành thực hiện.**
+
+Mục tiêu: chọn kịch bản cho từng lượt, gửi START/STOP xuống ESP32 qua iot_backend,
+và xuất dữ liệu có nhãn mà không nhập curl hay gán nhãn lại raw chạy nền.
+
+| Task trực tiếp | File | Tiêu chí | Trạng thái |
+|---|---|---|---|
+| M19:orchestrator | scripts/collect_dataset.py, configs/collection.example.yaml, tests/test_collect_dataset.py, docs/data-collection.md, README.md, docs/background-dataset-collection.md, PLAN.md, PROJECT_MEMORY.md | Runner HTTP/Enter hoặc duration, START/STOP qua iot_backend, export nhãn và manifest, delayed telemetry/timeout/Ctrl+C, loader/windowing compatibility | done (software); hardware run mở |
+
+- Interactive mode: chọn scenario/target/tốc độ/ghi chú; Enter để START rồi
+  Enter để STOP. Single-run CLI có các nhãn tương tự. YAML có defaults và
+  repetitions; file mẫu 60 lượt, 30 s/lượt và dừng chờ người vận hành trước
+  mỗi START. Non-interactive yêu cầu duration hữu hạn >0 ở mọi lượt.
+- Runner dùng API8001, không mở Store hoặc MQTT listener riêng. Backend gửi
+  session_start/session_stop QoS1 tới topic control; ACK ESP32 chốt boot/sequence.
+  Firmware đo liên tục. Nhãn scenario/target lưu ở iot_backend; speed/ghi chú giữ
+  trong manifest và speed_level trong từng dòng dataset.
+- Mặc định yêu cầu START có device_ack; thiếu ACK thì đóng session vừa mở và
+  hủy lượt trước khi báo thực hiện động tác. --allow-db-fallback cho phép thu
+  nhưng đánh dấu WARN. API chỉ công khai nguồn START, nguồn STOP lưu
+  not_exposed_by_api; không báo giả STOP đã nhận ACK.
+- Export chờ đủ mọi sequence trong boundary, kể cả mẫu giữa tới sau STOP ACK,
+  timeout hữu hạn mặc định 8 s. Kiểm tra JSON schema, nguồn boot, device,
+  boundary, duplicate, invalid, boot_change và nhịp từ configs/model.yaml.
+- Ghi raw export, JSONL từng session, dataset.jsonl của đúng các lượt runner
+  đã thu và manifest atomic/SHA-256. Nhãn JSONL gồm session_label, scenario,
+  target_type, speed_level, synthetic=false; không thay payload MQTT gốc.
+  Schema/provenance sai được giữ raw nhưng không gắn nhãn real. PASS/WARN
+  cùng có trong dataset tổng; phải xem manifest trước khi chọn dữ liệu train.
+- Ghi trạng thái request + spec trước POST. Không replay POST sau timeout;
+  manifest ghi needs_reconciliation để tra session bằng GET. Ctrl+C lúc
+  thực hiện động tác đóng/xuất lượt đang sở hữu, đánh dấu interrupted.
+- Mỗi lần chạy mặc định tạo output riêng; không ghi đè/nối vào thư mục đã có
+  dữ liệu. Session ID chỉ ASCII an toàn, dài <=63 theo buffer firmware.
+- Hardware smoke ngày 2026-10-08 xác nhận ACK START có thể đến sau 2 giây;
+  trace broker cho thấy lệnh tới đúng topic nhưng ACK về muộn. Đã nâng mặc định
+  `HRC_ACK_TIMEOUT_S` lên 8 giây trong Compose/iot_backend/docs và thêm test cấu
+  hình; iot_backend runtime đã recreate với timeout 8 giây. Đây chưa phải bản sửa
+  backlog: lượt thu tiếp và probe trực tiếp vẫn tái hiện ACK trễ hơn 8 giây
+  (xem M4k). Chưa có bằng chứng quy lỗi này cho reconnect/control subscription.
+
+Bằng chứng:
+
+```text
+.venv/bin/python -m pytest tests/test_collect_dataset.py -q
+30 passed, 2 dependency deprecation warnings
+.venv/bin/python -m pytest tests/ -q
+409 passed, 11 skipped, 2 dependency deprecation warnings
+.venv/bin/python -m scripts.collect_dataset --help
+PASS
+git diff --check
+PASS
+```
+
+Integration test dùng HTTP adapter tới FastAPI endpoints thật, SessionManager
+và MqttControlTransport thật; thiết bị ACK giả lập, payload/control schema thật.
+Test giữ telemetry cuối đến sau STOP ACK và xác nhận nhãn/boundary đúng. Sáu
+lượt cùng boot load được vào LSTM split theo session và không ghép window qua
+lượt. Test không gửi control thật hoặc tạo session mới trong DB production.
+
+Hardware smoke ngày 2026-10-08: một session `approach/person` nhận
+`device_ack`, export 266 mẫu `quality=PASS`, sequence 5257..5522, không thiếu
+sequence/invalid/timing error. Hai lượt sau tái hiện ACK muộn với timeout 2 giây;
+trace xác nhận ACK về sau khi iot_backend đã fallback. Không tạo artifact/model
+production và không commit. Checkpoint OpenCode là dữ liệu cũ; phiên Codex
+không có tool checkpoint nên giữ nguyên file plugin runtime.
+
+Next: người vận hành chạy runner, chọn target thực, thực hiện từng kịch bản,
+kiểm tra manifest và bổ sung session đo độc lập trước train/evaluate.
+
+
+## 16. M4k — ACK chậm sau telemetry backlog (2026-10-08)
+
+**Trạng thái: done (source/native/build ESP32-S3 + ESP32). Kiểm chứng trên bo
+sau flash còn mở. Tiếp tục sửa trực tiếp trong phạm vi lỗi thu nhiều lượt.**
+
+| Task trực tiếp | File | Tiêu chí | Trạng thái |
+|---|---|---|---|
+| M4k:orchestrator | firmware/esp32/main/wifi_mqtt.c, tests/{test_firmware_network.py,firmware/network_harness.c}, scripts/collect_dataset.py, tests/test_collect_dataset.py, firmware README, docs/data-collection.md, PLAN/MEMORY | ACK vượt SDK FIFO; telemetry 10 Hz/6 lượt START/STOP; giữ QoS1/mailbox zero-wait/reserve; chỉ trở lại menu khi session lỗi đã xác nhận closed; full pytest/build S3/ESP32 | done (source/native/build S3+ESP32); flash/device acceptance mở |
+
+- Lượt `run_20261008_053436_8c7658` PASS 321 mẫu, sequence20877..21197;
+  lượt tiếp `run_20261008_053537_bc30a8` thất bại với timeout8s. Log bo:
+  wifi=1/mqtt=1/control=1, pending16, outbox~23KiB, ESP_ERR_NO_MEM/drop.
+- Probe MQTT trực tiếp (ID chẩn đoán riêng, không mở session iot_backend): broker
+  PUBACK START1ms nhưng device ACK10.686s; STOP PUBACK42ms/device ACK5.2s.
+  Assertion device ACK<8s FAIL. Không sửa/xóa dataset thật hoặc DB session.
+- Source esp-mqtt1.0.0: enqueue nối FIFO QUEUED, không đánh thức poll; SDK
+  gửi một queued message/vòng rồi poll receive (mặc định tới1s). Ưu tiên RAM
+  trước đây không vượt được telemetry đã nằm trong FIFO SDK. Mô hình drain
+  chậm bắt được START quá8s và ACK bị chặn sau80 packet; cả hai test RED
+  trước sửa. Chưa xác định đầy đủ độ trễ TCP/radio thực trên bo.
+- Worker gọi esp_mqtt_client_publish trực tiếp cho telemetry và ACK; ACK được
+  chọn trước mỗi lần gửi, không chờ FIFO telemetry cũ. Giữ QoS1/outbox,
+  zero-wait producer/mailbox16+4, byte reserve, SUBACK gate và PUBACK watchdog.
+  Không gọi SDK/socket từ task đo hoặc callback MQTT.
+- Menu collector tiếp tục sau CollectionError chỉ khi API đã xác nhận STOP
+  closed cho session đang sở hữu. Timeout START/STOP vẫn thoát, giữ
+  needs_reconciliation và không retry POST. Regression RED→GREEN cho lỗi
+  thiếu START ACK rồi lượt kế tiếp PASS; test timeout START/cleanup STOP giữ
+  đúng một POST mỗi loại và không mở thêm lượt.
+- Validation: full pytest415 passed/11 skipped/2 dependency warnings;
+  firmware network/Wi-Fi/telemetry targeted43 passed. Native regression mô
+  phỏng6 lượt30s cùng telemetry10Hz, đủ2106 telemetry và12 ACK, không drop/
+  backlog/reconnect. Đây là kiểm chứng mô phỏng, chưa phải kết quả radio thật.
+- ESP-IDF6.0.1 build S3 PASS: binary0xe8870, app partition còn9%; SHA256
+  acf09a7918776c72524c9520a19d7418a82b2ac6178bcc1c6f9c94a75da02d3b.
+  ESP32 PASS trong /tmp/hrc-mqtt-esp32-build, binary0xe59f0/còn10%.
+  ESP32 configure có2 CMake warning sinh ROM gdbinit do thiếu
+  ESP_ROM_ELF_DIR; không có compiler warning/error. Restore lock targetS3,
+  không đổi sdkconfig/credentials, không flash và không commit.
+- Hardware còn mở: monitor người dùng đang giữ /dev/ttyACM0. Cần thoát monitor,
+  flash binary S3 mới rồi đo lại latency START/STOP và thu ít nhất5 lượt30s.
+  Một lượt PASS không đủ nghiệm thu; không tăng timeout để che backlog.
+
+
+## Migration cấu trúc repo — 2026-10-08
+
+- Đổi package Python `backend` thành `iot_backend`, `iot_code` thành `firmware`.
+- Hợp nhất source repo clone vào `blockchain_api`, `smart_contracts`, `dashboard`; docs tại `docs/blockchain`.
+- Repo clone cũ và cache firmware được chuyển ra `/tmp/blockchain-layout-migration-20261008`; Git cha giữ nguyên.
+- Compose service/target `iot_backend`; volume SQLite giữ tên vật lý `blockchain-hrc_backend_data`.
+- Kiểm tra: Python 415 passed/11 skipped; Node 46 passed; Hardhat compile PASS, 49 passed; Compose config PASS.
+- Hai pipeline IoT và blockchain chưa tích hợp tự động; không commit/push trong migration.
+
+## R1 — Train/evaluate dataset real và xuất hình (2026-10-09)
+
+**Trạng thái: done cho xử lý dữ liệu, train và báo cáo offline.** Người dùng
+đồng ý giữ số đo thực tế dù các session gần cảm biến nằm dưới Sp, và yêu cầu
+preprocess/train/đánh giá F1 rồi tạo ảnh. Thực hiện trực tiếp trong Codex.
+
+| Task | Phạm vi file | Tiêu chí | Evidence |
+|---|---|---|---|
+| R1:orchestrator | scripts/{prepare_real_dataset,evaluate_all_horizons,export_ai_predictions,plot_ai_results}.py, tests/test_prepare_real_dataset.py, PLAN.md, PROJECT_MEMORY.md; data/processed, data/results, ai_model/artifacts (ignored) | Giữ telemetry và invalid thật; chia session/scaler train-only; train LSTM/RF; evaluate test + baseline; PNG/CSV/PDF có support và N/A đúng | Dataset 8.062 rows/22 session; 7.716 windows; bundle data/results/real-20261009/README.md và verification.json |
+
+- Dataset SHA256 `6680a9e34c5daa1d3066c7d7431f1e31c2fe07f2d498354fb1b51ead5ba8edf4`.
+  15 file real gồm pilot lịch sử và collection 08/09-10; 10 invalid giữ trong
+  raw, cắt window; không gap/jitter. Kiểm trùng sample key và phép đo theo
+  device/timestamp/nội dung; đối soát mọi telemetry field với nguồn PASS.
+  Nhãn mdeium đã được sửa trong JSONL nguồn; 5 manifest speed lệch JSONL được
+  ghi audit, lấy label từng dòng nhất quán, giữ file nguồn.
+- Seed42 mặc định: train/val/test 16/3/3 session; 5812/878/1026 windows.
+  LSTM21 epochs, best11. Test MAE mean14.954688mm/RMSE mean27.797813mm.
+  RF15.933874/30.961428mm; persistence13.996101/30.503347mm;
+  constant-velocity17.850921/37.240893mm. Test0crossing nên F1/recall N/A.
+- Seed18 là thử nghiệm **thăm dò**, chọn sau kiểm tra event coverage, không
+  thay kết quả seed42. Train/val/test5517/1027/1172 windows; LSTM39epochs,
+  best29. Test3crossing, LSTM MAE18.529942mm/RMSE40.494399mm. LSTM/RF có
+  3TPepisode/0FP, precision=recall=F1offline1.0, lead~100ms trên 100–500ms.
+  Baseline không cảnh báo: recall0, precision/F1N/A theo evaluator.
+- Đây là F1 trước debounce. Đã chạy `EventDetector` thật trong SQLite
+  :memory: với dự báo test, stale=false: seed18 LSTM/RF3raw warning points
+  → **0PREDICTED_WARNING confirmed** do history2/3 và CLEAR chỉ1mẫu trước
+  crossing. Không trình bày F1offline1.0 như khả năng cảnh báo live.
+- Artifact riêng: ai_model/artifacts/{lstm-real-20261009,rf-real-20261009,
+  lstm-real-event-20261009,rf-real-event-20261009}; TF2.20/Keras3.15.1CPU.
+  Model loader/schema/hash, shape(10,2)→(5), scaler train-only, split
+  disjoint đã xác minh; MAE/RMSE tính lại từ predictions.csv khớp report.
+- Bundle data/results/real-20261009: dataset/config snapshots, audit,
+  models/test predictions/JSON, 5CSV, 20PNG300dpi/20SVG, 2PDF10trang;
+  ZIP data/results/real-20261009-results.zip. Matplotlib3.11.2 ở /tmp,
+  giữ môi trường backend không TF; không deploy runtime hoặc commit.
+- Verification: merger6passed; preprocessing/evaluator101passed/1skip ở
+  host; nhóm RF/data89passed; TFartifact/evaluator42passed trong Docker
+  (Keras NumPy deprecation warnings). `git diff --check` PASS.
+- Giới hạn: một thiết bị/các session cùng buổi, windows chồng lấn, target là
+  số đo HC-SR04 không phải khoảng cách chuẩn, chỉ3testevents; sensor_check
+  nằm train. Dữ liệu gần vẫn dùng theo yêu cầu người dùng. Báo cáo ghi rõ
+  split18 exploratory, signal spikes/coverage và tác động debounce.
+
+Next: dùng bundle làm kết quả thực nghiệm offline; nếu cần đánh giá vận hành,
+thu test sessions có đoạn CLEAR đủ dài/nhãn khoảng cách tham chiếu và replay
+runtime đã debounce. Checkpoint OpenCode cũ giữ nguyên vì Codex không có tool
+checkpoint; không tạo ID hoặc cập nhật task state giả.
+
+## Chọn LSTM runtime và dataset bổ sung — 2026-10-09
+
+- Theo yêu cầu người dùng, runtime mặc định chuyển sang LSTM artifact
+  `lstm-real-20261009`; Docker target mặc định là `ai`, env mẫu và README/docs
+  không còn chọn RF. Hai thư mục artifact RF real đã xóa; RF source và metric
+  lịch sử trong bundle giữ lại để truy xuất đối chứng, không được nạp runtime.
+- Recreate Docker AI ban đầu gặp bind cổng 8001 còn do container cũ; sau dừng
+  container cũ và nối container mới vào network `blockchain-hrc_default`, API
+  khỏe. `GET /health`: `status=ok`, `mqtt=true`, `model_type=lstm`,
+  `model_available=true`. Artifact loader pass; inference smoke 10 mẫu trả
+  `OK`, đủ 5 horizon. SQLite volume không bị xóa.
+- Đây là runtime thử nghiệm/báo cáo, chưa chứng nhận an toàn: test seed42 không
+  có crossing; seed18 exploratory có 3 crossing nhưng detector debounce xác
+  nhận 0 `PREDICTED_WARNING`. Safety status vẫn là lớp độc lập; model lỗi không
+  tự fallback sang RF.
+- `docs/data-collection.md` thêm ma trận test mới: 20 approach crossing độc lập,
+  10 stop-before-Sp, 10 stationary-clear, 10 oscillation quanh Sp, 5 recede,
+  và tối thiểu 5 lượt cho từng mã sensor error quan sát được. Giữ nguyên các
+  session test ở một ngày/buổi khác, có ít nhất 20 crossing và 20 session âm,
+  đo ground truth độc lập; fault test tách khỏi F1 crossing vì LSTM hiện không
+  phân loại lỗi sensor.
+
+
+## M20 — Thưởng/phạt session và LSTM trên ESP32-S3 (2026-10-09)
+
+**Trạng thái: đang triển khai; người dùng đã yêu cầu triển khai và flash trực tiếp.**
+Tiếp tục phần code đã bàn giao, giữ dữ liệu và thay đổi có sẵn trong workspace.
+
+| Task | Phạm vi | Tiêu chí | Trạng thái |
+|---|---|---|---|
+| M20:orchestrator-firmware | firmware/esp32/main/{lstm_inference.c,lstm_inference.h,telemetry.c,Kconfig.projbuild}, tests/firmware/lstm_harness.c, tests/test_firmware_lstm.py, scripts/generate_esp32_lstm.py | Trọng số/scaler đúng artifact; parity Keras; invalid/gap/session reset; build S3, flash ACM0, serial LSTM OK | software done; flash pending |
+| M20:orchestrator-policy | iot_backend/{rewards,safety,sessions,main.py}, configs/safety-square.yaml, tests/test_rewards_policy.py, tests/test_safety.py | Boundary mô phỏng 40 mm; lịch sử 440 mm giữ nguyên; đủ raw/processed/boundary trước thưởng; lỗi không phạt, vi phạm không bị xóa | done (policy/API) |
+| M20:orchestrator-chain | smart_contracts/contracts/HRC{RewardToken,SessionRewards}.sol, smart_contracts/test/HRCReward.js, smart_contracts/scripts/deploy_reward.js, blockchain_api/{rewardService,rewardPolicy,server}.js, scripts/session reward runner + tests | Ký quỹ 2, thưởng 3, phạt 2; quỹ 1000; 1 lần/ví/ngày; idempotent API; deploy/smoke local và kết nối session IoT thật | done local; public-chain deploy pending |
+| M20:orchestrator-report | scripts/verify_esp32_lstm.py, data/results/esp32-lstm-20261009 (ignored), docs/blockchain/session-rewards.md, firmware README, README, PLAN/MEMORY | PNG/SVG/PDF dự báo/parity/metric/coin từ kết quả thật, provenance + các giới hạn | done local evidence; hardware flash pending |
+
+Checkpoint OpenCode trong repo là lịch sử cũ; phiên Codex hiện không có tool
+checkpoint. Theo dõi công việc này tại PLAN/MEMORY và artifacts kiểm chứng,
+không tạo session ID hoặc evidence plugin giả.
+
+
+## R2 — Chốt LSTM-only và đánh giá dataset real 2026-10-10
+
+**Trạng thái: done cho xử lý offline và đồng bộ runtime phần mềm.**
+
+- Dataset canonical: `data/processed/real-20261010/dataset.jsonl`, 12.820 mẫu /
+  49 session; dataset train LSTM: `lstm-dataset.jsonl`, 12.361 mẫu / 47 session.
+- Session split cố định trước windowing: train/validation/test = 33/7/7 session,
+  7.046/2.740/1.902 windows. `sensor_check` được giữ riêng trong
+  `sensor-fault-dataset.jsonl`.
+- Ngưỡng đánh giá bộ dữ liệu mới: `Sp = 0.04 m = 40 mm`. Tập test có 82 crossing
+  xuống/chạm Sp, nên event metrics có support.
+- Model triển khai duy nhất là LSTM. Persistence và constant-velocity chỉ là
+  baseline offline. CLI evaluator chỉ nhận `--model-type lstm`; RF trainer,
+  artifact/report RF và đường dẫn runtime cũ đã được loại khỏi active pipeline.
+- Kết quả 500 ms: LSTM MAE 6,46 mm, RMSE 10,68 mm; precision N/A, recall 0,
+  F1 0, miss rate 1. F1 bằng 0 vì test có event nhưng LSTM không tạo warning
+  episode nào; không trình bày MAE thấp như bằng chứng cảnh báo an toàn.
+- Artifact active: `ai_model/artifacts/lstm-real-20261010/`. Firmware weight/scaler
+  đã regenerate theo model/scaler hash trong artifact; native parity test dùng
+  vector của artifact này.
+- Report/ảnh active: `data/results/lstm-only-20261010/`; gồm JSON, CSV, PNG, SVG
+  và PDF. Artifact/report cũ ngày 09/10 và RF report không còn trong thư mục active.
+- Verification: `.venv/bin/python -m pytest -q` = 417 passed, 12 skipped, 2 warnings;
+  Docker image `blockchain-hrc:ai` build PASS; `/health` runtime trả
+  `model_type=lstm`, `model_available=true`. Flash/soak trên board thật vẫn là
+  gate phần cứng riêng.
+
+
+## R3 — Train/test lại synthetic qua pipeline LSTM chuẩn — 2026-10-10 (done)
+
+Người dùng đã yêu cầu train/test lại; thực hiện trực tiếp trong Codex.
+
+| Task | Phạm vi file | Tiêu chí và kiểm tra |
+|---|---|---|
+| R3:orchestrator | PLAN.md, PROJECT_MEMORY.md, docs/synthetic-square40-benchmark.md; artifact/report benchmark (ignored) | Config chuẩn; split/scaler train-only; test + detector 2/3; ảnh/bundle có provenance; verifier, pytest synthetic và diff-check PASS |
+
+- Đã dùng `data/synthetic/square-40mm-20261010/dataset.jsonl` với `synthetic=true`,
+  split cố định 280/60/60 session và hash
+  `0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8`.
+- Đã train bằng đúng `configs/model.yaml` vào artifact riêng
+  `ai_model/artifacts/lstm-benchmark-square40-20261010`; không ghi đè artifact
+  real/runtime. Scaler fit train-only; test có 13.560 windows. Train 11 epoch;
+  EarlyStopping lấy checkpoint val_loss tốt nhất ở epoch 1, giữ nguyên đường
+  học và giới hạn validation trong README.
+- Kết quả test horizon 500 ms: MAE trung bình 2,56 mm, RMSE trung bình 3,24 mm;
+  51 crossing; Precision 1,000, Recall 0,882, F1 0,9375 trước debounce.
+  Replay detector 2/3: Precision 1,000, Recall 0,647, F1 0,7857, miss rate
+  0,3529, lead time trung bình 124,2 ms.
+- Đã xuất `evaluation-500ms.json`, `evaluation-all-horizons.json`,
+  `evaluation-debounced.json`, `predictions.csv`, `verification.json`,
+  README, 10 PNG + 10 SVG + PDF và ZIP report trong
+  `data/results/lstm-benchmark-square40-20261010/`.
+- Kiểm tra: `tests/test_synthetic_square_dataset.py` 8 passed; verifier xác nhận
+  synthetic labels, dataset/model hash, split không chồng session, metric tính
+  lại từ CSV và 30 file real/runtime không đổi; `git diff --check` PASS.
+- Giới hạn báo cáo: đây là benchmark synthetic chạy qua pipeline như dữ liệu đo,
+  nhưng không được trình bày là phép đo ESP32/HC-SR04 hay bằng chứng an toàn
+  phần cứng. Kết quả real vẫn ở `data/results/lstm-only-20261010/`.
+
+
+## M20 — Bằng chứng triển khai local blockchain + edge AI (2026-10-10)
+
+**Trạng thái: software deployment PASS; flash phần cứng chưa thực hiện vì không có cổng serial.**
+
+- Hardhat node đang chạy tại `http://127.0.0.1:8545`, chain ID `31337`. Đã redeploy sạch:
+  `HRCSafetyLog=0x5FbDB2315678afecb367f032d93F642f64180aa3`,
+  `HRCRewardToken=0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`,
+  `HRCSessionRewards=0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0`.
+- Contract tests: **64 passing**. Blockchain API tests: **49 passing**.
+- Reward smoke với beneficiary khác penalty treasury: `REWARDED`, `REWARD_DAILY_LIMIT`,
+  `PENALTY`, `NO_REWARD`, duplicate retry idempotent; số dư beneficiary `20 → 21 HRC`,
+  quỹ `1000 → 997 HRC`. Evidence: `data/results/edge-blockchain-20261010/reward-smoke.json`.
+- Blockchain API live chạy tại `http://127.0.0.1:3000`; `GET /` pass và `POST /api/session-outcome`
+  settle thành công qua HTTP với transaction ở block 17. Evidence nằm trong
+  `data/results/edge-blockchain-20261010/api-*.json`.
+- Runtime IoT/edge vẫn chỉ dùng artifact LSTM thật `ai_model/artifacts/lstm-real-20261010`.
+  SHA-256 model `6713054121907c92645924d7e34a13db10867d19871fa161fe747f1fab1a9f0b`,
+  scaler `164c42206f8214f0be20d8788b018a2fcb46c0ef132b3dc53f19b2ff43457734`, threshold
+  `Sp=40 mm`, input `(10,2)`, output `(5,)`.
+- Native parity: **7 passed, 1 skipped**; generator `--check` pass. ESP-IDF **6.0.1**
+  target ESP32-S3 build pass, binary `firmware/esp32/build/hrc_esp32.bin`, app còn 7%.
+- Không thấy `/dev/ttyACM*` hoặc `/dev/ttyUSB*` trong lần triển khai; chưa claim flash,
+  serial LSTM, HC-SR04 wiring, Wi-Fi/MQTT soak hay session real-to-chain tự động.
+- Hình reward và report máy đọc: `data/results/edge-blockchain-20261010/reward-policy.{png,svg}`
+  và `data/results/edge-blockchain-20261010/deployment-report.json`.
+
+Lệnh xác minh chính:
+
+```bash
+cd smart_contracts && npm test
+cd ../blockchain_api && npm test
+cd .. && .venv/bin/python -m pytest tests/test_firmware_lstm.py -q
+cd firmware/esp32 && source /home/lucas/.espressif/v6.0.1/esp-idf/export.sh && idf.py build
+```
+
+
+## M21 — Hoàn thiện demo IoT → reward → dashboard (2026-10-10)
+
+**Đã hoàn tất và được kiểm chứng trực tiếp ngày 2026-10-10. Checkpoint OpenCode không khả dụng trong phiên này.**
+
+- `M21:orchestrator-api`: API đọc cấu hình deployment, HRC balance/pool, session và reward transactions; start idempotent bằng operator, giữ Bearer auth cho write.
+- `M21:orchestrator-bridge`: enrolment các session mới, đóng session → chờ raw/processed coverage → hash evidence → settlement; lưu outbox và retry cùng payload sau restart. Không tự stake/settle dữ liệu lịch sử.
+- `M21:orchestrator-dashboard`: giao diện Session Rewards, địa chỉ chain động, live distance/LSTM, trạng thái pending/error, refresh tự động; không đưa key/token vào browser.
+- `M21:orchestrator-verify`: regression Python/Node/Hardhat, smoke HTTP/MQTT local có provenance, screenshot PNG, lệnh demo trong docs, cập nhật PLAN/MEMORY; bổ sung test durable outbox cho lỗi/retry/idempotency.
+
+Tiêu chí: start giữ 2 HRC trước session; clear đủ coverage trả stake và xét 3 HRC/ngày; vi phạm valid mất 2; fault/incomplete trả stake; retry không trùng thanh toán; dashboard đọc số dư, evidence, tx/block đúng chain 31337. LSTM runtime real giữ nguyên. **M21: done.**

@@ -27,7 +27,7 @@
     "measured_at": {
       "type": ["string", "null"],
       "format": "date-time",
-      "description": "ISO-8601 UTC tại lúc bắt đầu đo; null khi chưa sync SNTP (không thay bằng giờ backend)."
+      "description": "ISO-8601 UTC tại lúc bắt đầu đo; null khi chưa sync SNTP (không thay bằng giờ iot_backend)."
     },
     "time_synced": { "type": "boolean" },
     "distance_mm": {

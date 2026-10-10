@@ -1,4 +1,4 @@
-"""Kiểm thử M5a: trích cửa sổ từ rows (windows.py) + feature vector (features.py).
+"""Kiểm thử trích cửa sổ từ rows (windows.py).
 
 Fixture dựng tay list dict (không cần DB); một test phụ dùng sqlite3.Row
 thật để chứng minh helper ``_get`` hỗ trợ cả hai kiểu input.
@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ai_model.features import FEATURE_NAMES, feature_names, window_to_features
 from ai_model.windows import (
     Window,
     WindowConfig,
@@ -305,38 +304,13 @@ def test_feature_order_oldest_to_newest(config):
     assert all(a < b for a, b in zip(feats, feats[1:]))
 
 
-def test_window_to_features_contract(config):
-    """window_to_features: đúng thứ tự d0..d9, đúng tên fallback/config."""
-    windows, _ = extract_windows(_chain(15), config)
-    feats = window_to_features(windows[0])
-    assert feats == windows[0].features
-    assert len(feats) == len(FEATURE_NAMES)
-
-    assert FEATURE_NAMES == [f"d{i}" for i in range(10)]
-    assert feature_names() == FEATURE_NAMES
-    assert feature_names(None) == FEATURE_NAMES
-    assert feature_names({"features": [f"x{i}" for i in range(10)]}) == [
-        f"x{i}" for i in range(10)
-    ]
-    with pytest.raises(ValueError, match="features"):
-        feature_names({"features": ["a", "b"]})
-
-
-def test_window_to_features_rejects_wrong_length():
-    window = Window(
-        features=[0.0] * 9,
-        targets=[0.0] * 5,
-        meta=None,  # type: ignore[arg-type] — độ dài sai phải bị chặn trước khi dùng meta
-    )
-    with pytest.raises(ValueError, match="features"):
-        window_to_features(window)
 
 
 # ------------------------------------------------------------- sqlite3.Row
 
 
 def test_extract_from_sqlite3_rows(config):
-    """Input sqlite3.Row (shape như backend/ingestion/store) hoạt động như dict."""
+    """Input sqlite3.Row (shape như iot_backend/ingestion/store) hoạt động như dict."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute(

@@ -1,58 +1,9 @@
-"""Đánh giá model v1 + baseline trên split test (M5d2) — PLAN.md mục 4.
+"""Đánh giá offline LSTM và các baseline trên split test của artifact.
 
-Pipeline ``evaluate_models`` (API hàm + CLI ``python -m ai_model.evaluate``):
-
-1. Nạp YAML cấu hình (``configs/model.yaml``) → ``WindowConfig`` + seed;
-   ``load_model`` (train.py) nạp artifact RF từ thư mục do operator chỉ định
-   (đường dẫn cấu hình tin cậy — kiểm manifest + feature names trước khi dùng).
-2. ``load_jsonl_dataset`` (prepare.py) đọc JSONL; mỗi row gắn
-   ``session_id = meta["session_label"]`` (khớp train.py; thiếu nhãn →
-   ``split_by_session`` từ chối ở bước sau, không fallback im lặng).
-3. ``extract_windows`` → cửa sổ; ``split_by_session`` trên session của cửa sổ
-   (ratios mặc định 70/15/15, seed từ config) → session sets. Cùng dataset +
-   cùng seed nên ra đúng split đã dùng khi train; CHỈ split test được dùng
-   để báo cáo (test không tham gia train/chọn hyperparameter).
-4. MAE từng horizon cho 3 mô hình trên mọi cửa sổ test: RF (dự báo cả batch
-   một lần bằng ``pandas.DataFrame(..., columns=FEATURE_NAMES)`` — khớp
-   ``feature_names_in_`` của model, tránh warning sklearn), persistence
-   (d(t) lặp) và constant-velocity (ngoại suy tuyến tính từ cửa sổ).
-5. Sự kiện + cảnh báo tính TRÊN TỪNG SESSION test (không dựng chuỗi xuyên
-   session), rồi gom episode/event của mọi session vào MỘT lần gọi
-   ``event_metrics``.
-
-Cách dựng dãy distance thực theo thời gian của một session — từ chính cửa
-sổ, KHÔNG đọc lại raw:
-
-- Mỗi cửa sổ cho các mẫu: ``features[k]`` là khoảng cách tại sequence
-  ``meta.sequence_first + k`` (k = 0..N−1); ``targets[j]`` là khoảng cách
-  tại sequence ``meta.sequence_last + target_offsets[j]``.
-- Gom mọi cặp (sequence, distance) của các cửa sổ trong session, khử trùng
-  theo sequence (``setdefault`` — giữ giá trị ĐẦU gặp; các cửa sổ liền kề
-  cùng run chia sẻ mẫu nên giá trị trùng khớp nhau). Sắp theo sequence →
-  dãy distance của session.
-- ``time_s`` của mẫu: ``WindowMeta`` không lưu ``monotonic_us`` nên suy từ
-  sequence — ``(sequence − seq_đầu) × delta_s``. Nhịp lệch tối đa
-  ``max_time_jitter_s`` (điều kiện trích cửa sổ) nên cách suy này lệch tối
-  đa jitter so với thời gian thật; mẫu lỗi/gap không nằm trong cửa sổ nào
-  nên không xuất hiện trong dãy (đoạn thời gian tương ứng bị nén).
-- Khi GOM nhiều session, time của session được cộng thêm offset tích lũy
-  (độ dài session + horizon_s + delta_s) để các session KHÔNG chồng khoảng
-  thời gian. Lý do: ``event_metrics`` ghép Episode với Event theo cửa sổ
-  ``[start, end + horizon_s]`` — nếu các session cùng bắt đầu từ ~0 thì một
-  event của session này có thể khớp nhầm episode của session khác (ghép tùy
-  ý với sự kiện xa hơn — điều PLAN.md mục 4 cấm). Trong phạm vi một session,
-  time vẫn đúng ``(sequence − seq_đầu) × delta_s``.
-
-Cảnh báo (warning points → episodes) tính cho dự báo RF: cửa sổ i cảnh báo
-iff current = d(t) (phần tử CUỐI của features; ``features[9]`` với
-window_size = 10) đang CLEAR và min dự báo [0..horizon_index] ≤ Sp — đúng
-định nghĩa ``ai_model/events.py``. Baseline chỉ đối chiếu MAE, không tham
-gia phát cảnh báo.
-
-Không bịa số liệu: mọi giá trị lấy từ tính toán thật trên split test; không
-có sự kiện → các trường tương ứng ``None`` như ``event_metrics`` quy định.
-Dataset không có nhãn synthetic → ``synthetic: false`` (không phân biệt xử
-lý, chỉ ghi nhận nguồn dữ liệu trong report).
+Evaluator chỉ chạy inference trên artifact LSTM đã phát hành. Dataset được
+tái dựng bằng danh sách session lưu trong ``split_manifest.json`` để mọi
+window test đúng với lúc train; không tự chọn lại split bằng seed. Report
+bao gồm LSTM, persistence và constant-velocity.
 """
 
 from __future__ import annotations
@@ -65,28 +16,23 @@ from statistics import fmean
 from typing import Callable, Sequence
 
 import numpy as np
-import pandas as pd
 import yaml
 
 from ai_model.baselines import predict_constant_velocity, predict_persistence
 from ai_model.events import (
     Episode,
     Event,
-    event_metrics,
     event_metrics_extended,
     find_events,
     find_warning_points,
     merge_warning_points,
 )
-from ai_model.features import FEATURE_NAMES, window_to_features
 from ai_model.prepare import (
     SPLIT_NAMES,
     build_lstm_dataset,
     load_jsonl_dataset,
-    split_by_session,
 )
 from ai_model.preprocessing import sha256_file
-from ai_model.train import load_model
 from ai_model.windows import Window, WindowConfig, extract_windows
 
 __all__ = [
@@ -95,7 +41,6 @@ __all__ = [
     "regression_metrics",
     "regression_metrics_grouped",
     "rmse_per_horizon",
-    "evaluate_models",
     "evaluate_lstm_models",
     "main",
 ]
@@ -173,7 +118,7 @@ def regression_metrics(
         }
 
     Hàm thuần, không TensorFlow/DB/I/O — M12b dùng để đánh giá dự báo
-    LSTM cùng contract với RF/baseline.
+    LSTM và hai baseline khoảng cách.
     """
     _validate_matrix_pair(predictions, targets)
     mae = mae_per_horizon(predictions, targets)
@@ -278,148 +223,6 @@ def _collect_session_samples(
     return samples
 
 
-def evaluate_models(
-    dataset_path: str | Path,
-    model_dir: str | Path,
-    config_path: str | Path = "configs/model.yaml",
-    sp_m: float = 0.44,
-    horizon_index: int = 4,
-) -> dict:
-    """Đánh giá RF + 2 baseline trên split test; trả report dict.
-
-    Tham số:
-
-    - ``dataset_path``: file JSONL sinh bởi ``scripts/synthetic_dataset.py``
-      (mỗi dòng có nhãn ``session_label`` — bắt buộc để split theo session,
-      cùng contract train.py).
-    - ``model_dir``: thư mục artifact (``model.joblib`` + ``manifest.json``)
-      do operator chỉ định — nạp qua ``load_model``.
-    - ``config_path``: YAML cấu hình (window + seed; seed dùng cho split —
-      cùng seed lúc train nên split test trùng khớp).
-    - ``sp_m``: ngưỡng an toàn Sp (mét) cho phát hiện sự kiện/cảnh báo.
-    - ``horizon_index``: chỉ số horizon (0-based theo horizons_ms) dùng cho
-      cảnh báo và lead time; mặc định 4 = horizon 500 ms của model v1.
-
-    Cách dựng dãy distance theo session + quy ước time xem module docstring.
-    Trả::
-
-        {
-          "mae": {"rf": [5], "persistence": [5], "constant_velocity": [5]},
-          "n_test_windows": int,
-          "event_metrics": {...},   # dict của ai_model.events.event_metrics
-          "sp_m": float,
-          "horizon_index": int,
-          "synthetic": bool,
-        }
-
-    Không có cửa sổ test → ValueError (không trả report rỗng bịa). Số
-    horizon mỗi dự báo = số phần tử ``horizons_ms`` của config.
-    """
-    with Path(config_path).open(encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-    window_config = WindowConfig.from_dict(config)
-    seed = int(config["random_seed"])
-    horizons_ms = window_config.horizons_ms
-    delta_s = window_config.delta_s
-    if not 0 <= horizon_index < len(horizons_ms):
-        raise ValueError(
-            f"horizon_index phải trong [0, {len(horizons_ms) - 1}] "
-            f"(horizons_ms {list(horizons_ms)}), nhận {horizon_index}"
-        )
-
-    model, _manifest = load_model(model_dir)
-
-    records = load_jsonl_dataset(dataset_path)
-    rows: list[dict] = []
-    for record in records:
-        row = dict(record["row"])
-        row["session_id"] = record["meta"].get("session_label")
-        rows.append(row)
-    synthetic = any(bool(record["meta"].get("synthetic")) for record in records)
-
-    windows, _stats = extract_windows(rows, window_config)
-    split = split_by_session(windows, seed=seed)
-    test_sessions = split["test"]
-    test_windows = [w for w in windows if w.meta.session_id in test_sessions]
-    if not test_windows:
-        raise ValueError(
-            f"{dataset_path} không có cửa sổ nào thuộc split test — "
-            "không có gì để đánh giá"
-        )
-
-    # Feature/target của mọi cửa sổ test (thứ tự extract_windows).
-    x_rows = [window_to_features(w) for w in test_windows]
-    y_rows = [[float(t) for t in w.targets] for w in test_windows]
-
-    # RF dự báo cả batch một lần; DataFrame với cột FEATURE_NAMES khớp
-    # feature_names_in_ của model (load_model đã kiểm manifest) → không
-    # warning sklearn "feature names".
-    frame = pd.DataFrame(x_rows, columns=FEATURE_NAMES)
-    rf_rows = [[float(v) for v in out] for out in model.predict(frame)]
-    persistence_rows = [
-        predict_persistence(f, n_horizons=len(horizons_ms)) for f in x_rows
-    ]
-    cv_rows = [predict_constant_velocity(f, delta_s, horizons_ms) for f in x_rows]
-
-    mae = {
-        "rf": mae_per_horizon(rf_rows, y_rows),
-        "persistence": mae_per_horizon(persistence_rows, y_rows),
-        "constant_velocity": mae_per_horizon(cv_rows, y_rows),
-    }
-
-    # Sự kiện + cảnh báo TRÊN TỪNG SESSION test (không gộp xuyên session).
-    offsets = window_config.target_offsets
-    horizon_s = horizons_ms[horizon_index] / 1000.0
-    by_session: dict[str, list[int]] = {}
-    for idx, window in enumerate(test_windows):
-        by_session.setdefault(window.meta.session_id, []).append(idx)
-
-    events_all: list[Event] = []
-    episodes_all: list[Episode] = []
-    time_offset_s = 0.0
-    for session in sorted(by_session):
-        # Cửa sổ của session theo thứ tự thời gian (mẫu kết thúc cửa sổ).
-        idxs = sorted(
-            by_session[session],
-            key=lambda i: (
-                test_windows[i].meta.sequence_last,
-                test_windows[i].meta.sequence_first,
-            ),
-        )
-        session_windows = [test_windows[i] for i in idxs]
-        samples = _collect_session_samples(session_windows, offsets)
-        seq_min = min(samples)
-        ordered_seqs = sorted(samples)
-        distances = [samples[s] for s in ordered_seqs]
-        times = [time_offset_s + (s - seq_min) * delta_s for s in ordered_seqs]
-        events_all.extend(find_events(distances, times, sp_m))
-
-        currents = [w.features[-1] for w in session_windows]
-        preds = [rf_rows[i] for i in idxs]
-        window_times = [
-            time_offset_s + (w.meta.sequence_last - seq_min) * delta_s
-            for w in session_windows
-        ]
-        points = find_warning_points(preds, currents, sp_m, horizon_index)
-        episodes_all.extend(merge_warning_points(points, delta_s, window_times))
-
-        # Session kế chiếm khoảng thời gian không giao cửa sổ match
-        # [start, end + horizon_s] của session này (xem module docstring).
-        session_span_s = (max(samples) - seq_min) * delta_s
-        time_offset_s += session_span_s + horizon_s + delta_s
-
-    return {
-        "mae": mae,
-        "n_test_windows": len(test_windows),
-        "event_metrics": event_metrics(
-            episodes_all, events_all, horizon_s=horizon_s
-        ),
-        "sp_m": sp_m,
-        "horizon_index": horizon_index,
-        "synthetic": synthetic,
-    }
-
-
 def _collect_events_and_episodes(
     test_windows: Sequence[Window],
     predictions_by_model: dict[str, list[list[float]]],
@@ -433,7 +236,7 @@ def _collect_events_and_episodes(
     dùng chung cho report chính và breakdown (không copy logic lệch).
 
     Cách dựng dãy distance theo session + offset thời gian giữa sessions:
-    giống ``evaluate_models`` (module docstring) — samples khử trùng theo
+    theo cùng quy tắc session-offset ở evaluator — samples khử trùng theo
     sequence từ ``_collect_session_samples``, time session cộng offset tích
     lũy (span + horizon_s + delta_s) để không match xuyên session. Warning
     points tính RIÊNG cho từng model trong ``predictions_by_model`` (cùng
@@ -502,8 +305,7 @@ def _model_metrics(
 
     Helper generic (dùng cho report chính và từng breakdown group):
     ``regression`` = ``regression_metrics`` trên targets mét của cửa sổ;
-    ``event_metrics`` = ``event_metrics_extended`` (không dùng legacy
-    ``event_metrics`` vì legacy có thể trả ``inf``). Event/Episode dựng qua
+    ``event_metrics`` = ``event_metrics_extended``. Event/Episode dựng qua
     ``_collect_events_and_episodes`` — không pool xuyên session.
     """
     y_rows = [[float(t) for t in w.targets] for w in test_windows]
@@ -583,62 +385,20 @@ def evaluate_lstm_models(
     dataset_path: str | Path,
     lstm_model_dir: str | Path,
     config_path: str | Path = "configs/model.yaml",
-    sp_m: float = 0.44,
+    sp_m: float = 0.04,
     horizon_index: int = 4,
-    rf_model_dir: str | Path | None = None,
     *,
     lstm_loader: Callable[[str | Path], tuple] | None = None,
-    rf_loader: Callable[[str | Path], tuple] | None = None,
 ) -> dict:
-    """Đánh giá OFFLINE LSTM artifact (+ baseline, + RF tùy chọn) trên đúng
-    split test của artifact — API M12b, TEST-ONLY: KHÔNG ``model.fit``,
-    KHÔNG đọc/fit train/val, KHÔNG tuning; evaluator chỉ inference + report.
+    """Đánh giá artifact LSTM và hai baseline trên đúng split test đã phát hành.
 
-    Tham số:
+    ``split_manifest.json`` là nguồn sự thật cho danh sách session của từng
+    split. Evaluator truyền danh sách đó vào ``build_lstm_dataset`` qua
+    ``session_split``; seed chỉ là metadata để đối chiếu, không được dùng để
+    chọn lại session. Dataset hash và số window vẫn phải khớp manifest.
 
-    - ``dataset_path``: file JSONL (``load_jsonl_dataset``). SHA-256 file
-      phải khớp ``manifest["dataset_sha256"]`` của artifact — lệch →
-      ``ValueError`` TRƯỚC khi tính report (chống đánh giá nhầm dataset).
-    - ``lstm_model_dir``: thư mục 5 artifact LSTM (operator tin cậy);
-      ``split_manifest.json`` cung cấp ratios, ``manifest.json`` cung cấp
-      seed + ``n_test_windows``. Split tái lập bằng ``build_lstm_dataset``
-      với ĐÚNG seed/ratios đó — session lists/counts/``n_test_windows``
-      lệch split manifest → ``ValueError`` (không âm thầm đánh giá split
-      khác seed). Chỉ ``dataset.test`` được dùng.
-    - ``config_path``: YAML cấu hình (windowing + khối lstm).
-    - ``sp_m``: ngưỡng an toàn (mét), phải hữu hạn.
-    - ``horizon_index``: 0-based theo horizons_ms, dùng cho cảnh báo/lead.
-    - ``rf_model_dir``: None = không đánh giá RF; nếu truyền, nạp RF legacy
-      (``load_model``) và đánh giá trên CHÍNH các cửa sổ test LSTM (cùng
-      session split — không tự split lại seed khác).
-    - ``lstm_loader``/``rf_loader``: test seam — callable nhận đường dẫn dir
-      và trả tuple artifact (``(model, scaler, manifest)`` /
-      ``(model, manifest)``); None → resolve loader thật bên trong hàm
-      (``ai_model.lstm_train.load_lstm_artifact`` /
-      ``ai_model.train.load_model``) để import module này không kéo
-      TensorFlow.
-
-    Test ``X`` phải ``(N,10,2)`` raw mét và ``y`` ``(N,5)`` raw mét; scaler
-    chỉ ``transform_X(test.X)`` rồi ``inverse_y`` sau predict — dự báo về
-    mét, KHÔNG round/clamp trước metric/Sp; NaN/inf trong output →
-    ``ValueError``.
-
-    Trả report JSON-safe (``json.dumps(report, allow_nan=False)`` luôn được;
-    mọi số là finite float/int hoặc None)::
-
-        {
-          "models": {"lstm" | "persistence" | "constant_velocity" [, "rf"]:
-                     {"regression": ..., "event_metrics": ...}},
-          "n_test_windows": int,
-          "test_sessions": [str],
-          "horizons_ms": [int],
-          "sp_m": float, "horizon_index": int, "synthetic": bool,
-          "breakdown": {"scenario": {...}, "target_type": {...}},
-        }
-
-    Breakdown group: metadata từ M10 ``dataset.test.session_meta``; field
-    thiếu → group ``"unknown"``; group không có Event → recall/miss None;
-    ``n_test_windows`` các group cộng đúng tổng.
+    Trả report gồm ``lstm``, ``persistence`` và ``constant_velocity`` cùng
+    regression/event metrics, breakdown theo scenario và target_type.
     """
     if not math.isfinite(float(sp_m)):
         raise ValueError(f"sp_m phải hữu hạn, nhận {sp_m}")
@@ -690,14 +450,15 @@ def evaluate_lstm_models(
             encoding="utf-8"
         )
     )
-    seed = int(manifest["random_seed"])
     ratios = split_manifest["ratios"]
+    session_split = split_manifest["sessions"]
     dataset = build_lstm_dataset(
         records,
         window_config,
         model_config=config,
-        seed=seed,
+        seed=int(manifest["random_seed"]),
         ratios=ratios,
+        session_split=session_split,
     )
 
     # Split integrity: session lists + counts từng split phải khớp split
@@ -779,29 +540,6 @@ def evaluate_lstm_models(
         ],
     }
 
-    # RF tùy chọn: đánh giá trên CHÍNH các cửa sổ test LSTM (cùng session
-    # split — không tự split lại seed khác); DataFrame cột FEATURE_NAMES
-    # khớp feature_names_in_ (không warning sklearn, không đổi RF formula).
-    if rf_model_dir is not None:
-        if rf_loader is None:
-            rf_loader = load_model
-        rf_model, rf_manifest = rf_loader(rf_model_dir)
-        if rf_manifest.get("dataset_sha256") != dataset_hash:
-            raise ValueError("RF dataset_sha256 không khớp; train RF trên cùng dataset trước khi so sánh")
-        for name in SPLIT_NAMES:
-            rf_sessions = rf_manifest.get("split_manifest", {}).get("sessions", {}).get(name)
-            if rf_sessions is None or sorted(rf_sessions) != sorted(split_manifest["sessions"][name]):
-                raise ValueError(f"RF split {name} khác LSTM — không so sánh khi RF có thể thấy test")
-        for key, value in (("window_size",window_config.window_size),
-                           ("delta_s",delta_s),("horizons_ms",list(horizons_ms))):
-            if rf_manifest.get(key) != value:
-                raise ValueError(f"RF artifact {key} không khớp evaluator")
-        x_rows = [window_to_features(w) for w in test.windows]
-        frame = pd.DataFrame(x_rows, columns=FEATURE_NAMES)
-        predictions_by_model["rf"] = [
-            [float(v) for v in out] for out in rf_model.predict(frame)
-        ]
-
     test_windows = list(test.windows)
     models = _model_metrics(
         test_windows, predictions_by_model, window_config, horizon_index, sp_m
@@ -841,55 +579,36 @@ def evaluate_lstm_models(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI evaluate: ``python -m ai_model.evaluate --dataset <file.jsonl>
-    --model-dir <dir>``; in report JSON ra stdout."""
+    """CLI evaluate: ``python -m ai_model.evaluate``."""
     parser = argparse.ArgumentParser(
-        description="Đánh giá offline RF/LSTM và baseline trên split test."
+        description="Đánh giá offline LSTM và baseline trên split test."
     )
-    parser.add_argument("--model-type", choices=("rf", "lstm"), default="rf")
-    parser.add_argument("--rf-model-dir", help="RF tùy chọn trên cùng split LSTM")
+    # Giữ option để các lệnh hiện có vẫn rõ ràng; chỉ LSTM được hỗ trợ.
+    parser.add_argument("--model-type", choices=("lstm",), default="lstm")
     parser.add_argument("--output", help="Ghi report JSON ra file thay vì stdout")
     parser.add_argument(
-        "--dataset",
-        required=True,
-        help="Đường dẫn file JSONL dataset (bắt buộc)",
+        "--dataset", required=True, help="Đường dẫn file JSONL dataset (bắt buộc)"
     )
     parser.add_argument(
-        "--model-dir",
-        default="ai_model/artifacts",
-        help="Thư mục artifact model (mặc định: ai_model/artifacts)",
+        "--model-dir", default="ai_model/artifacts/lstm-v1",
+        help="Thư mục artifact LSTM (mặc định: ai_model/artifacts/lstm-v1)",
     )
     parser.add_argument(
-        "--config",
-        default="configs/model.yaml",
+        "--config", default="configs/model.yaml",
         help="File YAML cấu hình (mặc định: configs/model.yaml)",
     )
     parser.add_argument(
-        "--sp",
-        type=float,
-        default=0.44,
-        help=(
-            "Ngưỡng an toàn Sp (mét). Sp demo từ configs/safety.yaml "
-            "fixture 0.44"
-        ),
+        "--sp", type=float, default=0.04,
+        help="Ngưỡng vi phạm Sp (mét), mặc định 0.04 = 40 mm.",
     )
     parser.add_argument(
-        "--horizon-index",
-        type=int,
-        default=4,
-        help=(
-            "Chỉ số horizon dùng cho cảnh báo/lead time, 0-based theo "
-            "horizons_ms (mặc định: 4 = 500 ms)"
-        ),
+        "--horizon-index", type=int, default=4,
+        help="Chỉ số horizon dùng cho cảnh báo/lead time (mặc định: 4).",
     )
     args = parser.parse_args(argv)
-    if args.rf_model_dir and args.model_type != "lstm":
-        parser.error("--rf-model-dir chỉ dùng với --model-type lstm")
-    evaluator = evaluate_lstm_models if args.model_type == "lstm" else evaluate_models
-    kwargs = {"rf_model_dir": args.rf_model_dir} if args.model_type == "lstm" else {}
-    report = evaluator(
+    report = evaluate_lstm_models(
         args.dataset, args.model_dir, config_path=args.config,
-        sp_m=args.sp, horizon_index=args.horizon_index, **kwargs,
+        sp_m=args.sp, horizon_index=args.horizon_index,
     )
     payload = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
     if args.output:

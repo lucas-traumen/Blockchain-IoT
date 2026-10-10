@@ -1,6 +1,6 @@
 # Cấu hình thuật toán ngưỡng safety (SSM một chiều, robot phanh đều).
 # 'versions' là danh sách các phiên bản theo thời gian: khi đánh giá mẫu tại thời điểm t,
-# backend chọn phiên bản có valid_from <= t lớn nhất (mới nhất trong quá khứ).
+# iot_backend chọn phiên bản có valid_from <= t lớn nhất (mới nhất trong quá khứ).
 # Thêm phiên bản mới bằng cách append phần tử vào 'versions' — không cần đổi code.
 # Công thức: Sh = vh*(tr_s + ts_s); Sr = vr*tr_s; Ss = vr*ts_s/2; Sp = Sh+Sr+Ss+c_m+zd_m+zr_m.
 versions:

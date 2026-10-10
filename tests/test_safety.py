@@ -8,7 +8,7 @@ import jsonschema
 import pytest
 import yaml
 
-from backend.safety import (
+from iot_backend.safety import (
     SafetyParams,
     assess_sample,
     get_config_for_time,
@@ -85,7 +85,7 @@ def _assessment_reference_record() -> dict:
         },
         "prediction": {
             "status": "OK",
-            "model_version": "rf-v1",
+            "model_version": "lstm-v1",
             "horizons_ms": [100, 200, 300, 400, 500],
             "distance_m": [0.60, 0.56, 0.51, 0.47, 0.42],
             "early_warning": True,
@@ -96,6 +96,8 @@ def _assessment_reference_record() -> dict:
                 "sample_count": 10, "max_age_ms": 900,
             },
             "mode": "live",
+            "preprocessing_version": "pp-lstm-v1",
+            "predicted_violation_ms": 500,
         },
     }
 
@@ -105,7 +107,7 @@ def _load_schema(name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Công thức Sp (backend/safety/sp.py)
+# Công thức Sp (iot_backend/safety/sp.py)
 # ---------------------------------------------------------------------------
 
 

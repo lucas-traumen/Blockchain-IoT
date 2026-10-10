@@ -21,10 +21,10 @@ def network_harness(tmp_path_factory):
         compiler, "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
         f'-DHRC_NETWORK_CONFIG_HEADER="{config}"',
         "-I", str(ROOT / "tests/firmware/stubs"),
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/network_harness.c"),
-        str(ROOT / "iot_code/esp32/main/wifi_mqtt.c"),
-        str(ROOT / "iot_code/esp32/main/network_setup.c"),
+        str(ROOT / "firmware/esp32/main/wifi_mqtt.c"),
+        str(ROOT / "firmware/esp32/main/network_setup.c"),
         "-o", str(executable),
     ], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -37,7 +37,8 @@ def network_harness(tmp_path_factory):
     "mqtt_headroom", "mqtt_subscribe_retry", "mqtt_suback_gate", "mqtt_offline",
     "mqtt_invalid", "mqtt_puback_watchdog", "mqtt_puback_progress",
     "mqtt_suback_rejected", "mqtt_suback_timeout", "mqtt_sdk_retry",
-    "mqtt_ack_priority", "mqtt_payload_copy",
+    "mqtt_ack_priority", "mqtt_payload_copy", "mqtt_ack_backlog",
+    "mqtt_slow_sdk_sessions",
 ])
 def test_network_manager(network_harness, case):
     result = subprocess.run([str(network_harness), case], capture_output=True,

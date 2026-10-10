@@ -13,10 +13,10 @@ from jsonschema import Draft202012Validator
 from ai_model.features import window_to_lstm_features
 from ai_model.preprocessing import LSTMScaler
 from ai_model.windows import Window, WindowMeta
-from backend.inference.predictor import SafetyPredictor
-from backend.ingestion.service import IngestionService, PROCESSOR_VERSION
-from backend.ingestion.store import Store
-from backend.safety import load_safety_configs
+from iot_backend.inference.predictor import SafetyPredictor
+from iot_backend.ingestion.service import IngestionService, PROCESSOR_VERSION
+from iot_backend.ingestion.store import Store
+from iot_backend.safety import load_safety_configs
 from tests.test_inference import make_sample, NOW_ISO
 
 CONFIG = yaml.safe_load(Path('configs/model.yaml').read_text())
@@ -149,8 +149,8 @@ def test_lstm_path_uses_no_dataframe(monkeypatch):
 def test_real_artifact_runtime_and_api(tmp_path,monkeypatch):
     from ai_model.lstm_train import train_lstm, load_lstm_artifact
     from tests.test_lstm_train import _write_jsonl
-    from backend.main import create_app
-    from backend.settings import load_settings
+    from iot_backend.main import create_app
+    from iot_backend.settings import load_settings
     data=tmp_path/'d.jsonl'
     _write_jsonl(data)
     artifacts=tmp_path/'model'

@@ -17,10 +17,10 @@ def sensor_harness(tmp_path_factory):
     result = subprocess.run([
         compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
         "-I", str(ROOT / "tests/firmware/stubs"),
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/sensor_harness.c"),
-        str(ROOT / "iot_code/esp32/main/hcsr04.c"),
-        str(ROOT / "iot_code/esp32/main/diagnostics.c"),
+        str(ROOT / "firmware/esp32/main/hcsr04.c"),
+        str(ROOT / "firmware/esp32/main/diagnostics.c"),
         "-o", str(executable),
     ], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

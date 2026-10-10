@@ -2,7 +2,7 @@
 
 Contract kiểm tra:
 
-- import module KHÔNG cần TensorFlow (lazy import) — chạy được trong backend
+- import module KHÔNG cần TensorFlow (lazy import) — chạy được trong iot_backend
   ``.venv`` cho phần không model: validate override, manifest document,
   lỗi split rỗng;
 - ``train_lstm`` (cần TF, skip nếu thiếu) sinh ĐỦ 5 artifact trong out_dir
@@ -11,8 +11,6 @@ Contract kiểm tra:
   ``LSTMScaler.fit`` trên train), model nạp lại predict ``(N,5)`` hữu hạn,
   metrics JSON finite, ``dataset_sha256`` = hash file JSONL thật;
 - artifact chỉ ghi vào ``tmp_path`` — không artifact nào vào repo;
-- RF contract không đụng: ``ai_model.train`` vẫn import và export nguyên
-  ``train_model``/``load_model``/``REQUIRED_MANIFEST_FIELDS``.
 """
 
 from __future__ import annotations
@@ -91,13 +89,6 @@ def test_module_import_without_tensorflow():
 def test_manifest_document_valid_and_bad_timestamp(tmp_path):
     """validate_manifest_document: manifest chuẩn qua schema; created_at hỏng
     → ValueError (không phụ thuộc rfc3339-validator của FormatChecker)."""
-    try:  # RF contract chỉ kiểm được nơi có joblib/sklearn (backend .venv)
-        from ai_model.train import REQUIRED_MANIFEST_FIELDS
-    except ImportError:  # pragma: no cover - AI env không có joblib
-        pytest.skip("ai_model.train (joblib/sklearn) không có trong env này")
-
-    assert "created_at" in REQUIRED_MANIFEST_FIELDS
-
     manifest = {
         "schema_version": "1.0",
         "model_type": "lstm",

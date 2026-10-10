@@ -45,10 +45,10 @@ def test_known_wifi_list(tmp_path, case):
         compiler, "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
         f'-DHRC_NETWORK_CONFIG_HEADER="{config}"',
         "-I", str(ROOT / "tests/firmware/stubs"),
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/network_harness.c"),
-        str(ROOT / "iot_code/esp32/main/wifi_mqtt.c"),
-        str(ROOT / "iot_code/esp32/main/network_setup.c"),
+        str(ROOT / "firmware/esp32/main/wifi_mqtt.c"),
+        str(ROOT / "firmware/esp32/main/network_setup.c"),
         "-o", str(executable),
     ], capture_output=True, text=True)
     assert build.returncode == 0, build.stderr

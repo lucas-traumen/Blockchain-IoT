@@ -1,17 +1,7 @@
-"""Chuẩn hóa feature vector từ Window — contract dùng chung train + runtime.
+"""Biểu diễn đầu vào LSTM dùng chung cho train và runtime.
 
-Hai representation, cùng module để train/runtime không thể lệch nhau:
-
-1. RF legacy (M5c/M6, giữ nguyên): vector phẳng ``d0..d9`` — ``d0`` là
-   khoảng cách CŨ NHẤT (mẫu t-(N-1)Δ), ``d9`` MỚI NHẤT (mẫu t). Đơn vị mét.
-2. LSTM đích (M9, dùng chung train M11 + runtime M13): mỗi timestep là
-   ``[distance_m, delta_distance_m]`` — khoảng cách (mét) và hiệu khoảng
-   cách giữa hai mẫu liền theo thứ tự cũ → mới. ``delta[0] = 0`` cố định
-   (không có mẫu trước đó). Shape một window ``(window_size, 2)`` = (10, 2)
-   theo configs/model.yaml; batch ``(N, window_size, 2)``.
-
-Train (M5c) và runtime inference (M6) phải dùng cùng module này để thứ tự
-feature khớp model artifact (manifest.json: feature_names).
+Mỗi timestep là [distance_m, delta_distance_m] theo thứ tự cũ → mới.
+Delta của timestep đầu bằng 0; window mặc định có 10 timestep.
 """
 
 from __future__ import annotations
@@ -22,66 +12,20 @@ from typing import Any, Mapping, Sequence
 from ai_model.windows import Window
 
 __all__ = [
-    "FEATURE_NAMES",
     "LSTM_FEATURE_NAMES",
-    "feature_names",
     "lstm_feature_names",
-    "window_to_features",
     "window_to_lstm_features",
     "windows_to_lstm_array",
 ]
 
 try:  # numpy tùy chọn: window_to_lstm_features trả list thuần nếu thiếu.
     import numpy as _np
-except ImportError:  # pragma: no cover - .venv backend luôn có numpy
+except ImportError:  # pragma: no cover - .venv iot_backend luôn có numpy
     _np = None  # type: ignore[assignment]
 
-# Fallback cứng đúng thứ tự d0..d9 — chỉ dùng khi config không khai 'features'.
-FEATURE_NAMES: list[str] = [
-    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9",
-]
-
-# Fallback tên feature LSTM mỗi timestep — chỉ dùng khi config không khai
-# 'lstm.features' (configs/model.yaml: [distance_m, delta_distance_m]).
+# Fallback window LSTM khi không truyền config.
+_LSTM_WINDOW_SIZE_FALLBACK = 10
 LSTM_FEATURE_NAMES: list[str] = ["distance_m", "delta_distance_m"]
-
-
-def feature_names(config: Mapping[str, Any] | None = None) -> list[str]:
-    """Tên feature theo thứ tự chuẩn.
-
-    Ưu tiên key ``features`` trong config (configs/model.yaml); thiếu hoặc
-    rỗng → fallback ``FEATURE_NAMES``. Số phần tử từ config phải khớp
-    fallback (10) — sai → ValueError.
-    """
-    from_config = (config or {}).get("features")
-    if not from_config:
-        return list(FEATURE_NAMES)
-    names = [str(name) for name in from_config]
-    if len(names) != len(FEATURE_NAMES):
-        raise ValueError(
-            f"config 'features' có {len(names)} phần tử, "
-            f"kỳ vọng {len(FEATURE_NAMES)}"
-        )
-    return names
-
-
-def window_to_features(window: Window) -> list[float]:
-    """Feature vector của cửa sổ, đúng thứ tự d0 (cũ nhất) → d9 (mới nhất), mét.
-
-    Contract dùng chung train (M5c) và runtime inference (M6): thứ tự phần
-    tử trả về khớp ``FEATURE_NAMES``/``feature_names()`` và model artifact
-    (manifest.json: feature_names). Không sắp lại, không thêm/bớt giá trị;
-    sai độ dài → ValueError.
-    """
-    features = list(window.features)
-    if len(features) != len(FEATURE_NAMES):
-        raise ValueError(
-            f"window có {len(features)} features, kỳ vọng {len(FEATURE_NAMES)}"
-        )
-    return features
-
-
-# ----------------------------------------------------------------- LSTM (M9)
 
 
 def _lstm_block(config: Mapping[str, Any] | None) -> Any:
@@ -110,7 +54,7 @@ def _lstm_window_size(config: Mapping[str, Any] | None) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} phải là số nguyên dương, nhận {value!r}")
         return value
-    shared = validate(config["window_size"], "window_size") if config and "window_size" in config else len(FEATURE_NAMES)
+    shared = validate(config["window_size"], "window_size") if config and "window_size" in config else _LSTM_WINDOW_SIZE_FALLBACK
     if lstm is not None and "window_size" in lstm:
         size = validate(lstm["window_size"], "lstm.window_size")
         if size != shared:

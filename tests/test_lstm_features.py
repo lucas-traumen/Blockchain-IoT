@@ -10,7 +10,7 @@ Contract kiểm tra (PLAN mục 4 + PROJECT_MEMORY):
 - sai shape/size bị từ chối rõ ràng (ValueError);
 - ``window_size``/``lstm.features`` đọc từ configs/model.yaml, không hardcode.
 
-RF legacy (``window_to_features``, d0..d9) đã test trong tests/test_windows.py.
+Biểu diễn LSTM là representation duy nhất của module features.
 """
 
 from pathlib import Path
@@ -20,10 +20,8 @@ import pytest
 import yaml
 
 from ai_model.features import (
-    FEATURE_NAMES,
     LSTM_FEATURE_NAMES,
     lstm_feature_names,
-    window_to_features,
     window_to_lstm_features,
     windows_to_lstm_array,
 )
@@ -107,7 +105,7 @@ def test_lstm_features_does_not_mutate_input(config):
 
 
 def test_lstm_features_without_config(config):
-    """Không truyền config → fallback window_size = len(FEATURE_NAMES) (10)."""
+    """Không truyền config → fallback window_size tường minh là 10."""
     ts = window_to_lstm_features(_chain_window())
     assert len(ts) == 10
     assert ts[0][1] == 0.0
@@ -241,18 +239,6 @@ def test_non_finite_distance_rejected(config):
     bad_delta.features[1] = -1.7e308
     with pytest.raises(ValueError, match="không hữu hạn"):
         window_to_lstm_features(bad_delta, _MODEL_CONFIG_DICT)
-
-
-# ----------------------------------------------------- RF không hồi quy
-
-
-def test_rf_adapter_unchanged(config):
-    """RF adapter: window_to_features vẫn vector phẳng 10 phần tử d0..d9."""
-    w = _chain_window()
-    feats = window_to_features(w)
-    assert feats == w.features
-    assert len(feats) == len(FEATURE_NAMES)
-    assert FEATURE_NAMES == [f"d{i}" for i in range(10)]
 
 
 def test_targets_untouched_by_lstm_features(config):

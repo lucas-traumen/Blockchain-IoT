@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hrc-safety-log.local/schemas/ack_v1.schema.json",
   "title": "Ack v1",
-  "description": "Xác nhận lệnh control từ device → backend, topic hrc/v1/devices/{device_id}/ack (QoS1). Ranh giới session lấy từ ack này.",
+  "description": "Xác nhận lệnh control từ device → iot_backend, topic hrc/v1/devices/{device_id}/ack (QoS1). Ranh giới session lấy từ ack này.",
   "type": "object",
   "additionalProperties": false,
   "required": [

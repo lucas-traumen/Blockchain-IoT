@@ -4,8 +4,8 @@ import pytest
 
 from ai_model.prepare import load_jsonl_dataset, build_lstm_dataset
 from ai_model.windows import WindowConfig
-from backend.ingestion.store import Store
-from backend.sessions import SessionManager
+from iot_backend.ingestion.store import Store
+from iot_backend.sessions import SessionManager
 from scripts.export_dataset import export_dataset
 from tests.test_event_packages import service, ingest
 from tests.test_lstm_inference import CONFIG

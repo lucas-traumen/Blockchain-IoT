@@ -15,5 +15,10 @@ core.*
 data
 exports
 ai_model/artifacts
-iot_code
+firmware
 tests
+
+**/node_modules
+smart_contracts/artifacts
+smart_contracts/cache
+blockchain_api/data

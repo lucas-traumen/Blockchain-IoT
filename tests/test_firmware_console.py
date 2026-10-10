@@ -24,9 +24,9 @@ def test_console_port(tmp_path, uart, usb, source):
         f"-DCONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED={usb}",
         "-DCONFIG_ESP_CONSOLE_UART_NUM=0", "-DCONFIG_ESP_CONSOLE_UART_BAUDRATE=115200",
         "-I", str(ROOT / "tests/firmware/stubs"),
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/console_harness.c"),
-        str(ROOT / "iot_code/esp32/main/network_console.c"),
+        str(ROOT / "firmware/esp32/main/network_console.c"),
         "-o", str(executable),
     ], capture_output=True, text=True)
     assert build.returncode == 0, build.stderr

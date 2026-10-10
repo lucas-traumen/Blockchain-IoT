@@ -1,13 +1,7 @@
-"""Baseline dự báo (M5c): persistence + constant-velocity — hàm THUẦN, không state.
+"""Baseline persistence + constant-velocity để đối chiếu cùng split với LSTM.
 
-Dùng trong evaluate (M5d) để đối chiếu MAE cùng split với RF (PLAN.md mục 4:
-"Baseline cùng split: persistence (d(t) lặp) và constant-velocity (v ước
-lượng từ cửa sổ quá khứ, ngoại suy d(t)+v*h)"). Đầu vào là feature vector
-của một cửa sổ theo contract ``ai_model/features.py``: thứ tự d0 (cũ nhất)
-→ d9 (mới nhất), đơn vị mét.
-
-KHÔNG clamp/không giới hạn miền dự báo: kết quả thô (có thể âm hoặc vượt
-miền đo 0..4500 mm) để evaluate phản ánh đúng lỗi thật của baseline.
+Đầu vào là dãy khoảng cách theo thứ tự cũ → mới, đơn vị mét. Dự báo giữ
+giá trị thô để evaluator phản ánh đúng sai số, không clamp hoặc làm tròn.
 """
 
 from __future__ import annotations

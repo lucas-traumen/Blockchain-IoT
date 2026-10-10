@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
-from backend.ingestion import PROCESSOR_VERSION, IngestionService, Store
-from backend.ingestion.mqtt_listener import MqttListener
-from backend.safety import SafetyConfigVersion, load_safety_configs
-from backend.sessions import SessionManager
+from iot_backend.ingestion import PROCESSOR_VERSION, IngestionService, Store
+from iot_backend.ingestion.mqtt_listener import MqttListener
+from iot_backend.safety import SafetyConfigVersion, load_safety_configs
+from iot_backend.sessions import SessionManager
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFETY_YAML_PATH = REPO_ROOT / "configs" / "safety.yaml"
@@ -495,7 +495,7 @@ def test_ingest_jsonl_cli_catch_up_pending(tmp_path):
 
 
 def test_mqtt_listener_main_catch_up_on_start(tmp_path, monkeypatch):
-    import backend.ingestion.mqtt_listener as mqtt_listener_module
+    import iot_backend.ingestion.mqtt_listener as mqtt_listener_module
 
     db_path = tmp_path / "listener.db"
     store = Store(db_path)

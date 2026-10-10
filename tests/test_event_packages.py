@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.ingestion.service import IngestionService, PROCESSOR_VERSION
-from backend.ingestion.store import Store
-from backend.safety import load_safety_configs
-from backend.sessions import SessionManager
-from backend.settings import load_settings
+from iot_backend.ingestion.service import IngestionService, PROCESSOR_VERSION
+from iot_backend.ingestion.store import Store
+from iot_backend.safety import load_safety_configs
+from iot_backend.sessions import SessionManager
+from iot_backend.settings import load_settings
 from tests.test_inference import make_sample
 
 
@@ -169,7 +169,7 @@ def test_event_and_processed_atomic_rollback(tmp_path,monkeypatch):
 
 
 def test_event_api(tmp_path):
-    from backend.main import create_app
+    from iot_backend.main import create_app
     settings=replace(load_settings(),mqtt_enabled=False,db_path=str(tmp_path/'db'))
     with TestClient(create_app(settings)) as client:
         ingest(client.app.state.service,1,300)

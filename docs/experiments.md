@@ -73,65 +73,51 @@ hợp (kịch bản `approach` cố tình xuyên qua ngưỡng Sp demo 0.44 m), 
 phải tỷ lệ vi phạm thực tế. Bản ghi trong thí nghiệm này không kèm dự báo
 (không `--model-dir`).
 
-## Thí nghiệm 2 — Train + evaluate model
+## Thí nghiệm 2 — Train + evaluate LSTM
 
-**Mục tiêu:** train RandomForest v1 với grid hyperparameter mặc định, đánh
-giá cùng baselines trên split test, đọc đúng các số liệu report.
+**Mục tiêu:** train LSTM theo session split và đánh giá trên đúng test split
+của artifact cùng hai baseline persistence và constant-velocity.
 
-**Điều kiện:** venv (scikit-learn/pandas); dataset lớn hơn smoke để split
-70/15/15 theo session có ý nghĩa; không cần backend.
+**Điều kiện:** image AI có TensorFlow; dataset có đủ session để chia
+70/15/15; không cần iot_backend.
 
 **Lệnh:**
 
 ```bash
 # 1. Sinh dataset train 30 session × 200 mẫu, seed 42
-.venv/bin/python -m scripts.synthetic_dataset --out data/sim_train.jsonl \
-    --sessions 30 --samples-per-session 200 --seed 42
+docker compose --profile ai run --rm ai python -m scripts.synthetic_dataset \
+    --out data/sim_train.jsonl --sessions 30 --samples-per-session 200 \
+    --seed 42 --scenario all
 
-# 2. Train RF (grid mặc định n_estimators × max_depth = [50,100,200] × [None,8],
-#    6 tổ hợp, chọn theo MAE validation; refit trên train+val)
-.venv/bin/python -m ai_model.train --dataset data/sim_train.jsonl \
-    --out-dir ai_model/artifacts
+# 2. Train LSTM; artifact ghi split_manifest.json
+docker compose --profile ai run --rm ai python -m ai_model.lstm_train \
+    --dataset data/sim_train.jsonl --out-dir ai_model/artifacts/lstm-v1
 
-# 3. Đánh giá RF + persistence + constant-velocity trên split test
-.venv/bin/python -m ai_model.evaluate --dataset data/sim_train.jsonl \
-    --model-dir ai_model/artifacts
+# 3. Đánh giá LSTM và hai baseline trên test split đã lưu
+docker compose --profile ai run --rm ai python -m ai_model.evaluate \
+    --dataset data/sim_train.jsonl --model-type lstm \
+    --model-dir ai_model/artifacts/lstm-v1 \
+    --sp 0.44 --output data/lstm-report.json
 ```
 
 `evaluate` nhận thêm `--config` (mặc định `configs/model.yaml`), `--sp`
-(mặc định 0.44), `--horizon-index` (mặc định 4 = horizon 500 ms). Cùng
-dataset + cùng seed → split test trùng khớp split lúc train; chỉ split test
-được dùng để báo cáo.
+(mặc định 0.04 = 40 mm; synthetic demo bên dưới dùng `--sp 0.44`), `--horizon-index` (mặc định 4 = horizon 500 ms). Evaluator
+dùng danh sách session trong `split_manifest.json`, kiểm tra lại session/counts
+và chỉ báo cáo test.
 
 **Cách đọc report JSON:**
 
-- `mae`: MAE (mét) theo từng horizon cho 3 mô hình — `rf`, `persistence`,
-  `constant_velocity` — mỗi cái 5 số theo thứ tự `horizons_ms`
-  (100–500 ms); so sánh RF với 2 baseline theo từng cột.
-- `n_test_windows`: số cửa sổ split test (15% session).
-- `event_metrics`: `n_events` (lần khoảng cách thực chạm/crossing ≤ Sp từ
-  trên xuống), `n_episodes` (đợt cảnh báo đã gộp), `n_tp_episodes`,
-  `n_matched_events`, `precision` = TP/n_episodes, `recall` =
-  matched/n_events, `false_alarms_per_min`, `lead_time_s`
-  (`mean/min/max`). **Null khi không xác định được — không bịa:** không có
-  Event → `recall = null` (precision vẫn tính được); không có Episode →
-  `precision = null`; không có cặp match → `lead_time_s = null`. Match chỉ
-  đếm khi sự kiện nằm trong `[start_episode, end_episode + horizon_s]`.
-- `synthetic: true` — nguồn dữ liệu được ghi nhận trong report.
-- `sp_m`, `horizon_index` — tham số đã dùng cho cảnh báo/lead time.
-
-**Kết quả đã quan sát trên dataset smoke (12×80, seed 42 — PLAN mục M5):**
-RF MAE @100 ms ≈ 0.017 m, constant-velocity ≈ 0.013 m (RF MAE
-[0.017..0.084] m theo horizon, constant-velocity [0.013..0.072] m); event
-metrics precision 1.0 / recall 0.5 / lead time 0.1 s. **RF chưa thắng
-constant-velocity trên dữ liệu synthetic** — chuyển động nội suy tuyến tính
-làm baseline ngoại suy rất mạnh; kết quả này không phải cam kết, các lần
-chạy/dataset khác có thể khác.
+- `models`: ba model `lstm`, `persistence`, `constant_velocity`; mỗi model có
+  regression và event metrics theo 5 horizon.
+- `n_test_windows`: số cửa sổ thuộc test split.
+- `breakdown`: metrics cô lập theo `scenario` và `target_type`; group thiếu
+  metadata đi vào `unknown`.
+- `synthetic: true`: nguồn dữ liệu được ghi nhận trong report.
+- `sp_m`, `horizon_index`: tham số đã dùng cho cảnh báo và lead time.
 
 **Ghi chú giới hạn:** synthetic có nhãn chuyển động lý tưởng + nhiễu
-Gaussian nhỏ; model có thể học được quy luật sinh dữ liệu — kết quả không
-ngoại suy cho dữ liệu đo thật. Firmware/HC-SR04 chưa kiểm chứng trên board
-(xem [wiring.md](wiring.md)).
+Gaussian nhỏ; train/evaluate pass không chứng minh chất lượng trên dữ liệu đo
+thật. Firmware/HC-SR04 chưa kiểm chứng trên board (xem [wiring.md](wiring.md)).
 
 ## Thí nghiệm 3 — Cảnh báo sớm live
 
@@ -139,16 +125,16 @@ ngoại suy cho dữ liệu đo thật. Firmware/HC-SR04 chưa kiểm chứng tr
 `early_warning = true` khi chuỗi approach tiến gần chạm Sp.
 
 **Điều kiện:** artifact model đã train (Thí nghiệm 2) hoặc đường dẫn
-`MODEL_ARTIFACT_DIR` có `model.joblib` + `manifest.json`. Hai biến thể:
+`MODEL_ARTIFACT_DIR` có đủ năm file artifact LSTM theo [lstm.md](lstm.md). Runtime chỉ dùng LSTM; persistence và constant-velocity chỉ là baseline offline:
 
-- **(a) Backend + device simulator:** khởi động backend theo
+- **(a) Backend + device simulator:** khởi động iot_backend theo
   [wiring.md](wiring.md), chạy `python -m scripts.device_sim` với broker đã
   chọn và `--record-jsonl` để giữ nhãn synthetic. Chọn LSTM theo [lstm.md](lstm.md).
 - **(b) Ingest JSONL stream không cần broker** (kiểm chứng được ngay):
 
 ```bash
-.venv/bin/python -m scripts.ingest_jsonl --input data/sim_smoke_ingest.jsonl \
-    --db data/exp3.db --model-dir ai_model/artifacts
+.venv-ai/bin/python -m scripts.ingest_jsonl --input data/sim_smoke_ingest.jsonl \
+    --db data/exp3.db --model-type lstm --model-dir ai_model/artifacts/lstm-v1
 
 # Quan sát trạng thái prediction theo sequence
 .venv/bin/python - <<'PY'
@@ -185,7 +171,7 @@ PY
   WARMUP lại cho tới khi run mới đủ 10 mẫu.
 
 **Ghi chú giới hạn:** predictor là instance riêng mỗi tiến trình — buffer
-không tồn qua lần chạy khác; quan sát qua backend live dùng device_sim
+không tồn qua lần chạy khác; quan sát qua iot_backend live dùng device_sim
 hoặc thiết bị thật theo [wiring.md](wiring.md).
 
 ## Thí nghiệm 4 — Replay khác processor_version trên cùng DB
@@ -240,7 +226,7 @@ PY
 DB chứa đồng thời 4 version (`safety-v1` live + 3 version replay).
 
 **Ghi chú giới hạn:** version nào "chuẩn" là quyết định của TV2/orchestrator
-dựa trên `processor_version` + `mode` + `computed_at`; backend không tự hợp
+dựa trên `processor_version` + `mode` + `computed_at`; iot_backend không tự hợp
 nhất các version.
 
 ## Giới hạn chung của mọi thí nghiệm
@@ -253,30 +239,27 @@ nhất các version.
 - Firmware đã build PASS trên ESP-IDF 6.0.1 cho ESP32-S3 (2026-10-02),
   nhưng flash/chạy đo HC-SR04 chưa kiểm chứng; các thí nghiệm ở đây không
   phủ nhận phần chưa kiểm chứng của firmware
-  ([wiring.md](wiring.md), `iot_code/esp32/README.md`).
+  ([wiring.md](wiring.md), `firmware/esp32/README.md`).
 
-## Thí nghiệm 5 — LSTM, RF và event package
+## Thí nghiệm 5 — LSTM và event package
 
-Theo [lstm.md](lstm.md), train LSTM rồi evaluate với `--model-type lstm` và
-`--rf-model-dir` nếu RF train cùng session split. Đọc MAE/RMSE per horizon,
-F1/miss/FWR/lead-time và breakdown scenario/target_type. Kết quả LSTM thua
-baseline vẫn giữ nguyên report; không dùng test để chọn epoch hay sửa config.
+Theo [lstm.md](lstm.md), train LSTM rồi evaluate với `--model-type lstm`.
+Đọc MAE/RMSE theo horizon, F1/miss/FWR/lead-time và breakdown
+`scenario`/`target_type`. Kết quả LSTM và hai baseline tham chiếu được giữ nguyên trong report;
+không dùng test để chọn epoch hay sửa config.
 
 Chạy simulator qua broker riêng, dùng API mở/đóng session, kiểm tra:
 `/health.model_available`, `/assessments` (WARMUP→OK), `/events` và gói raw.
 Replay `--model-type lstm --processor-version replay-lstm-v1` hai lần: lần
 đầu sinh bộ offline, lần hai `processed=0`. Source recording/dataset phải giữ
-nhãn synthetic. Evidence phiên 02/10/2026 nằm trong PLAN.md; smoke không thay
-cho dữ liệu board thật, broker reconnect hay hiệu chuẩn trong phòng thí nghiệm.
+nhãn synthetic. Smoke không thay cho dữ liệu board thật, broker reconnect hay
+hiệu chuẩn trong phòng thí nghiệm.
 
 ### Evidence chạy ngày 02/10/2026
 
 Dataset synthetic 12×80, seed42, test96 windows thuộc sess_2/sess_8; LSTM
-3 epochs smoke, RF grid n_estimators=10/max_depth=4. MAE mean qua 5 horizon:
-LSTM **0.097709m**, RF **0.056047m**, persistence **0.056925m**, constant
-velocity **0.040475m**. LSTM thua baseline trong smoke này; chưa chốt model
-nghiệm thu hay chất lượng trên board. Event recall @500ms: LSTM/RF/persistence
-0.0, constant velocity1.0 (2 events); không có episode thì precision/F1 null.
+3 epochs smoke và report gồm LSTM cùng hai baseline tham chiếu. Đây chỉ là
+kiểm chứng cấu trúc pipeline, không phải kết quả dữ liệu thật.
 
 Broker Mosquitto2.0.22 trên cổng riêng11883 + simulator70 mẫu: device_ack
 start6/stop55, session50 mẫu; LSTM OK31, VIOLATION11, UNKNOWN2. Replay cùng

@@ -1,62 +1,79 @@
-"""Kiểm thử M6a2: ``SafetyPredictor`` — buffer cửa sổ trượt + dự báo RF runtime.
+"""Kiểm thử SafetyPredictor LSTM: buffer trượt, fail-safe và schema output.
 
-Model thật train MỘT lần cho cả module (fixture ``model_dir``) từ dataset
-synthetic nhỏ sinh bằng ``scripts.synthetic_dataset.generate_sessions``
-(6 session × 50 mẫu, seed 42, error_prob=0) với grid rút gọn qua
-``config_overrides`` (``n_estimators_grid=[10]``, ``max_depth_grid=[4]``);
-artifact ghi vào ``tmp_path_factory`` — KHÔNG đụng ``ai_model/artifacts/``
-của repo. Mỗi test dựng instance ``SafetyPredictor`` riêng (buffer
-per-instance) nhưng dùng chung artifact đã train.
-
-Các trạng thái khối ``prediction`` kiểm theo docstring
-``backend/inference/predictor.py``: WARMUP / OK / INVALID_WINDOW /
-MODEL_UNAVAILABLE, early_warning, stale, buffer per (device, boot, session),
-và khớp ``schemas/assessment_v1.schema.json``.
+Các test dùng model/scaler LSTM nhỏ được inject qua loader để giữ coverage
+runtime mà không cần TensorFlow hoặc artifact train thật.
 """
 
 import json
+
+import numpy as np
 from pathlib import Path
 
 import pytest
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from ai_model.train import train_model
-from backend.inference.predictor import SafetyPredictor
-from scripts.synthetic_dataset import generate_sessions, write_jsonl
+from iot_backend.inference.predictor import SafetyPredictor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-FAST_GRID = {"n_estimators_grid": [10], "max_depth_grid": [4]}
 HORIZONS_MS = [100, 200, 300, 400, 500]
 SP_M = 0.44
 MEASURED_AT = "2026-01-01T00:00:00.000Z"
-NOW_ISO = MEASURED_AT  # mặc định: now == measured_at → stale False
+NOW_ISO = MEASURED_AT
+
+MANIFEST = {
+    "model_type": "lstm",
+    "model_version": "lstm-v1",
+    "preprocessing_version": "pp-lstm-v1",
+    "input_shape": [10, 2],
+    "output_shape": [5],
+    "features": ["distance_m", "delta_distance_m"],
+    "units": "m",
+    "window_size": 10,
+    "delta_s": 0.1,
+    "horizons_ms": HORIZONS_MS,
+}
 
 
-@pytest.fixture(scope="module")
-def model_dir(tmp_path_factory) -> Path:
-    """Artifact model train 1 lần cho module (dataset nhỏ, grid rút gọn)."""
-    lines = generate_sessions(6, 50, 42, error_prob=0.0)
-    dataset_path = tmp_path_factory.mktemp("m6a2_dataset") / "sim_small.jsonl"
-    write_jsonl(lines, dataset_path)
-    out_dir = tmp_path_factory.mktemp("m6a2_artifacts")
-    train_model(
-        dataset_path,
-        REPO_ROOT / "configs" / "model.yaml",
-        out_dir,
-        config_overrides=dict(FAST_GRID),
-    )
-    return out_dir
+class FakeScaler:
+    def transform_X(self, values):
+        return np.asarray(values, dtype="float64")
+
+    def inverse_y(self, values):
+        return np.asarray(values, dtype="float64")
+
+
+class FakeLstmModel:
+    """Deterministic injected LSTM double: constant-velocity forecast."""
+
+    def __call__(self, values, training=False):
+        assert training is False
+        values = np.asarray(values, dtype="float64")
+        distances = values[:, :, 0]
+        velocity = (distances[:, -1] - distances[:, 0]) / (9 * 0.1)
+        horizons = np.asarray(HORIZONS_MS, dtype="float64") / 1000.0
+        return distances[:, -1, None] + velocity[:, None] * horizons
 
 
 @pytest.fixture(scope="module")
 def model_config() -> dict:
-    """Config runtime nạp từ configs/model.yaml — nguồn cấu hình thật."""
-    return yaml.safe_load(
-        (REPO_ROOT / "configs" / "model.yaml").read_text(encoding="utf-8")
-    )
+    return yaml.safe_load((REPO_ROOT / "configs" / "model.yaml").read_text(encoding="utf-8"))
 
+
+@pytest.fixture(scope="module")
+def model_dir(tmp_path_factory) -> Path:
+    """Path placeholder; the injected loader supplies the LSTM artifact."""
+    return tmp_path_factory.mktemp("lstm_runtime_double")
+
+
+def make_lstm_predictor(model_dir, model_config, model=None):
+    def loader(_directory):
+        return model or FakeLstmModel(), FakeScaler(), MANIFEST
+
+    return SafetyPredictor(
+        model_dir, model_config, loader, model_type="lstm"
+    )
 
 def make_sample(seq: int, mono_us: int, distance_mm: int | None, **overrides) -> dict:
     """Payload telemetry_v1 11 field hợp lệ (echo_us xấp xỉ ~5.83 µs/mm)."""
@@ -100,7 +117,7 @@ def push_run(predictor: SafetyPredictor, seqs, mono_start: int = 1_000_000) -> d
 
 def test_warmup_below_window_size(model_dir, model_config):
     """9 mẫu đầu (< window_size 10) → WARMUP, mọi field tương lai null."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     for seq in range(1, 10):
         result = predictor.predict(
             make_sample(seq, 1_000_000 + seq * 100_000, 900),
@@ -121,7 +138,7 @@ def test_warmup_below_window_size(model_dir, model_config):
 
 def test_tenth_sample_ok_window_ref(model_dir, model_config):
     """Mẫu thứ 10 → OK: distance_m 5 float, window_ref đúng cửa sổ 1..10."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     result = push_run(predictor, range(1, 11))
     assert result["status"] == "OK"
     assert result["model_version"] is not None
@@ -140,7 +157,7 @@ def test_tenth_sample_ok_window_ref(model_dir, model_config):
 
 def test_window_slides_on_eleventh_sample(model_dir, model_config):
     """Mẫu 11 → vẫn OK, cửa sổ trượt: sequence_first 2, sequence_last 11."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     push_run(predictor, range(1, 11))
     result = predictor.predict(
         make_sample(11, 1_000_000 + 11 * 100_000, 900),
@@ -160,7 +177,7 @@ def test_window_slides_on_eleventh_sample(model_dir, model_config):
 
 def test_invalid_sample_resets_buffer(model_dir, model_config):
     """Mẫu invalid → INVALID_WINDOW; mẫu kế tiếp valid → WARMUP (đã reset)."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     push_run(predictor, range(1, 11))  # đủ window_size
 
     invalid = predictor.predict(
@@ -192,7 +209,7 @@ def test_invalid_sample_resets_buffer(model_dir, model_config):
 
 def test_sequence_gap_resets_buffer(model_dir, model_config):
     """Sequence nhảy (+2) → INVALID_WINDOW; mẫu nối tiếp sau đó → WARMUP."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     push_run(predictor, range(1, 11))
 
     gap = predictor.predict(
@@ -241,7 +258,7 @@ def test_model_unavailable_empty_model_dir(tmp_path, model_config):
 def test_early_warning_before_crossing_sp(model_dir, model_config):
     """Chuỗi giảm 5 cm/mẫu từ 0.9 m: current > Sp mà min dự báo ≤ Sp → True;
     current đã ≤ Sp → False (đó là VIOLATION — việc của khối safety)."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     result = None
     for seq, mm in enumerate(range(900, 400, -50), start=1):  # 900..450
         result = predictor.predict(
@@ -273,7 +290,7 @@ def test_early_warning_before_crossing_sp(model_dir, model_config):
 def test_stale_flag(model_dir, model_config):
     """stale: tuổi mẫu > stale_after_s (0.5 s) → True; measured_at None →
     False; mode 'offline' → False (kể cả mẫu cũ)."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     old_now = "2026-01-01T00:05:00.000Z"  # age 300 s >> stale_after_s 0.5 s
 
     stale = predictor.predict(
@@ -303,7 +320,7 @@ def test_stale_flag(model_dir, model_config):
 def test_buffers_separated_per_boot(model_dir, model_config):
     """Boot khác → buffer riêng: b1 đủ 10 mẫu OK; 1 mẫu b2 → WARMUP; b1
     không bị ảnh hưởng."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     result = push_run(predictor, range(1, 11))
     assert result["status"] == "OK"
     assert result["window_ref"]["boot_id"] == "b1"
@@ -335,7 +352,7 @@ def test_buffers_separated_per_boot(model_dir, model_config):
 def test_ok_prediction_validates_assessment_v1_schema(model_dir, model_config):
     """Khối prediction OK nhét vào assessment đầy đủ phải PASS
     Draft 2020-12 (FormatChecker) với schemas/assessment_v1.schema.json."""
-    predictor = SafetyPredictor(model_dir, model_config)
+    predictor = make_lstm_predictor(model_dir, model_config)
     prediction = push_run(predictor, range(1, 11))
     assert prediction["status"] == "OK"
 
@@ -349,6 +366,8 @@ def test_ok_prediction_validates_assessment_v1_schema(model_dir, model_config):
         "stale",
         "window_ref",
         "mode",
+        "preprocessing_version",
+        "predicted_violation_ms",
     }
 
     record = {

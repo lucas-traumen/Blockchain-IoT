@@ -1,6 +1,6 @@
 """Train pipeline LSTM (M11): Keras/TensorFlow trong environment AI riêng.
 
-Pipeline ``train_lstm`` (API hàm; KHÔNG thay thế RF ``train_model``):
+Pipeline ``train_lstm`` (API hàm và CLI của model LSTM duy nhất):
 
 1. Nạp YAML cấu hình (khối ``lstm`` + windowing dùng chung) → ``WindowConfig``
    + kiến trúc/optimizer/callback. Override key lạ → ``ValueError``.
@@ -31,7 +31,7 @@ operator tin cậy: kiểm đủ file, SHA-256 khớp bytes thực, manifest qua
 contract — lệch bất kỳ → exception, KHÔNG fallback âm thầm.
 
 TensorFlow import LAZY (chỉ trong ``_import_tf``) — import module này không
-cần TensorFlow (dùng được trong backend ``.venv`` cho validate/override).
+cần TensorFlow (dùng được trong iot_backend ``.venv`` cho validate/override).
 Kiến trúc đọc từ khối ``lstm`` của config; loss/optimizer chỉ chấp nhận giá
 trị contract (``huber``/``adam``) — giá trị khác → ``ValueError``, không
 im lặng dùng cái khác.
@@ -287,7 +287,7 @@ def _import_tf():
     except ImportError as exc:  # pragma: no cover - AI env luôn có TF
         raise RuntimeError(
             "TensorFlow chưa cài — train/nạp LSTM cần environment AI riêng "
-            "(tensorflow==2.20.0, xem PLAN.md mục 4); không cài vào backend "
+            "(tensorflow==2.20.0, xem PLAN.md mục 4); không cài vào iot_backend "
             ".venv"
         ) from exc
     return tf
@@ -420,6 +420,7 @@ def train_lstm(
     config_path: str | Path = "configs/model.yaml",
     out_dir: str | Path = "ai_model/artifacts/lstm-v1",
     config_overrides: Mapping[str, Any] | None = None,
+    split_manifest_path: str | Path | None = None,
 ) -> dict:
     """Train LSTM theo pipeline module docstring; trả summary dict.
 
@@ -431,6 +432,9 @@ def train_lstm(
         ``REQUIRED_LSTM_ARTIFACTS``). Ghi atomic-ish qua staging.
       - ``config_overrides``: ``seed``, ``max_epochs``, ``batch_size``,
         ``verbose``, ``ratios`` — key lạ → ``ValueError``.
+      - ``split_manifest_path``: file chứa danh sách session train/val/test
+        đã chốt. Khi truyền, danh sách này được dùng nguyên vẹn; không
+        randomize lại theo seed.
 
     Lỗi dataset/split/scaler/fit xảy ra TRƯỚC hoặc TRONG staging → out_dir
     không bị ghi artifact dở (staging tự dọn).
@@ -442,12 +446,24 @@ def train_lstm(
     window_config = WindowConfig.from_dict(config)
 
     records = load_jsonl_dataset(dataset_path)
+    session_split = None
+    if split_manifest_path is not None:
+        split_path = Path(split_manifest_path)
+        session_split = json.loads(split_path.read_text(encoding="utf-8"))
+        if not isinstance(session_split, Mapping) or "sessions" not in session_split:
+            raise ValueError("split manifest phải là object có khóa sessions")
+        manifest_ratios = tuple(float(value) for value in session_split.get("ratios", params["ratios"]))
+        if tuple(params["ratios"]) != manifest_ratios:
+            raise ValueError(
+                f"ratios config {params['ratios']} lệch split manifest {list(manifest_ratios)}"
+            )
     dataset = build_lstm_dataset(
         records,
         window_config,
         model_config=config,
         seed=params["seed"],
         ratios=params["ratios"],
+        session_split=session_split,
     )
 
     # Scaler fit CHỈ trên train (X và y) — chống leakage; transform mọi split
@@ -722,12 +738,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--split-manifest", help="File danh sách session train/val/test đã chốt")
     args = parser.parse_args(argv)
     overrides = {"verbose": 0}
     for key, value in (("max_epochs", args.epochs), ("batch_size", args.batch_size), ("seed", args.seed)):
         if value is not None:
             overrides[key] = value
-    summary = train_lstm(args.dataset, args.config, args.out_dir, overrides)
+    summary = train_lstm(args.dataset, args.config, args.out_dir, overrides, args.split_manifest)
     print(json.dumps(summary, ensure_ascii=False, allow_nan=False))
     return 0
 

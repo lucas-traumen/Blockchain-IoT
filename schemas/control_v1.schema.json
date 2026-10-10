@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hrc-safety-log.local/schemas/control_v1.schema.json",
   "title": "Control command v1",
-  "description": "Lệnh điều khiển backend → device, topic hrc/v1/devices/{device_id}/control (QoS1).",
+  "description": "Lệnh điều khiển iot_backend → device, topic hrc/v1/devices/{device_id}/control (QoS1).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "session_id", "issued_at"],

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.ingestion.service import IngestionService, Store
-from backend.safety import SafetyConfigVersion, load_safety_configs
+from iot_backend.ingestion.service import IngestionService, Store
+from iot_backend.safety import SafetyConfigVersion, load_safety_configs
 from scripts.replay import main as replay_main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

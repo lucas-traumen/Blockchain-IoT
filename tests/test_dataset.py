@@ -5,7 +5,7 @@ Về xác thực schema: ``schemas/telemetry_v1.schema.json`` khai
 ``additionalProperties: false`` nên payload telemetry phải đứng MỘT MÌNH —
 3 trường nhãn (synthetic/scenario/session_label) là nhãn mức JSONL, được tách
 ra bằng ``load_jsonl_dataset`` trước khi validate. Validation dùng
-``validate_telemetry`` của ``backend/ingestion/validate.py`` — đúng
+``validate_telemetry`` của ``iot_backend/ingestion/validate.py`` — đúng
 ``Draft202012Validator`` + format checker "date-time" mà pipeline ingest thật
 dùng. Dataset test sinh vào ``tmp_path`` (không tạo data thật trong repo).
 
@@ -26,7 +26,7 @@ from ai_model.prepare import (
     split_by_session,
 )
 from ai_model.windows import WindowConfig, extract_windows
-from backend.ingestion.validate import validate_telemetry
+from iot_backend.ingestion.validate import validate_telemetry
 from scripts.synthetic_dataset import (
     EDGE_GUARD,
     SCENARIOS,

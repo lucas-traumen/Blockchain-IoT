@@ -176,12 +176,12 @@ def test_event_metrics_extended_no_events_null_semantics():
     assert m["lead_time_ms"] is None
 
 
-def test_event_metrics_extended_no_episodes_null_semantics():
-    """Không có episode → precision/FWR/f1 None; FA/min = 0 (không FA)."""
+def test_event_metrics_extended_no_episodes_zero_f1_with_events():
+    """Có event nhưng model không phát episode: precision None, F1=0."""
     m = event_metrics_extended([], [Event(1, 0.5)], horizon_s=0.5)
     assert m["precision"] is None
     assert m["false_warning_rate"] is None
-    assert m["f1"] is None
+    assert m["f1"] == pytest.approx(0.0)
     assert m["recall"] == pytest.approx(0.0)
     assert m["miss_rate"] == pytest.approx(1.0)
     assert m["false_alarms_per_min"] == 0.0
@@ -281,10 +281,7 @@ def test_baseline_formulas_unchanged():
 
 
 def test_legacy_event_metrics_zero_span_fa_returns_inf():
-    """PIN backward compatibility: legacy ``event_metrics`` với span = 0
-    và FA > 0 (Episode điểm + horizon 0) vẫn trả ``inf`` cho
-    ``false_alarms_per_min`` — hành vi M5 gốc, KHÔNG đổi (chỉ
-    ``event_metrics_extended`` mới trả None)."""
+    """Legacy event_metrics keeps its zero-span infinity behavior."""
     ep = Episode(3, 3, 0.5, 0.5)  # Episode điểm → span 0
     m = event_metrics([ep], [Event(10, 2.0)], horizon_s=0.0)
     assert m["false_alarms_per_min"] == float("inf")

@@ -1,6 +1,6 @@
 """Kiểm thử M3: FastAPI app — health, sessions lifecycle, export, assessments.
 
-Không dùng broker. Đặt ``HRC_APP_AUTOCREATE=0`` TRƯỚC khi import backend.main
+Không dùng broker. Đặt ``HRC_APP_AUTOCREATE=0`` TRƯỚC khi import iot_backend.main
 để module không tự tạo app với settings môi trường thật; mỗi test tạo app qua
 ``create_app(settings)`` với settings tùy chỉnh (DB trong tmp_path).
 """
@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.ingestion.store import Store
-from backend.main import create_app
-from backend.safety import load_safety_configs
-from backend.settings import Settings
-from backend.sessions.export import CSV_COLUMNS, export_csv, iter_jsonl
+from iot_backend.ingestion.store import Store
+from iot_backend.main import create_app
+from iot_backend.safety import load_safety_configs
+from iot_backend.settings import Settings
+from iot_backend.sessions.export import CSV_COLUMNS, export_csv, iter_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFETY_YAML_PATH = REPO_ROOT / "configs" / "safety.yaml"

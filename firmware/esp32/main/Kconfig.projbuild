@@ -1,0 +1,114 @@
+# GPIO/device config via menuconfig; Wi-Fi list via network_config.local.h.
+# Default khớp configs/sensor.yaml (device_id, sample period, GPIO HC-SR04).
+menu "HRC Safety Log Firmware"
+
+    config HRC_SERIAL_SETUP
+        bool "Wi-Fi list and network setup over serial"
+        depends on ESP_CONSOLE_UART || ESP_CONSOLE_USB_SERIAL_JTAG
+        default y
+        help
+            Scan Wi-Fi, choose SSID, enter a masked password, and set the
+            MQTT broker from UART or USB Serial/JTAG. Save successful Wi-Fi
+            credentials in NVS. Commands: wifi, join N, hidden, broker, status.
+            Used when HRC_WIFI_LIST_MODE=0. Macro list mode scans and joins
+            automatically and does not start the serial setup task.
+
+
+    config HRC_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            Dự phòng cho chế độ HRC_WIFI_LIST_MODE=0 khi NVS chưa có mạng.
+            Chế độ mảng macro dùng main/network_config.local.h thay thế.
+
+    config HRC_WIFI_PASS
+        string "Wi-Fi password"
+        default ""
+        help
+            Dự phòng WPA2/WPA3 cho chế độ HRC_WIFI_LIST_MODE=0.
+            Chế độ mảng macro lấy mật khẩu trong main/network_config.local.h.
+
+    config HRC_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtt://192.168.1.10:1883"
+        help
+            URI broker MQTT dùng ở M4c, ví dụ mqtt://192.168.1.10:1883.
+            Topic telemetry: hrc/v1/devices/<device_id>/telemetry (QoS1).
+
+    config HRC_DEVICE_ID
+        string "Device ID"
+        default "esp32_01"
+        help
+            Định danh thiết bị, khớp device_id trong configs/sensor.yaml.
+            Dùng trong topic MQTT và trường device_id của payload telemetry_v1.
+
+    config HRC_SAMPLE_PERIOD_MS
+        int "Sample period (ms)"
+        default 100
+        range 10 60000
+        help
+            Chu kỳ đo khoảng cách và publish telemetry (ms).
+            Default 100 ms khớp sample_period_ms trong configs/sensor.yaml.
+
+    config HRC_DISTANCE_LOG_PERIOD_MS
+        int "Distance log interval (ms; 0 disables)"
+        default 1000
+        range 0 60000
+        help
+            Log measured distance, echo duration, validity and sample sequence
+            on the console, independent of MQTT delivery. Set to 100 to show
+            every sample at the default sampling period, or 0 to disable.
+
+    config HRC_TRIG_GPIO
+        int "HC-SR04 TRIG GPIO"
+        default 4
+        range 0 33
+        help
+            GPIO phát xung trigger 10 µs tới chân TRIG của HC-SR04.
+            TRIG cần output nên giới hạn 0–33 (GPIO 34–39 chỉ input).
+            Tránh GPIO 6–11 (nối flash nội bộ).
+            Default 4 khớp trig_gpio trong configs/sensor.yaml.
+
+    config HRC_ECHO_GPIO
+        int "HC-SR04 ECHO GPIO"
+        default 5
+        range 0 39
+        help
+            GPIO đọc xung echo của HC-SR04 (độ rộng xung tỉ lệ khoảng cách).
+            Tránh GPIO 6–11 (nối flash nội bộ).
+            Default 5 khớp echo_gpio trong configs/sensor.yaml.
+
+    config HRC_ECHO_TIMEOUT_MS
+        int "HC-SR04 echo timeout (ms)"
+        default 30
+        range 1 30
+        help
+            Thời gian tối đa chờ xung echo trước khi báo ECHO_TIMEOUT.
+            Giới hạn trên 30 ms khớp echo_us maximum 30000 (µs) trong
+            schemas/telemetry_v1.schema.json.
+            Default 30 ms khớp echo_timeout_ms trong configs/sensor.yaml.
+
+    config HRC_SOUND_SPEED_M_S
+        int "Speed of sound (m/s)"
+        default 343
+        range 300 400
+        help
+            Tốc độ truyền âm dùng để quy đổi echo_us sang distance_mm (m/s).
+            Default 343 m/s (~20 °C) khớp sound_speed_m_s trong configs/sensor.yaml.
+
+    config HRC_LSTM_INFERENCE
+        bool "Enable on-device LSTM inference"
+        default y
+        help
+            Chạy LSTM float32 tĩnh trên cửa sổ 10 mẫu telemetry. Khi tắt,
+            telemetry và MQTT vẫn chạy nhưng không tạo dự báo trên thiết bị.
+
+    config HRC_LSTM_THRESHOLD_MM
+        int "LSTM violation threshold (mm)"
+        default 40
+        range 0 4500
+        help
+            Ngưỡng dùng cho predicted_violation_ms và early_warning.
+            Mặc định 40 mm = 0.040 m theo mô hình vùng vuông mô phỏng.
+
+endmenu

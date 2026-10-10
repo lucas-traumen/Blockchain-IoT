@@ -16,10 +16,10 @@ def setup_harness(tmp_path_factory):
     executable = tmp_path_factory.mktemp("firmware") / "setup_harness"
     subprocess.run([
         compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/setup_harness.c"),
-        str(ROOT / "iot_code/esp32/main/network_setup.c"),
-        str(ROOT / "iot_code/esp32/main/diagnostics.c"),
+        str(ROOT / "firmware/esp32/main/network_setup.c"),
+        str(ROOT / "firmware/esp32/main/diagnostics.c"),
         "-o", str(executable),
     ], check=True, capture_output=True, text=True)
     return executable

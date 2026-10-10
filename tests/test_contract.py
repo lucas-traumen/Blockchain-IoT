@@ -1,20 +1,7 @@
-"""Kiểm thử M8:contract — contract cấu hình model + JSON Schema (TV3–TV4).
+"""Kiểm thử contract cấu hình LSTM và JSON Schema (TV3–TV4).
 
-Phạm vi: chỉ contract/config/schema (chưa train, chưa runtime LSTM):
-
-- ``configs/model.yaml``: khối ``lstm`` đích đúng spec (lstm-v1, pp-lstm-v1,
-  window 10 @ 0.1 s, horizons 100–500 ms, features [distance_m,
-  delta_distance_m], units 32, dropout 0.2, batch 32, max_epochs 100,
-  lr 0.001, patience 10, seed 42); key RF legacy còn nguyên để code hiện tại
-  (ai_model.train / ai_model.features / backend.inference.predictor) đọc được;
-  không lệch số liệu window giữa khối lstm và khối dùng chung.
-- ``schemas/assessment_v1.schema.json``: bản ghi RF cũ vẫn hợp lệ; bản ghi
-  LSTM mới (preprocessing_version + predicted_violation_ms) hợp lệ;
-  additionalProperties vẫn chặn field lạ; ràng buộc điều kiện theo status.
-- ``schemas/model_manifest_v1.schema.json``: manifest LSTM đúng shape
-  [10,2] → [5]; shape/sha256 sai bị từ chối.
-
-Validate bằng Draft 2020-12 + FormatChecker (đồng bộ cách test_inference).
+Kiểm tra identity LSTM ở top-level, kiến trúc/windowing, assessment status
+branches và manifest shape/hash. Validate bằng Draft 2020-12 + FormatChecker.
 """
 
 import json
@@ -24,7 +11,6 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from ai_model.features import feature_names
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,8 +45,8 @@ def manifest_validator() -> Draft202012Validator:
     return _validator("model_manifest_v1.schema.json")
 
 
-def _rf_record() -> dict:
-    """Bản ghi assessment RF cũ (giống reference record test_safety)."""
+def _base_record() -> dict:
+    """Bản ghi assessment không cần field preprocessing mở rộng."""
     return {
         "schema_version": "1.0",
         "sample_ref": {"device_id": "esp32_01", "boot_id": "b1", "sequence": 125},
@@ -85,7 +71,7 @@ def _rf_record() -> dict:
         },
         "prediction": {
             "status": "OK",
-            "model_version": "rf-v1",
+            "model_version": "lstm-v1",
             "horizons_ms": HORIZONS_MS,
             "distance_m": [0.60, 0.56, 0.51, 0.47, 0.42],
             "early_warning": True,
@@ -102,7 +88,7 @@ def _rf_record() -> dict:
 
 def _lstm_record(prediction_overrides: dict | None = None) -> dict:
     """Bản ghi assessment LSTM mới: thêm 2 field optional trong prediction."""
-    record = _rf_record()
+    record = _base_record()
     record["prediction"] = {
         **record["prediction"],
         "model_version": "lstm-v1",
@@ -193,15 +179,10 @@ def test_config_lstm_no_internal_contradiction(model_config):
     assert lstm["metrics"]
 
 
-def test_config_rf_legacy_preserved(model_config):
-    """Key RF legacy còn nguyên — code hiện tại (train/features/predictor)
-    đọc trực tiếp các key flat này; feature_names(config) vẫn chạy."""
-    assert model_config["model_type"] == "rf"
-    assert model_config["model_version"] == "rf-v1"
-    assert model_config["preprocessing_version"] == "pp-v1"
-    assert model_config["features"] == [f"d{i}" for i in range(10)]
-    # Contract feature_names: đúng 10 tên, không raise.
-    assert feature_names(model_config) == [f"d{i}" for i in range(10)]
+def test_config_lstm_top_level_identity(model_config):
+    assert model_config["model_type"] == "lstm"
+    assert model_config["model_version"] == "lstm-v1"
+    assert model_config["preprocessing_version"] == "pp-lstm-v1"
 
 
 def test_config_shared_window_keys(model_config):
@@ -218,9 +199,9 @@ def test_config_shared_window_keys(model_config):
 # ----------------------------------------------- schemas/assessment_v1.schema.json
 
 
-def test_assessment_old_rf_record_still_valid(assessment_validator):
-    """Bản ghi RF cũ (không có field mới) vẫn hợp lệ — backward compatible."""
-    assert list(assessment_validator.iter_errors(_rf_record())) == []
+def test_assessment_record_without_optional_fields_still_valid(assessment_validator):
+    """Bản ghi không có field mở rộng vẫn hợp lệ — backward compatible."""
+    assert list(assessment_validator.iter_errors(_base_record())) == []
 
 
 def test_assessment_lstm_record_with_violation_ms_valid(assessment_validator):
@@ -235,9 +216,9 @@ def test_assessment_predicted_violation_ms_null_valid(assessment_validator):
     null_ms = _lstm_record({"predicted_violation_ms": None})
     assert list(assessment_validator.iter_errors(null_ms)) == []
 
-    rf_null_ms = _rf_record()
-    rf_null_ms["prediction"]["predicted_violation_ms"] = None
-    assert list(assessment_validator.iter_errors(rf_null_ms)) == []
+    base_null_ms = _base_record()
+    base_null_ms["prediction"]["predicted_violation_ms"] = None
+    assert list(assessment_validator.iter_errors(base_null_ms)) == []
 
 
 def test_assessment_rejects_extra_property(assessment_validator):
@@ -386,7 +367,7 @@ def test_manifest_rejects_bad_sha256_and_model_type(manifest_validator):
     assert list(manifest_validator.iter_errors(bad_sha))
 
     bad_type = _lstm_manifest()
-    bad_type["model_type"] = "rf"
+    bad_type["model_type"] = "gru"
     assert list(manifest_validator.iter_errors(bad_type))
 
 

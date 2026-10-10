@@ -5,8 +5,7 @@ Contract kiểm tra (pure/fake — KHÔNG cần TensorFlow):
 - import module không kéo TensorFlow; report đúng contract keys/models;
 - cùng test windows của artifact (split tái lập seed/ratios đúng, khớp
   split manifest + model manifest); dataset hash lệch → ValueError;
-- baselines giữ công thức M5c; RF tùy chọn đánh giá trên chính các cửa sổ
-  test LSTM; breakdown scenario/target_type cô lập, metadata thiếu →
+- baselines giữ công thức; breakdown scenario/target_type cô lập, metadata thiếu →
   group "unknown", tổng n_test_windows đúng;
 - guards: split mismatch, output shape/NaN/inf, horizon/sp_m sai, test rỗng;
 - không fit: fake model/scaler đếm ``fit`` — evaluator chỉ inference.
@@ -115,19 +114,6 @@ class FakeLstmModel:
         return np.repeat(x[:, -1:, 0], 5, axis=1)  # (N,5), finite mét
 
 
-class FakeRfModel:
-    """RF giả: predict nhận DataFrame, trả dự báo persistence-ish (N,5)."""
-
-    def __init__(self):
-        self.fit_calls = 0
-
-    def fit(self, *args, **kwargs):
-        self.fit_calls += 1
-        raise AssertionError("evaluator KHÔNG được gọi model.fit")
-
-    def predict(self, frame):
-        d9 = frame["d9"].to_numpy(dtype="float64")
-        return np.repeat(d9[:, None], 5, axis=1)
 
 
 def _build_artifact(
@@ -247,7 +233,7 @@ def test_report_contract_keys_and_models(tmp_path):
     assert report["n_test_windows"] == dataset.test.n_windows
     assert report["test_sessions"] == sorted(dataset.test.session_ids)
     assert report["horizons_ms"] == [100, 200, 300, 400, 500]
-    assert report["sp_m"] == 0.44
+    assert report["sp_m"] == 0.04
     assert report["horizon_index"] == 4
     assert report["synthetic"] is True
     assert set(report["breakdown"]) == {"scenario", "target_type"}
@@ -279,7 +265,7 @@ def test_same_test_windows_as_artifact_split(tmp_path):
         load_jsonl_dataset(dataset_path),
         WindowConfig.from_dict(config),
         model_config=config,
-        seed=42,
+        session_split=dataset.split_manifest["sessions"],
     )
     assert report["n_test_windows"] == rebuilt.test.n_windows
     assert report["test_sessions"] == sorted(rebuilt.test.session_ids)
@@ -322,42 +308,6 @@ def test_lstm_prediction_pipeline_no_clamp(tmp_path):
     )
 
 
-def test_rf_optional_on_same_test_windows(tmp_path):
-    """rf_model_dir truyền vào → report thêm 'rf', n_samples bằng số cửa sổ
-    test LSTM (cùng split, không split lại); rf_model_dir None → không 'rf'."""
-    from ai_model.evaluate import evaluate_lstm_models
-
-    dataset_path, model_dir, dataset, manifest = _build_artifact(tmp_path)
-    rf_loader_calls = []
-
-    def rf_loader(_dir):
-        rf_loader_calls.append(_dir)
-        return FakeRfModel(), {
-            "dataset_sha256": manifest["dataset_sha256"],
-            "split_manifest": dataset.split_manifest,
-            "window_size":10,"delta_s":.1,"horizons_ms":[100,200,300,400,500],
-        }
-
-    report = evaluate_lstm_models(
-        dataset_path,
-        model_dir,
-        rf_model_dir="rf-legacy",
-        rf_loader=rf_loader,
-        lstm_loader=_fake_lstm_loader(FakeLstmModel(), FakeScaler(), manifest),
-    )
-    assert set(report["models"]) == {
-        "lstm",
-        "persistence",
-        "constant_velocity",
-        "rf",
-    }
-    assert len(rf_loader_calls) == 1
-    n = report["n_test_windows"]
-    assert report["models"]["rf"]["regression"]["n_samples"] == n
-    assert report["models"]["lstm"]["regression"]["n_samples"] == n
-    for dim in ("scenario", "target_type"):
-        for group in report["breakdown"][dim].values():
-            assert set(group["models"]) == set(report["models"])
 
 
 # ------------------------------------------------------- breakdown semantics
@@ -602,16 +552,21 @@ class TestIntegrationRealArtifact:
 
 def test_cli_selects_lstm_and_writes_json(tmp_path, monkeypatch, capsys):
     from ai_model import evaluate
+
     calls = []
+
     def fake(*args, **kwargs):
         calls.append((args, kwargs))
-        return {"models":{"lstm":{}},"synthetic":True}
-    monkeypatch.setattr(evaluate,"evaluate_lstm_models",fake)
-    output=tmp_path/"report.json"
-    assert evaluate.main(["--dataset","input","--model-dir","lstm",
-        "--model-type","lstm","--rf-model-dir","rf","--output",str(output)]) == 0
-    assert calls[0][1]["rf_model_dir"] == "rf"
-    assert json.loads(output.read_text())["synthetic"] is True
+        return {"models": {"lstm": {}}, "synthetic": True}
+
+    monkeypatch.setattr(evaluate, "evaluate_lstm_models", fake)
+    output = tmp_path / "report.json"
+    assert evaluate.main([
+        "--dataset", "input", "--model-dir", "lstm",
+        "--model-type", "lstm", "--output", str(output),
+    ]) == 0
+    assert calls[0][1]["sp_m"] == 0.04
+    assert json.loads(output.read_text()) ["synthetic"] is True
     assert capsys.readouterr().out == ""
 
 
@@ -623,16 +578,6 @@ def test_evaluator_rejects_artifact_horizon_drift(tmp_path):
         evaluate_lstm_models(data,directory,lstm_loader=_fake_lstm_loader(FakeLstmModel(),FakeScaler(),wrong))
 
 
-def test_rf_split_mismatch_cannot_leak_test(tmp_path):
-    from ai_model.evaluate import evaluate_lstm_models
-    data,directory,dataset,manifest=_build_artifact(tmp_path)
-    wrong={"dataset_sha256":manifest["dataset_sha256"],"split_manifest":{
-        "sessions":{"train":list(dataset.train.session_ids|dataset.test.session_ids),
-                    "val":list(dataset.val.session_ids),"test":[]}}}
-    with pytest.raises(ValueError,match="RF split"):
-        evaluate_lstm_models(data,directory,rf_model_dir="rf",
-            rf_loader=lambda _: (FakeRfModel(),wrong),
-            lstm_loader=_fake_lstm_loader(FakeLstmModel(),FakeScaler(),manifest))
 
 
 def test_events_never_match_across_boot_or_gap():

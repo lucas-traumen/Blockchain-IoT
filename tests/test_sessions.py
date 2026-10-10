@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from backend.ingestion.service import IngestionService, Store
-from backend.ingestion.service import PROCESSOR_VERSION
-from backend.safety import SafetyConfigVersion, load_safety_configs
-from backend.sessions import SessionManager
-from backend.sessions.manager import SessionAlreadyClosed
-from backend.sessions.export import (
+from iot_backend.ingestion.service import IngestionService, Store
+from iot_backend.ingestion.service import PROCESSOR_VERSION
+from iot_backend.safety import SafetyConfigVersion, load_safety_configs
+from iot_backend.sessions import SessionManager
+from iot_backend.sessions.manager import SessionAlreadyClosed
+from iot_backend.sessions.export import (
     CSV_COLUMNS,
     export_csv,
     export_jsonl,
@@ -40,6 +40,19 @@ class StubControlTransport:
     ) -> dict | None:
         self.calls.append((device_id, command, session_id))
         return self.acks.get(command)
+
+
+class TimeoutRecordingControl:
+    """Control giả ghi timeout iot_backend truyền cho boundary ACK."""
+
+    def __init__(self):
+        self.timeouts: list[float] = []
+
+    def session_boundary(
+        self, device_id: str, command: str, session_id: str, timeout_s: float
+    ) -> dict:
+        self.timeouts.append(timeout_s)
+        return {"boot_id": "b1", "sequence": 100}
 
 
 class BlockingControlTransport:
@@ -124,6 +137,16 @@ def test_start_session_device_ack(store, safety_configs):
 
     rows = store.session_raw_rows(info.session_id)
     assert [r["sequence"] for r in rows] == [101, 102]  # 100 ngoài khoảng → không gán
+
+
+def test_default_ack_timeout_allows_delayed_device_boundary(store):
+    """Timeout mặc định đủ dài cho ACK muộn trong lúc MQTT reconnect."""
+    control = TimeoutRecordingControl()
+    manager = SessionManager(store, "esp32_01", control=control)
+
+    manager.start_session(session_id="late-ack")
+
+    assert control.timeouts == [pytest.approx(8.0)]
 
 
 # ---------------------------------------------------------------------------

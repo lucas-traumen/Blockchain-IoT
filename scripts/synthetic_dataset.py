@@ -77,7 +77,7 @@ _SESSION_GAP_S = 60.0  # nghỉ giữa hai session mô phỏng
 
 
 def _iso_utc(dt: datetime) -> str:
-    """ISO-8601 UTC millisecond, hậu tố Z (khớp backend.util.utc_now_iso)."""
+    """ISO-8601 UTC millisecond, hậu tố Z (khớp iot_backend.util.utc_now_iso)."""
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 

@@ -14,7 +14,6 @@ Contract kiểm tra (PLAN mục 4 + 7, dòng M10):
 - SHA-256 file/JSON canonical deterministic; split manifest tái lập khi
   created_at cố định, không timestamp tự sinh trong hash;
 - module preprocessing không import sklearn/TensorFlow/pandas/pickle;
-- RF dataset tests cũ (tests/test_dataset.py) vẫn pass nguyên trạng.
 
 Dataset test sinh trong ``tmp_path`` — không artifact nào được ghi vào repo.
 """
@@ -525,7 +524,7 @@ def test_write_split_manifest_file_hash_matches(tmp_path, fitted_data):
 def test_preprocessing_module_import_hygiene():
     """preprocessing.py không import sklearn/TensorFlow/pandas/pickle —
     artifact scaler phải là JSON số thuần, không pickle; module dùng được
-    ở runtime backend không kéo dependency nặng."""
+    ở runtime iot_backend không kéo dependency nặng."""
     source = (REPO_ROOT / "ai_model" / "preprocessing.py").read_text(
         encoding="utf-8"
     )

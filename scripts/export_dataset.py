@@ -1,9 +1,9 @@
-"""Closed SQLite sessions -> labelled JSONL usable by RF/LSTM trainers."""
+"""Closed SQLite sessions -> labelled JSONL usable by the LSTM trainer."""
 import argparse
 import json
 from pathlib import Path
 
-from backend.ingestion.store import Store
+from iot_backend.ingestion.store import Store
 
 
 def export_dataset(db_path: str | Path, out_path: str | Path, source: str) -> dict:

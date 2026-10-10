@@ -10,7 +10,7 @@ Chạy từ repo root::
 
 Mặc định ``--no-mqtt``: ranh giới session chốt bằng fallback DB, KHÔNG cần
 broker. ``--mqtt``: tạo listener ngắn để publish control và chờ ack thiết bị.
-CHÚ Ý: không chạy CLI ``--mqtt`` cạnh backend đang ghi cùng một DB cùng lúc —
+CHÚ Ý: không chạy CLI ``--mqtt`` cạnh iot_backend đang ghi cùng một DB cùng lúc —
 chỉ dùng một trong hai tại một thời điểm.
 """
 
@@ -20,18 +20,18 @@ import logging
 import sys
 from pathlib import Path
 
-from backend.ingestion.mqtt_listener import MqttListener
-from backend.ingestion.service import IngestionService
-from backend.ingestion.store import Store
-from backend.safety import load_safety_configs
-from backend.sessions import (
+from iot_backend.ingestion.mqtt_listener import MqttListener
+from iot_backend.ingestion.service import IngestionService
+from iot_backend.ingestion.store import Store
+from iot_backend.safety import load_safety_configs
+from iot_backend.sessions import (
     MqttControlTransport,
     SessionManager,
     export_csv,
     export_jsonl,
 )
-from backend.sessions.manager import snapshot_configs
-from backend.settings import load_settings
+from iot_backend.sessions.manager import snapshot_configs
+from iot_backend.settings import load_settings
 from dotenv import load_dotenv
 
 __all__ = ["main"]
@@ -59,7 +59,7 @@ def _build_manager(
     if not use_mqtt:
         return manager, None
     # CLI --mqtt: service đầy đủ để listener có thể ingest telemetry nhận được
-    # trong lúc chờ ack (không cạnh backend khác đang ghi cùng DB).
+    # trong lúc chờ ack (không cạnh iot_backend khác đang ghi cùng DB).
     service = IngestionService(store, configs, session_assigner=manager)
     listener = MqttListener(service, mqtt_host, mqtt_port)
     control = MqttControlTransport(listener)

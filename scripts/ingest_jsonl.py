@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Any
 
 
-from backend.ingestion.service import IngestionService
-from backend.ingestion.store import Store
-from backend.inference.predictor import SafetyPredictor, build_predictor
-from backend.safety import load_safety_configs
-from backend.sessions.manager import SessionManager
-from backend.settings import load_settings
+from iot_backend.ingestion.service import IngestionService
+from iot_backend.ingestion.store import Store
+from iot_backend.inference.predictor import SafetyPredictor, build_predictor
+from iot_backend.safety import load_safety_configs
+from iot_backend.sessions.manager import SessionManager
+from iot_backend.settings import load_settings
 from dotenv import load_dotenv
 
 __all__ = ["main"]
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TOPIC = "hrc/v1/devices/unknown/telemetry"
 
 
-def _make_predictor(model_dir: str, model_config_path: str, model_type: str = "rf") -> SafetyPredictor:
+def _make_predictor(model_dir: str, model_config_path: str, model_type: str = "lstm") -> SafetyPredictor:
     return build_predictor(model_dir, model_config_path, model_type)
 
 
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         "--model-dir",
         default=None,
         help=(
-            "Thư mục artifact RF/LSTM; mặc định "
+            "Thư mục artifact LSTM; mặc định "
             "lấy settings.model_artifact_dir (env MODEL_ARTIFACT_DIR). "
             "Thiếu artifact → ingest không kèm dự báo (MODEL_UNAVAILABLE)."
         ),
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env-file", default=None, help="File .env tùy chọn để nạp biến môi trường"
     )
-    parser.add_argument("--model-type", choices=("rf", "lstm"), default=None)
+    parser.add_argument("--model-type", choices=("lstm",), default=None)
     args = parser.parse_args(argv)
 
     if args.env_file:

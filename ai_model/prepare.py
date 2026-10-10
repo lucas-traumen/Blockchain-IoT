@@ -70,7 +70,7 @@ SPLIT_NAMES = ("train", "val", "test")
 
 
 def _utc_now_iso() -> str:
-    """Thời điểm UTC hiện tại, millisecond, hậu tố Z (không phụ thuộc backend)."""
+    """Thời điểm UTC hiện tại, millisecond, hậu tố Z (không phụ thuộc iot_backend)."""
     return (
         datetime.now(timezone.utc)
         .isoformat(timespec="milliseconds")
@@ -358,7 +358,7 @@ def validate_split(
         union = sets["train"] | sets["val"] | sets["test"]
         if union != expected:
             raise ValueError(
-                f"union của split lệch tập session kỳ vọng: thiếu "
+                f"union của session lists lệch tập session kỳ vọng: thiếu "
                 f"{sorted(expected - union)[:5]}, thừa {sorted(union - expected)[:5]}"
             )
     return {name: len(sets[name]) for name in SPLIT_NAMES}
@@ -434,7 +434,7 @@ def _prepared_row(rec: Mapping, index: int) -> Mapping:
     ở ``meta`` nhưng payload không có ``session_id`` — nếu đưa thẳng vào
     ``extract_windows``, các mẫu nhóm theo ``(None, device, boot)`` và boot
     tái sử dụng giữa sessions sẽ nối window QUA session (leakage). Quy ước
-    (giống RF train.py): khi row thiếu ``session_id``, inject bản sao
+    (dùng chung train/evaluate): khi row thiếu ``session_id``, inject bản sao
     ``row["session_id"] = session_label``; row đã có ``session_id`` khác
     session key → ``ValueError`` (không nối âm thầm). Input không mutate.
     """
@@ -515,6 +515,7 @@ def build_lstm_dataset(
     ratios: Sequence[float] = (0.7, 0.15, 0.15),
     group_key: Callable[[str], str] | None = None,
     created_at: str | None = None,
+    session_split: Mapping[str, Iterable[str]] | None = None,
 ) -> LSTMDataset:
     """Chuẩn bị dataset LSTM: split theo session TRƯỚC, extract window SAU.
 
@@ -532,9 +533,13 @@ def build_lstm_dataset(
       - ``group_key``: hook gom session theo buổi — như ``split_by_session``.
       - ``created_at``: truyền tường minh nếu muốn manifest có timestamp
         (hash sẽ lệch theo giá trị này); mặc định manifest không timestamp.
+      - ``session_split``: mapping ``train/val/test`` → session ids đã được
+        chốt trước. Khi truyền, không xáo trộn lại theo seed; dùng để tái lập
+        đúng tập test đã chọn cho báo cáo. Mapping cũng chấp nhận object có
+        khóa ``sessions`` như file split manifest.
 
     Đầu vào: caller tự assemble rows (session export JSONL, SQLite
-    ``session_raw_rows``/``all_raw_rows`` của ``backend.ingestion.store``,
+    ``session_raw_rows``/``all_raw_rows`` của ``iot_backend.ingestion.store``,
     hoặc bất kỳ nguồn nào) — module này KHÔNG mở DB, chỉ nhận rows đã nạp.
 
     Guards: split có ratio > 0 nhưng không có session/window, hoặc tổng
@@ -553,7 +558,7 @@ def build_lstm_dataset(
         import numpy as _np
     except ImportError:  # pragma: no cover - .venv luôn có numpy
         _np = None  # type: ignore[assignment]
-    # Import cục bộ: prepare.py giữ nhẹ ở top-level (RF path không cần),
+    # Import cục bộ: prepare.py giữ nhẹ ở top-level;
     # windows/features chỉ nạp khi dựng dataset LSTM.
     from ai_model.features import windows_to_lstm_array
     from ai_model.windows import extract_windows
@@ -581,9 +586,17 @@ def build_lstm_dataset(
                     "manifest, từ chối"
                 )
 
-    # 1) Split theo session TRƯỚC khi tạo bất kỳ window nào.
-    split = split_by_session(records, seed=seed, ratios=ratios, group_key=group_key)
+    # 1) Split theo session TRƯỚC khi tạo bất kỳ window nào. Với split
+    # manifest đã chốt, tuyệt đối không randomize lại: seed chỉ còn là
+    # metadata để truy vết artifact.
     session_keys = {_extract_session_key(rec) for rec in records}
+    if session_split is None:
+        split = split_by_session(records, seed=seed, ratios=ratios, group_key=group_key)
+    else:
+        source = session_split.get("sessions", session_split) if isinstance(session_split, Mapping) else session_split
+        if not isinstance(source, Mapping):
+            raise ValueError("session_split phải là mapping train/val/test hoặc manifest có khóa sessions")
+        split = {name: set(source.get(name, ())) for name in SPLIT_NAMES}
     validate_split(split, expected_sessions=session_keys)
     key_to_split: dict[str, str] = {
         key: name for name in SPLIT_NAMES for key in split[name]

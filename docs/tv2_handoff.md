@@ -1,10 +1,10 @@
 # Bàn giao dữ liệu cho TV2 (assessment_v1)
 
-Contract giữa TV3/TV4 (backend thu thập + đánh giá) và TV2 (bộ gom sự kiện /
+Contract giữa TV3/TV4 (iot_backend thu thập + đánh giá) và TV2 (bộ gom sự kiện /
 Smart Contract của TV1–TV2). Đơn vị bàn giao là **bản ghi assessment_v1** lưu
 trong cột `processed_samples.result_json` của SQLite — đúng
 [schemas/assessment_v1.schema.json](../schemas/assessment_v1.schema.json)
-(Draft 2020-12, `additionalProperties: false`). TV2 không đọc code backend;
+(Draft 2020-12, `additionalProperties: false`). TV2 không đọc code iot_backend;
 mọi thứ TV2 cần về một mẫu đo nằm trọn trong bản ghi này.
 
 ## 1. Bản ghi assessment_v1
@@ -16,12 +16,12 @@ Bản ghi gồm đúng **9 nhóm field** (thiếu/thừa field là vi phạm sch
 | `schema_version` | `"1.0"` | cố định | Phiên bản schema bản ghi |
 | `sample_ref` | object | payload telemetry | Khóa mẫu: `device_id`, `boot_id`, `sequence` |
 | `session_id` | string/null | `SessionManager.assign` | Lượt thu mẫu thuộc theo ranh giới session; `null` nếu không gán được (ngoài khoảng, boot khác, hoặc ingest không mở session) |
-| `measured_at` | string/null | payload telemetry | Giờ thiết bị tự khai lúc **bắt đầu đo**; `null` khi chưa sync GPS/NTP (`time_synced=false`) — không bao giờ thay bằng giờ backend |
+| `measured_at` | string/null | payload telemetry | Giờ thiết bị tự khai lúc **bắt đầu đo**; `null` khi chưa sync GPS/NTP (`time_synced=false`) — không bao giờ thay bằng giờ iot_backend |
 | `computed_at` | string | `utc_now_iso()` lúc tính | Thời điểm processor tính; **khác nhau theo `processor_version`** (live tính lúc nhận, replay tính lúc chạy replay) |
-| `received_at` | string | giờ backend nhận message | Thời điểm MQTT/ingest nhận payload; catch_up/replay tái dùng giá trị đã lưu trong `raw_samples.received_at`, không đè bằng giờ mới |
+| `received_at` | string | giờ iot_backend nhận message | Thời điểm MQTT/ingest nhận payload; catch_up/replay tái dùng giá trị đã lưu trong `raw_samples.received_at`, không đè bằng giờ mới |
 | `distance_m` | number/null | `distance_mm / 1000` | Khoảng cách đo (SI tại biên); `null` khi mẫu lỗi (`sensor_valid=false`) |
-| `safety` | object | `backend/safety` | Kết quả đánh giá ngưỡng an toàn — 9 field con, xem bảng dưới |
-| `prediction` | object | `backend/inference` | Dự báo + cảnh báo sớm — 8 field cũ và 2 field LSTM optional, xem bảng dưới |
+| `safety` | object | `iot_backend/safety` | Kết quả đánh giá ngưỡng an toàn — 9 field con, xem bảng dưới |
+| `prediction` | object | `iot_backend/inference` | Dự báo + cảnh báo sớm — 8 field cũ và 2 field LSTM optional, xem bảng dưới |
 
 ### 1.1 Khối `safety` (9 field con)
 
@@ -37,12 +37,12 @@ Bản ghi gồm đúng **9 nhóm field** (thiếu/thừa field là vi phạm sch
 | `components` | object/null | 6 thành phần của Sp tính theo config: `sh_m`, `sr_m`, `ss_m`, `c_m`, `zd_m`, `zr_m` (mét); `null` khi UNKNOWN |
 | `config_fit_warnings` | array[string] | Cảnh báo cấu hình (không chặn, không giảm Sp), ví dụ Sp nằm ngoài vùng đo đã kiểm chứng `measurement_zone_m` |
 
-### 1.2 Khối `prediction` (RF legacy + LSTM)
+### 1.2 Khối `prediction` (LSTM)
 
 | Field | Kiểu | Ý nghĩa |
 |-------|------|---------|
 | `status` | `OK` \| `WARMUP` \| `INVALID_WINDOW` \| `MODEL_UNAVAILABLE` | Đủ 10 mẫu run liền mạch → OK; chưa đủ → WARMUP; mẫu lỗi/đứt run (sequence, gap, jitter) → INVALID_WINDOW; không nạp được artifact → MODEL_UNAVAILABLE. Thứ tự ưu tiên khi đánh giá: MODEL_UNAVAILABLE → INVALID_WINDOW → WARMUP → OK |
-| `model_version` | string/null | Từ manifest artifact (vd `rf-v1`); `null` khi `status != OK` |
+| `model_version` | string/null | Từ manifest artifact (vd `lstm-v1`); `null` khi `status != OK` |
 | `horizons_ms` | array[int] | Luôn từ `configs/model.yaml`: `[100, 200, 300, 400, 500]` |
 | `distance_m` | array[5 number]/null | 5 dự báo khoảng cách (mét, giữ float đầy đủ) tương ứng `horizons_ms`; `null` khi `status != OK` |
 | `early_warning` | bool/null | `true` iff hiện tại còn CLEAR (`distance_m > Sp`) **và** min dự báo `<= Sp`; hiện tại đã VIOLATION → `false` (đã vi phạm, không phải cảnh báo sớm); `null` khi `status != OK`; Sp không xác định (UNKNOWN) → `false`, không bịa ngưỡng thay thế |
@@ -52,7 +52,7 @@ Bản ghi gồm đúng **9 nhóm field** (thiếu/thừa field là vi phạm sch
 
 LSTM bổ sung `preprocessing_version` (vd `pp-lstm-v1`) và
 `predicted_violation_ms` (horizon đầu dự báo <= Sp, hoặc null). Cả hai null
-khi prediction không OK. Schema vẫn nhận assessment RF cũ thiếu hai field.
+khi prediction không OK. Các assessment cũ có thể thiếu hai field mở rộng.
 So threshold trước mọi phép làm tròn; không dùng giá trị trình bày thay số gốc.
 
 ### 1.3 Ví dụ (shape thật, giá trị minh họa)
@@ -79,7 +79,7 @@ So threshold trước mọi phép làm tròn; không dùng giá trị trình bà
   },
   "prediction": {
     "status": "OK",
-    "model_version": "rf-v1",
+    "model_version": "lstm-v1",
     "horizons_ms": [100, 200, 300, 400, 500],
     "distance_m": [0.601, 0.562, 0.518, 0.478, 0.435],
     "early_warning": true,
@@ -101,7 +101,7 @@ chính xác.
 
 Ba kênh, tuỳ hạ tầng của TV2:
 
-### 2a. REST — `GET /assessments` (backend đang chạy)
+### 2a. REST — `GET /assessments` (iot_backend đang chạy)
 
 ```bash
 # Mọi assessment của một session, bản live (mặc định processor_version=safety-v1)
@@ -114,7 +114,7 @@ curl 'http://localhost:8000/assessments?session_id=run_001&processor_version=rep
 curl 'http://localhost:8000/samples/esp32_01/b1/125?processor_version=safety-v1'
 ```
 
-Tham số query của `/assessments` (theo `backend/main.py`):
+Tham số query của `/assessments` (theo `iot_backend/main.py`):
 
 | Tham số | Mặc định | Ý nghĩa |
 |---------|----------|---------|
@@ -128,7 +128,7 @@ thông tin session (ranh giới `start/stop_sequence`, `boundary_source`,
 `boot_change`, ...) gộp với thống kê từ `session_stats`: `sample_count`,
 `late_count`, `gap_count`, `violation_count`, `clear_count`,
 `unknown_count` (ba đếm cuối tính theo `safety.status` của
-`processor_version` mà backend đang chạy).
+`processor_version` mà iot_backend đang chạy).
 
 ### 2b. Export qua session_cli (raw telemetry)
 
@@ -151,7 +151,7 @@ endpoint CSV riêng cho assessment.
 ### 2c. Đọc trực tiếp SQLite `processed_samples`
 
 DB SQLite WAL tại `HRC_DB_PATH` (mặc định `data/hrc.db`); DDL duy nhất trong
-`backend/ingestion/schema.sql`. Bảng `processed_samples`:
+`iot_backend/ingestion/schema.sql`. Bảng `processed_samples`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS processed_samples (
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS processed_samples (
 ```
 
 `result_json` là chuỗi JSON của bản ghi ở mục 1 (key đã sort). Đọc read-only
-để không can thiệp DB của backend:
+để không can thiệp DB của iot_backend:
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -206,7 +206,7 @@ Những gì TV2 được giả định an toàn khi tiêu thụ dữ liệu:
 ## 4. Giới hạn demo (những gì TV3/TV4 KHÔNG đảm bảo)
 
 - **Không ghi Blockchain tức thì**: việc ghi lên chain là nhiệm vụ TV1–TV2;
-  backend chỉ lưu SQLite và phục vụ qua API/export.
+  iot_backend chỉ lưu SQLite và phục vụ qua API/export.
 - **Thiết bị chưa sync giờ**: `measured_at = null` (kèm `time_synced=false`);
   đánh giá an toàn khi đó dùng `received_at` làm mốc chọn config
   (`config_time_source = "received_at"`) — chỉ là xấp xỉ, không phải giờ đo.
@@ -216,7 +216,7 @@ Những gì TV2 được giả định an toàn khi tiêu thụ dữ liệu:
 - **Boundary session**: MQTT commit raw trước; trong lúc `session_start`/`stop`
   chờ ACK, compute worker tạm chờ boundary gate. Mẫu đang bay được gán theo
   đúng boundary sau khi ACK, và stop fallback nhìn cả raw pending
-  (`backend/sessions/manager.py`, `backend/ingestion/mqtt_listener.py`).
+  (`iot_backend/sessions/manager.py`, `iot_backend/ingestion/mqtt_listener.py`).
 - **Chưa có endpoint CSV cho assessment** và không có phân trang sâu — DB
   lớn thì TV2 đọc SQLite trực tiếp (2c).
 

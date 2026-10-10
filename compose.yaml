@@ -22,11 +22,11 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  backend:
-    image: blockchain-hrc:${HRC_RUNTIME_TARGET:-backend}
+  iot_backend:
+    image: blockchain-hrc:${HRC_RUNTIME_TARGET:-ai}
     build:
       context: .
-      target: ${HRC_RUNTIME_TARGET:-backend}
+      target: ${HRC_RUNTIME_TARGET:-ai}
     restart: unless-stopped
     init: true
     depends_on:
@@ -34,24 +34,32 @@ services:
         condition: service_healthy
     ports:
       - "${HRC_API_BIND:-0.0.0.0}:${HRC_API_HOST_PORT:-8001}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MQTT_HOST: mqtt
       MQTT_PORT: "1883"
       HRC_MQTT_ENABLED: "true"
       HRC_DB_PATH: /app/data/hrc.db
       DEVICE_ID: ${HRC_DEVICE_ID:-esp32_01}
-      HRC_ACK_TIMEOUT_S: ${HRC_ACK_TIMEOUT_S:-2.0}
-      SAFETY_CONFIG: /app/configs/safety.yaml
+      HRC_ACK_TIMEOUT_S: ${HRC_ACK_TIMEOUT_S:-8.0}
+      SAFETY_CONFIG: /app/configs/${HRC_SAFETY_CONFIG:-safety-square.yaml}
       MODEL_CONFIG: /app/configs/model.yaml
-      MODEL_TYPE: ${HRC_MODEL_TYPE:-rf}
-      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-}
+      MODEL_TYPE: ${HRC_MODEL_TYPE:-lstm}
+      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-lstm-real-20261010}
       KERAS_HOME: /tmp/keras
       TF_CPP_MIN_LOG_LEVEL: "2"
       TF_NUM_INTEROP_THREADS: "1"
       TF_NUM_INTRAOP_THREADS: "1"
       OMP_NUM_THREADS: "1"
+      HRC_REWARD_API_URL: ${HRC_REWARD_API_URL:-http://host.docker.internal:3000}
+      HRC_REWARD_INGEST_TOKEN: ${HRC_REWARD_INGEST_TOKEN:-}
+      HRC_REWARD_BENEFICIARY: ${HRC_REWARD_BENEFICIARY:-}
+      HRC_REWARD_AUTO_START: ${HRC_REWARD_AUTO_START:-false}
+      HRC_REWARD_AUTO_SETTLE: ${HRC_REWARD_AUTO_SETTLE:-false}
+      HRC_REWARD_TIMEOUT_S: ${HRC_REWARD_TIMEOUT_S:-10.0}
     volumes:
-      - backend_data:/app/data
+      - iot_backend_data:/app/data
       - ./ai_model/artifacts:/app/ai_model/artifacts:ro
       - ./configs:/app/configs:ro
     healthcheck:
@@ -89,4 +97,5 @@ services:
 
 volumes:
   mqtt_data:
-  backend_data:
+  iot_backend_data:
+    name: blockchain-hrc_backend_data

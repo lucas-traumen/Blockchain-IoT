@@ -19,8 +19,9 @@ Nguồn spec: PLAN.md mục 4 (M5). Định nghĩa chốt, dùng xuyên suốt p
   khoảng này.
 
 Số liệu không xác định ghi ``None``, không bịa: không có Event → recall
-``None`` (precision vẫn tính được); không có cặp Episode–Event match →
-lead time ``None``.
+``None``; không có cặp Episode–Event match → lead time ``None``. Nếu có
+Event thật nhưng model không phát Episode nào, precision không có mẫu số,
+recall = 0 và F1 = 0.
 """
 
 from __future__ import annotations
@@ -267,8 +268,10 @@ def event_metrics_extended(
     - ``recall`` = matched unique events / tổng events; không có Event →
       None. Có Event nhưng không match → 0.0.
     - ``f1`` = harmonic mean 2·p·r/(p+r) khi cả precision và recall đều
-      xác định và (p+r) > 0; thiếu một trong hai → None. Trường hợp có
-      Episode nhưng không TP VÀ có Event: precision=0, recall=0, f1=0.
+      xác định và (p+r) > 0; thiếu một trong hai → None. Khi có Event nhưng
+      không có Episode nào, precision không xác định nhưng recall=0 và
+      f1=0 để phản ánh model bỏ sót toàn bộ event. Trường hợp có Episode
+      nhưng không TP VÀ có Event cũng có precision=0, recall=0, f1=0.
     - ``false_warning_rate`` = (episodes − TP) / tổng episodes; không có
       Episode → None.
     - ``miss_rate`` = 1 − recall khi có Event; không có Event → None.
@@ -301,6 +304,10 @@ def event_metrics_extended(
     if precision is not None and recall is not None:
         total = precision + recall
         f1 = 0.0 if total == 0 else 2.0 * precision * recall / total
+    elif n_events and n_episodes == 0:
+        # Có event thật nhưng model không phát warning nào: precision không
+        # có mẫu số, còn F1 theo quy ước đánh giá binary là 0 vì recall=0.
+        f1 = 0.0
 
     false_warning_rate: float | None = None
     if n_episodes:

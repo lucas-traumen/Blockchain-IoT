@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>HRC Safety Log | Safety Control Center</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Google Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet"
+    >
+</head>
+
+<body>
+
+<div class="app">
+
+    <!-- =========================================================
+         SIDEBAR
+    ========================================================== -->
+    <aside class="sidebar">
+
+        <div class="brand">
+            <div class="brand-icon">
+                <span>⬡</span>
+            </div>
+
+            <div class="brand-text">
+                <h1>HRC</h1>
+                <span>SAFETY LOG</span>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <span class="sidebar-label">MONITORING</span>
+
+            <nav class="sidebar-nav">
+
+                <a href="#dashboard" data-view="dashboard" class="nav-item active">
+                    <span class="nav-icon">⌂</span>
+                    <span>Dashboard</span>
+                </a>
+
+                <a href="#live-monitoring" data-view="live-monitoring" class="nav-item">
+                    <span class="nav-icon">◉</span>
+                    <span>Live Monitoring</span>
+                </a>
+
+                <a href="#safety-events" data-view="safety-events" class="nav-item">
+                    <span class="nav-icon">⚠</span>
+                    <span>Safety Events</span>
+                    <span class="nav-badge">0</span>
+                </a>
+
+            </nav>
+        </div>
+
+        <div class="sidebar-section">
+            <span class="sidebar-label">BLOCKCHAIN</span>
+
+            <nav class="sidebar-nav">
+
+                <a href="#blockchain" data-view="blockchain" class="nav-item">
+                    <span class="nav-icon">⬢</span>
+                    <span>Blockchain</span>
+                </a>
+
+                <a href="#transactions" data-view="transactions" class="nav-item">
+                    <span class="nav-icon">◈</span>
+                    <span>Transactions</span>
+                </a>
+
+                <a href="#rewards" data-view="rewards" class="nav-item">
+                    <span class="nav-icon">◎</span>
+                    <span>Session Rewards</span>
+                </a>
+
+            </nav>
+        </div>
+
+        <div class="sidebar-section">
+            <span class="sidebar-label">SYSTEM</span>
+
+            <nav class="sidebar-nav">
+
+                <a href="#robot" data-view="robot" class="nav-item">
+                    <span class="nav-icon">▣</span>
+                    <span>Robot</span>
+                </a>
+
+                <a href="#settings" data-view="settings" class="nav-item">
+                    <span class="nav-icon">⚙</span>
+                    <span>Settings</span>
+                </a>
+
+            </nav>
+        </div>
+
+        <div class="sidebar-bottom">
+
+            <div class="connection-status">
+                <span class="status-dot online"></span>
+
+                <div>
+                    <strong>Backend Dashboard</strong>
+                    <small>Status available through blockchain_api</small>
+                </div>
+            </div>
+
+            <div class="sidebar-version">
+                HRC Safety Log v1.0
+            </div>
+
+        </div>
+
+    </aside>
+
+
+    <!-- =========================================================
+         MAIN CONTENT
+    ========================================================== -->
+    <main class="main">
+
+        <!-- HEADER -->
+        <header class="topbar">
+
+            <div class="page-heading">
+
+                <div class="mobile-menu">
+                    ☰
+                </div>
+
+                <div>
+                    <h2>Safety Control Center</h2>
+
+                    <p>
+                        Human–Robot Collaboration Safety Monitoring
+                    </p>
+                </div>
+
+            </div>
+
+
+            <div class="topbar-actions">
+
+                <div class="network-status">
+                    <span class="status-dot online"></span>
+
+                    <div>
+                        <span>TEST NETWORK</span>
+                        <strong>Hardhat Local</strong>
+                    </div>
+                </div>
+
+                <button type="button" title="Connect MetaMask on Hardhat Local"
+                    id="connectWalletBtn"
+                    class="wallet-btn"
+                >
+                    <span class="wallet-icon">🦊</span>
+                    <span id="walletButtonLabel">Connect Wallet</span>
+                </button>
+
+            </div>
+
+        </header>
+
+
+        <div id="view-dashboard" class="sidebar-view">
+        <!-- =====================================================
+             OVERVIEW CARDS
+        ====================================================== -->
+
+        <section class="overview-grid">
+
+            <!-- ROBOT -->
+            <div class="overview-card">
+
+                <div class="card-top">
+
+                    <div class="card-icon robot-icon">
+                        ◉
+                    </div>
+
+                    <span class="card-label">
+                        ROBOT STATUS
+                    </span>
+
+                </div>
+
+                <div class="card-value" id="robotStatus">UNKNOWN</div>
+
+                <div class="card-meta">
+                    <span class="status-dot online"></span>
+                    <span id="robotDevice">
+                        Device: ROBOT-ARM-01
+                    </span>
+                </div>
+
+            </div>
+
+
+            <!-- AI SAFETY -->
+            <div class="overview-card">
+
+                <div class="card-top">
+
+                    <div class="card-icon ai-icon">
+                        ✦
+                    </div>
+
+                    <span class="card-label">
+                        AI SAFETY STATE
+                    </span>
+
+                </div>
+
+                <div
+                    class="card-value safety-clear"
+                    id="aiSafetyState"
+                >UNKNOWN</div>
+
+                <div class="card-meta">
+                    <span class="status-dot clear"></span>
+
+                    <span>
+                        State derived from latest on-chain risk
+                    </span>
+                </div>
+
+            </div>
+
+
+            <!-- EVENTS -->
+            <div class="overview-card">
+
+                <div class="card-top">
+
+                    <div class="card-icon event-icon">
+                        ⚡
+                    </div>
+
+                    <span class="card-label">
+                        SAFETY EVENTS
+                    </span>
+
+                </div>
+
+                <div
+                    class="card-value"
+                    id="eventCount"
+                >
+                    0
+                </div>
+
+                <div class="card-meta">
+                    <span>
+                        Recorded on-chain
+                    </span>
+                </div>
+
+            </div>
+
+
+            <!-- BLOCKCHAIN -->
+            <div class="overview-card">
+
+                <div class="card-top">
+
+                    <div class="card-icon blockchain-icon">
+                        ⬢
+                    </div>
+
+                    <span class="card-label">
+                        BLOCKCHAIN
+                    </span>
+
+                </div>
+
+                <div class="card-value">
+                    LOCAL 31337
+                </div>
+
+                <div class="card-meta">
+
+                    <span class="status-dot online"></span>
+
+                    <span>
+                        Backend reads on-chain records
+                    </span>
+
+                </div>
+
+            </div>
+
+            <!-- HRC REWARD BALANCE -->
+            <div class="overview-card reward-overview-card">
+                <div class="card-top">
+                    <div class="card-icon reward-icon">◎</div>
+                    <span class="card-label">HRC BALANCE</span>
+                </div>
+                <div class="card-value" id="rewardBalance">-- HRC</div>
+                <div class="card-meta"><span id="rewardSettlementStatus">Loading reward state...</span></div>
+            </div>
+
+        </section>
+
+
+        <!-- =====================================================
+             MAIN GRID
+        ====================================================== -->
+
+        <section class="main-grid">
+
+
+            <!-- =================================================
+                 REAL-TIME SAFETY MONITOR
+            ================================================== -->
+
+            <div class="panel monitoring-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <div class="panel-title-row">
+
+                            <span class="live-indicator">
+                                <span></span>
+                            </span>
+
+                            <h3>
+                                Real-Time Safety Monitor
+                            </h3>
+
+                        </div>
+
+                        <p>
+                            Distance monitoring & AI prediction
+                        </p>
+
+                    </div>
+
+                    <div class="live-badge">
+                        LIVE
+                    </div>
+
+                </div>
+
+
+                <!-- CHART -->
+                <div class="chart-container">
+
+                    <div class="chart-y-axis">
+
+                        <span>2.0 m</span>
+                        <span>1.5 m</span>
+                        <span>1.0 m</span>
+                        <span>0.5 m</span>
+                        <span>0.0 m</span>
+
+                    </div>
+
+                    <div class="chart-area">
+
+                        <div class="chart-grid-line"></div>
+                        <div class="chart-grid-line"></div>
+                        <div class="chart-grid-line"></div>
+                        <div class="chart-grid-line"></div>
+                        <div class="chart-grid-line"></div>
+
+                        <div class="chart-placeholder">
+
+                            <div class="chart-message">
+
+                                <span class="chart-message-icon">
+                                    ◌
+                                </span>
+
+                                <strong>
+                                    Waiting for sensor data
+                                </strong>
+
+                                <small>
+                                    Real-time telemetry will appear here
+                                </small>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- LEGEND -->
+
+                <div class="chart-legend">
+
+                    <div class="legend-item">
+                        <span class="legend-line actual"></span>
+                        Actual Distance
+                    </div>
+
+                    <div class="legend-item">
+                        <span class="legend-line threshold"></span>
+                        Safety Threshold
+                    </div>
+
+                    <div class="legend-item">
+                        <span class="legend-line prediction"></span>
+                        AI Prediction
+                    </div>
+
+                </div>
+
+
+                <!-- SENSOR DATA -->
+
+                <div class="sensor-stats">
+
+                    <div class="sensor-stat">
+
+                        <span>Current Distance</span>
+
+                        <strong id="currentDistance">
+                            -- m
+                        </strong>
+
+                    </div>
+
+                    <div class="sensor-stat">
+
+                        <span>Safety Threshold</span>
+
+                        <strong id="safetyThreshold">
+                            -- m
+                        </strong>
+
+                    </div>
+
+                    <div class="sensor-stat">
+
+                        <span>Update Rate</span>
+
+                        <strong>
+                            Not available
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- =================================================
+                 AI PREDICTION
+            ================================================== -->
+
+            <div class="panel ai-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <h3>
+                            AI Prediction
+                        </h3>
+
+                        <p>
+                            Future safety estimation
+                        </p>
+
+                    </div>
+
+                    <div class="ai-model">
+                        Not available
+                    </div>
+
+                </div>
+
+
+                <div class="ai-state-card">
+
+                    <div class="ai-state-icon">
+                        ✓
+                    </div>
+
+                    <div>
+
+                        <span class="ai-state-label">
+                            CURRENT STATE
+                        </span>
+
+                        <strong
+                            id="predictionState"
+                            class="clear-text"
+                        >UNKNOWN</strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="prediction-list">
+                    <p>No forecast data available from the current API.</p>
+                </div>
+
+                <div class="ai-footer">
+
+                    <div>
+                        <span>Model</span>
+                        <strong>Not provided by historical API</strong>
+                    </div>
+
+                    <div>
+                        <span>Inference</span>
+                        <strong>Not available</strong>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- =================================================
+                 ROBOT CONTROL
+            ================================================== -->
+
+            <div class="panel robot-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <h3>
+                            Robot Control
+                        </h3>
+
+                        <p>
+                            Safety state & emergency control
+                        </p>
+
+                    </div>
+
+                    <span class="robot-id">
+                        ROBOT-ARM-01
+                    </span>
+
+                </div>
+
+
+                <div class="robot-status-box">
+
+                    <div class="robot-status-indicator">
+                        <span></span>
+                    </div>
+
+                    <div>
+
+                        <span>
+                            ROBOT ACCESS
+                        </span>
+
+                        <strong id="robotAccessState">UNKNOWN</strong>
+
+                    </div>
+
+                </div>
+
+
+                <p id="robotStatusMessage" role="status" aria-live="polite">Waiting for robot status.</p>
+                <div class="robot-controls">
+
+                    <div class="control-row">
+
+                        <span>Safety State</span>
+
+                        <strong
+                            id="robotSafetyState"
+                            class="clear-text"
+                        >UNKNOWN</strong>
+
+                    </div>
+
+                    <div class="control-row">
+
+                        <span>Emergency Stop</span>
+
+                        <strong id="emergencyStopState">UNKNOWN</strong>
+
+                    </div>
+
+                </div>
+
+
+                <p id="walletAccessMessage" role="status" aria-live="polite">Connect MetaMask to verify owner access.</p>
+                <dl class="view-info wallet-identity">
+                    <div><dt>Connected wallet</dt><dd id="connectedWalletAddress">Not connected</dd></div>
+                    <div><dt>Contract owner</dt><dd id="contractOwnerAddress">Not verified</dd></div>
+                    <div><dt>Role</dt><dd id="walletRole">NOT VERIFIED</dd></div>
+                </dl>
+                <p id="lockEventMessage" role="status">Loading lock reference event...</p>
+                <button id="lockRobotBtn" type="button" class="unlock-btn" disabled>Emergency Stop / Lock Robot</button>
+
+
+                <button
+                    id="unlockRobotBtn"
+                    class="unlock-btn"
+                    disabled
+                >
+                    <span>🔓</span>
+                    Unlock Robot
+                </button>
+
+            </div>
+
+
+            <!-- =================================================
+                 SAFETY STATE
+            ================================================== -->
+
+            <div class="panel safety-state-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <h3>
+                            Safety State
+                        </h3>
+
+                        <p>
+                            AI safety classification
+                        </p>
+
+                    </div>
+
+                </div>
+
+
+                <div class="safety-states">
+
+                    <div class="state-item">
+
+                        <div class="state-icon">
+                            ✓
+                        </div>
+
+                        <div>
+
+                            <strong>
+                                CLEAR
+                            </strong>
+
+                            <span>
+                                Safe operating condition
+                            </span>
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="state-item">
+
+                        <div class="state-icon">
+                            !
+                        </div>
+
+                        <div>
+
+                            <strong>
+                                WARNING
+                            </strong>
+
+                            <span>
+                                Potential safety risk
+                            </span>
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="state-item">
+
+                        <div class="state-icon">
+                            ×
+                        </div>
+
+                        <div>
+
+                            <strong>
+                                VIOLATION
+                            </strong>
+
+                            <span>
+                                Immediate safety violation
+                            </span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <section class="panel rewards-panel">
+            <div class="panel-header events-header">
+                <div>
+                    <h3>Session Rewards</h3>
+                    <p>On-chain stake, reward and penalty results from HRCSessionRewards</p>
+                </div>
+                <button type="button" class="view-all-btn" data-refresh>Refresh Data</button>
+            </div>
+            <p id="rewardMessage" class="view-message" role="status" aria-live="polite">Loading reward data...</p>
+            <div class="reward-summary-grid">
+                <div class="reward-stat"><span>Beneficiary</span><strong id="rewardBeneficiary" class="mono">-</strong></div>
+                <div class="reward-stat"><span>Wallet balance</span><strong id="rewardBalancePanel">- HRC</strong></div>
+                <div class="reward-stat"><span>Reward pool</span><strong id="rewardPoolBalance">- HRC</strong></div>
+                <div class="reward-stat"><span>Policy</span><strong id="rewardPolicy">Stake 2 / +3 / -2</strong></div>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>SESSION KEY</th><th>OUTCOME</th><th>STATUS</th><th>STAKE RETURNED</th><th>REWARD</th><th>PENALTY</th><th>BLOCK</th><th>TRANSACTION</th></tr></thead>
+                    <tbody id="rewardSessionsTableBody"><tr class="empty-row"><td colspan="8">Loading reward sessions...</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- =====================================================
+             ON-CHAIN EVENTS
+        ====================================================== -->
+
+        <section class="panel events-panel">
+
+            <div class="panel-header events-header">
+
+                <div>
+
+                    <h3>
+                        Recent On-Chain Safety Events
+                    </h3>
+
+                    <p>
+                        Immutable safety records stored on blockchain
+                    </p>
+
+                </div>
+
+                <button id="refreshBtn" class="view-all-btn" type="button">Refresh Data</button>
+
+            </div>
+
+
+            <p id="dashboardMessage" role="status" aria-live="polite">Waiting for blockchain_api data.</p>
+            <div class="table-wrapper">
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+
+                            <th>TIME</th>
+
+                            <th>EVENT ID</th>
+
+                            <th>DEVICE</th>
+
+                            <th>STATE</th>
+
+                            <th>RISK</th>
+
+                            <th>BLOCK</th>
+
+                            <th>TRANSACTION</th>
+
+                            <th>ACTION</th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody id="eventsTableBody"><tr class="empty-row"><td colspan="8">Loading safety events...</td></tr></tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+
+        </div>
+
+        <section id="view-live-monitoring" class="sidebar-view panel" hidden aria-labelledby="liveHeading">
+            <div class="panel-header"><div><h3 id="liveHeading">Live Monitoring</h3><p>Telemetry will be connected later.</p></div></div>
+            <div class="view-body"><dl class="view-info">
+                <div><dt>Robot device</dt><dd>ROBOT-ARM-01</dd></div>
+                <div><dt>Backend connection</dt><dd id="liveConnection">UNKNOWN</dd></div>
+                <div><dt>Telemetry connection</dt><dd>Not connected yet</dd></div>
+                <div><dt>Current distance</dt><dd>Not available</dd></div>
+                <div><dt>Safety threshold</dt><dd>Not available</dd></div>
+                <div><dt>AI prediction</dt><dd>Not available</dd></div>
+            </dl></div>
+        </section>
+        <section id="view-safety-events" class="sidebar-view panel" hidden aria-labelledby="eventsHeading">
+            <div class="panel-header"><div><h3 id="eventsHeading">Safety Events</h3><p>Real on-chain records. Safety state is derived from risk.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <p class="view-message" data-load-message role="status" aria-live="polite"></p>
+            <div class="table-wrapper"><table><thead><tr><th>TIME</th><th>EVENT ID</th><th>DEVICE</th><th>STATE</th><th>RISK</th><th>BLOCK</th><th>TRANSACTION</th><th>ACTION</th></tr></thead><tbody id="allEventsTableBody"></tbody></table></div>
+        </section>
+        <section id="view-blockchain" class="sidebar-view panel" hidden aria-labelledby="blockchainHeading">
+            <div class="panel-header"><div><h3 id="blockchainHeading">Blockchain</h3><p>Deployment information for the existing contract.</p></div></div>
+            <div class="view-body"><dl class="view-info">
+                <div><dt>Network</dt><dd>Hardhat Local</dd></div>
+                <div><dt>Chain ID</dt><dd>31337</dd></div>
+                <div><dt>Safety contract</dt><dd class="mono">0x5FbDB2315678afecb367f032d93F642f64180aa3</dd></div>
+                <div><dt>Reward contract</dt><dd class="mono">0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0</dd></div>
+                <div><dt>RPC</dt><dd class="mono">http://127.0.0.1:8545</dd></div>
+            </dl></div>
+        </section>
+        <section id="view-transactions" class="sidebar-view panel" hidden aria-labelledby="transactionsHeading">
+            <div class="panel-header"><div><h3 id="transactionsHeading">Transactions</h3><p>Safety and reward transactions recorded on Hardhat Local.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <p class="view-message" id="transactionsMessage" role="status" aria-live="polite"></p>
+            <div class="table-wrapper"><table><thead><tr><th>TRANSACTION HASH</th><th>TYPE</th><th>BLOCK</th><th>EVENT ID</th><th>DEVICE</th><th>RISK</th><th>ETHERSCAN</th></tr></thead><tbody id="transactionsTableBody"></tbody></table></div>
+        </section>
+        <section id="view-rewards" class="sidebar-view panel" hidden aria-labelledby="rewardsHeading">
+            <div class="panel-header"><div><h3 id="rewardsHeading">Session Rewards</h3><p>Fixed policy settlement on the local HRC reward contract.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <p id="rewardViewMessage" class="view-message" role="status" aria-live="polite"></p>
+            <div class="view-body"><dl class="view-info">
+                <div><dt>Beneficiary</dt><dd id="rewardViewBeneficiary" class="mono">-</dd></div>
+                <div><dt>HRC balance</dt><dd id="rewardViewBalance">-</dd></div>
+                <div><dt>Reward pool</dt><dd id="rewardViewPool">-</dd></div>
+                <div><dt>Policy</dt><dd id="rewardViewPolicy">Stake 2 / Reward 3 / Penalty 2</dd></div>
+            </dl></div>
+            <div class="table-wrapper"><table><thead><tr><th>SESSION KEY</th><th>OUTCOME</th><th>STATUS</th><th>REWARD</th><th>PENALTY</th><th>BLOCK</th><th>TRANSACTION</th></tr></thead><tbody id="rewardViewSessionsTableBody"></tbody></table></div>
+        </section>
+
+        <section id="view-robot" class="sidebar-view panel" hidden aria-labelledby="robotHeading">
+            <div class="panel-header"><div><h3 id="robotHeading">Robot</h3><p>Current lock state from the blockchain_api; safety state from the latest recorded risk.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <div class="view-body"><dl class="view-info">
+                <div><dt>Device</dt><dd>ROBOT-ARM-01</dd></div>
+                <div><dt>Robot access</dt><dd id="robotViewStatus">UNKNOWN</dd></div>
+                <div><dt>Safety state (derived from risk)</dt><dd id="robotViewSafety">UNKNOWN</dd></div>
+            </dl><p id="robotViewMessage" role="status" aria-live="polite"></p></div>
+        </section>
+        <section id="view-settings" class="sidebar-view panel" hidden aria-labelledby="settingsHeading">
+            <div class="panel-header"><div><h3 id="settingsHeading">Settings</h3><p>Information only. Configuration controls are not available yet.</p></div></div>
+            <div class="view-body"><dl class="view-info">
+                <div><dt>Backend API</dt><dd>http://localhost:3000</dd></div>
+                <div><dt>Network</dt><dd>Hardhat Local</dd></div>
+                <div><dt>Monitored device</dt><dd>ROBOT-ARM-01</dd></div>
+                <div><dt>Data refresh</dt><dd>Manual, using Refresh Data</dd></div>
+                <div><dt>Telemetry / AI</dt><dd>ESP32 → MQTT → iot_backend → LSTM</dd></div>
+                <div><dt>Wallet connection</dt><dd id="walletSettingsState">Not connected</dd></div>
+            </dl></div>
+        </section>
+
+        <!-- =====================================================
+             BLOCKCHAIN FOOTER
+        ====================================================== -->
+
+        <footer class="blockchain-footer">
+
+            <div class="footer-item">
+
+                <span>NETWORK</span>
+
+                <strong id="networkName">
+                    Hardhat Local
+                </strong>
+
+            </div>
+
+
+            <div class="footer-item">
+
+                <span>CONTRACT</span>
+
+                <strong class="mono">
+                    0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
+                </strong>
+
+            </div>
+
+
+            <div class="footer-item">
+
+                <span>CONNECTION</span>
+
+                <strong class="mono">
+                    Managed by blockchain_api
+                </strong>
+
+            </div>
+
+
+            <div class="footer-item">
+
+                <span>STATUS</span>
+
+                <strong>
+                    ● Connected
+                </strong>
+
+            </div>
+
+        </footer>
+
+    </main>
+
+</div>
+
+
+<!-- =========================================================
+     EVENT DETAIL MODAL
+========================================================== -->
+
+<div
+    id="eventModal"
+    class="modal hidden"
+>
+
+    <div class="modal-overlay"></div>
+
+    <div class="modal-content">
+
+        <div class="modal-header">
+
+            <div>
+
+                <span class="modal-label">
+                    ON-CHAIN EVENT
+                </span>
+
+                <h3>
+                    Safety Event Details
+                </h3>
+
+            </div>
+
+            <button
+                id="closeModalBtn"
+                class="modal-close"
+            >
+                ×
+            </button>
+
+        </div>
+
+
+        <div class="event-details">
+
+            <div class="detail-item">
+
+                <span>Event ID</span>
+
+                <strong id="detailEventId">
+                    —
+                </strong>
+
+            </div>
+
+
+            <div class="detail-item">
+
+                <span>Device ID</span>
+
+                <strong id="detailDeviceId">
+                    —
+                </strong>
+
+            </div>
+
+
+            <div class="detail-item">
+
+                <span>Safety State</span>
+
+                <strong id="detailSafetyState">
+                    —
+                </strong>
+
+            </div>
+
+
+            <div class="detail-item">
+
+                <span>Risk Level</span>
+
+                <strong id="detailRisk">
+                    —
+                </strong>
+
+            </div>
+
+
+            <div class="detail-item full">
+
+                <span>Transaction Hash</span>
+
+                <strong
+                    id="detailTx"
+                    class="mono"
+                >
+                    —
+                </strong>
+
+            </div>
+
+
+            <div class="detail-item full">
+
+                <span>Data Hash</span>
+
+                <strong
+                    id="detailDataHash"
+                    class="mono"
+                >
+                    —
+                </strong>
+
+            </div>
+
+        </div>
+
+
+        <div class="modal-actions">
+
+            <button id="etherscanBtn" class="etherscan-btn" type="button">
+                ↗ View on Etherscan
+            </button>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+    <script src="vendor/ethers.umd.min.js" defer></script>
+    <script src="wallet.js" defer></script>
+    <script src="app.js" defer></script>
+</body>
+</html>

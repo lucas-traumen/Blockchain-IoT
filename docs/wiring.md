@@ -2,13 +2,13 @@
 
 Firmware đã build trên **ESP-IDF 6.0.1 cho ESP32 và ESP32-S3**.
 Bản sửa mới và phần điện/đo trên bo chưa kiểm chứng; xem
-[iot_code/esp32/README.md](../iot_code/esp32/README.md). Host MQTT, backend và
+[firmware/esp32/README.md](../firmware/esp32/README.md). Host MQTT, iot_backend và
 công cụ AI chạy bằng [Docker Compose](docker.md).
 
 ## Sơ đồ khối và topic
 
 ```text
-ESP32 + HC-SR04 → MQTT QoS1 → Docker Mosquitto → Docker backend
+ESP32 + HC-SR04 → MQTT QoS1 → Docker Mosquitto → Docker iot_backend
        ↑ control/ack                              ├─ raw SQLite
                                                   ├─ safety + inference
                                                   └─ assessment/event API
@@ -16,9 +16,9 @@ ESP32 + HC-SR04 → MQTT QoS1 → Docker Mosquitto → Docker backend
 
 | Hướng | Topic | Dữ liệu |
 |---|---|---|
-| device → backend | `hrc/v1/devices/{device_id}/telemetry` | 11 field telemetry_v1, mm/µs |
-| backend → device | `hrc/v1/devices/{device_id}/control` | session_start/session_stop, session_id |
-| device → backend | `hrc/v1/devices/{device_id}/ack` | accepted, boot_id, sequence |
+| device → iot_backend | `hrc/v1/devices/{device_id}/telemetry` | 11 field telemetry_v1, mm/µs |
+| iot_backend → device | `hrc/v1/devices/{device_id}/control` | session_start/session_stop, session_id |
+| device → iot_backend | `hrc/v1/devices/{device_id}/ack` | accepted, boot_id, sequence |
 
 QoS1, retain=false. `device_id` mặc định `esp32_01`, phải khớp
 `HRC_DEVICE_ID` trong Compose để lệnh session được gửi đến đúng thiết bị.
@@ -46,7 +46,7 @@ TRIG/ECHO, nguồn và GND; đổi mức log không tạo ra xung phản hồi.
 Từ repo root:
 
 ```bash
-docker compose up -d --build --wait mqtt backend
+docker compose up -d --build --wait mqtt iot_backend
 docker compose ps
 curl http://localhost:8001/health
 ```
@@ -57,13 +57,13 @@ Ngày 2026-10-02 IP host là `192.168.100.3`. Dùng IP hiện tại khi mạng �
 Không dùng localhost trên ESP32 hoặc broker của dự án khác.
 
 SQLite/broker có named volume. Model chưa có artifact thì prediction trả
-MODEL_UNAVAILABLE; safety vẫn hoạt động. Chọn RF/LSTM và AI theo
+MODEL_UNAVAILABLE; safety vẫn hoạt động. Chọn runtime LSTM và AI theo
 [docker.md](docker.md), [lstm.md](lstm.md).
 
 ## Khai báo Wi-Fi rồi build/flash đúng chip
 
 Khai báo Wi-Fi **trước khi build** trong
-`iot_code/esp32/main/network_config.local.h`:
+`firmware/esp32/main/network_config.local.h`:
 
 ```c
 #define HRC_WIFI_LIST_MODE 1
@@ -87,7 +87,7 @@ khi cắm lại; dùng chip/cổng thực tế để chọn target. Ví dụ cho
 ESP-IDF Terminal:
 
 ```bash
-cd iot_code/esp32
+cd firmware/esp32
 HRC_PORT=/dev/ttyUSB0   # thay bằng cổng thực tế của bo
 python -m esptool --port "$HRC_PORT" chip-id
 idf.py set-target esp32
@@ -106,7 +106,7 @@ Sau flash, monitor in `distance_mm`, `echo_us`, `valid` và `sequence` mỗi
 1 s. Đổi `HRC_DISTANCE_LOG_PERIOD_MS=100` qua menuconfig để xem từng mẫu.
 Chờ log `control ready (QoS1, ...)` để xác nhận subscribe control đã được
 broker chấp nhận. Task gửi riêng và bộ đếm PUBACK giúp theo dõi MQTT; xem
-[firmware README](../iot_code/esp32/README.md#log-khoảng-cách-và-gửi-mqtt).
+[firmware README](../firmware/esp32/README.md#log-khoảng-cách-và-gửi-mqtt).
 
 
 ```bash
@@ -124,4 +124,4 @@ curl -X POST http://localhost:8001/sessions/run_001/stop
 `sample_count>0` xác nhận ingest; `boundary_source=device_ack` xác nhận cả
 control/ack. `mqtt=true` trên health chỉ báo listener bật. Mẫu sensor invalid
 vẫn lưu raw nhưng safety UNKNOWN. Không chạy session_cli --mqtt song song
-để ghi cùng DB backend. Thu/export dữ liệu theo [data-collection.md](data-collection.md).
+để ghi cùng DB iot_backend. Thu/export dữ liệu theo [data-collection.md](data-collection.md).

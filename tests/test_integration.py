@@ -1,19 +1,7 @@
-"""Kiểm thử M6b: gắn ``SafetyPredictor`` vào đường compute của backend.
+"""Integration coverage for ingestion, LSTM prediction doubles and safety/session state.
 
-End-to-end qua ``IngestionService._compute_and_store`` (đường dùng chung của
-handle_message live, catch_up và replay offline):
-
-- Model train MỘT lần cho cả module (fixture ``model_dir``) như
-  ``tests/test_inference.py``: dataset synthetic nhỏ (6 session × 50 mẫu,
-  seed 42, error_prob=0) + grid rút gọn (n_estimators [10], max_depth [4]);
-  artifact ghi vào ``tmp_path_factory`` — KHÔNG đụng ``ai_model/artifacts/``.
-- Session synthetic approach (1 × 40 mẫu, seed 7, error_prob=0) nạp tuần tự
-  qua ``handle_message`` với topic đúng: 9 mẫu đầu WARMUP, từ mẫu 10 OK
-  (distance_m 5 float, window_ref trượt đúng), VIOLATION khớp ngưỡng Sp demo
-  440 mm, ``early_warning`` False khi current đã ≤ Sp.
-- Replay offline trên service RIÊNG với instance predictor MỚI (buffer không
-  chia sẻ với live): mode 'offline', stale False, idempotent chạy lần 2.
-- Service không predictor (hành vi cũ) → MODEL_UNAVAILABLE (guard).
+The predictor receives a deterministic injected LSTM model/scaler so these
+tests cover the real ingestion path without training or loading a legacy model.
 """
 
 import json
@@ -23,16 +11,15 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from ai_model.train import train_model
-from backend.inference.predictor import SafetyPredictor
-from backend.ingestion import PROCESSOR_VERSION, IngestionService, Store
-from backend.safety import SafetyConfigVersion, load_safety_configs
-from scripts.synthetic_dataset import METADATA_KEYS, generate_sessions, write_jsonl
+from iot_backend.inference.predictor import SafetyPredictor
+from iot_backend.ingestion import PROCESSOR_VERSION, IngestionService, Store
+from iot_backend.safety import SafetyConfigVersion, load_safety_configs
+from scripts.synthetic_dataset import METADATA_KEYS, generate_sessions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-FAST_GRID = {"n_estimators_grid": [10], "max_depth_grid": [4]}
-SP_MM = 440  # Sp demo theo configs/safety.yaml (0.44 m)
+HORIZONS_MS = [100, 200, 300, 400, 500]
+SP_MM = 440
 N_SAMPLES = 40
 SESSION_SEED = 7
 SCENARIO = "approach"
@@ -41,33 +28,31 @@ TOPIC = "hrc/v1/devices/esp32_sim/telemetry"
 
 @pytest.fixture(scope="module")
 def model_dir(tmp_path_factory) -> Path:
-    """Artifact model train 1 lần cho module (dataset nhỏ, grid rút gọn)."""
-    lines = generate_sessions(6, 50, 42, error_prob=0.0)
-    dataset_path = tmp_path_factory.mktemp("m6b_dataset") / "sim_small.jsonl"
-    write_jsonl(lines, dataset_path)
-    out_dir = tmp_path_factory.mktemp("m6b_artifacts")
-    train_model(
-        dataset_path,
-        REPO_ROOT / "configs" / "model.yaml",
-        out_dir,
-        config_overrides=dict(FAST_GRID),
-    )
-    return out_dir
+    return tmp_path_factory.mktemp("lstm_integration_double")
 
 
 @pytest.fixture(scope="module")
 def model_config() -> dict:
-    """Config runtime nạp từ configs/model.yaml — nguồn cấu hình thật."""
     return yaml.safe_load(
         (REPO_ROOT / "configs" / "model.yaml").read_text(encoding="utf-8")
     )
 
 
 @pytest.fixture(scope="module")
-def safety_configs() -> list[SafetyConfigVersion]:
-    """Cấu hình safety thật của repo (demo-v1, valid_from 2026-01-01)."""
+def safety_configs():
+    """Cấu hình safety thật dùng chung cho các test integration."""
     return load_safety_configs(REPO_ROOT / "configs" / "safety.yaml")
 
+
+def make_lstm_predictor(model_dir, model_config):
+    from tests.test_inference import FakeLstmModel, FakeScaler, MANIFEST
+
+    def loader(_directory):
+        return FakeLstmModel(), FakeScaler(), MANIFEST
+
+    return SafetyPredictor(
+        model_dir, model_config, loader, model_type="lstm"
+    )
 
 def session_lines() -> list[dict]:
     """1 session approach 40 mẫu (seed 7, không mẫu lỗi) đã TÁCH nhãn metadata.
@@ -100,7 +85,7 @@ def test_live_with_predictor_warmup_ok_violation(
     store = Store(tmp_path / "integ_live.db")
     try:
         service = IngestionService(
-            store, safety_configs, predictor=SafetyPredictor(model_dir, model_config)
+            store, safety_configs, predictor=make_lstm_predictor(model_dir, model_config)
         )
         lines = session_lines()
         device_id = lines[0]["device_id"]
@@ -191,7 +176,7 @@ def test_replay_offline_with_own_predictor(
     store = Store(db_path)
     try:
         live_service = IngestionService(
-            store, safety_configs, predictor=SafetyPredictor(model_dir, model_config)
+            store, safety_configs, predictor=make_lstm_predictor(model_dir, model_config)
         )
         lines = session_lines()
         device_id = lines[0]["device_id"]
@@ -204,7 +189,7 @@ def test_replay_offline_with_own_predictor(
         # Service replay: instance SafetyPredictor MỚI — buffer riêng, không
         # chia sẻ state với predictor của đường live phía trên.
         replay_service = IngestionService(
-            store, safety_configs, predictor=SafetyPredictor(model_dir, model_config)
+            store, safety_configs, predictor=make_lstm_predictor(model_dir, model_config)
         )
         rows = store.all_raw_rows()
         assert len(rows) == N_SAMPLES

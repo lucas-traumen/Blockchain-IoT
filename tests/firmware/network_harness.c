@@ -14,15 +14,18 @@ static esp_timer_handle_t timer;
 static wifi_config_t wifi;
 static bool radio_started, has_ip;
 static unsigned connects, mqtt_created, scans, commits, nvs_reads, task_starts;
-static unsigned subscribe_failures, sdk_enqueues;
+static unsigned subscribe_failures, sdk_transfers;
 static bool measurement_context;
 static int64_t fake_time_us=1000000;
 static void (*mqtt_sender)(void *);
 static void *mqtt_sender_arg;
 static jmp_buf sender_exit;
 static unsigned sender_rounds, subscribes, forced_disconnects;
-static int reject_subscribe, reject_enqueue;
-static bool defer_suback;
+static int reject_subscribe, reject_transfer;
+static bool defer_suback, slow_sdk;
+static unsigned delivered_telemetry, delivered_acks;
+static int64_t sdk_poll_due_us;
+static void pump_sdk(void);
 static char first_transfer_topic[96], last_transfer_topic[96], last_transfer_payload[384];
 static esp_mqtt_client_handle_t last_client;
 static const char *scenario;
@@ -31,7 +34,11 @@ static wifi_ap_record_t scan_records[40];
 static unsigned scan_count, scan_offset;
 static unsigned char saved_wifi[128], saved_broker[128];
 static size_t saved_wifi_size, saved_broker_size;
-struct mqtt_stub { event_callback_t callback; char uri[128]; int bytes, limit; };
+struct pending_packet { char topic[96]; int bytes; bool transmitted; };
+struct mqtt_stub {
+    event_callback_t callback; char uri[128]; int bytes, limit;
+    struct pending_packet packets[512]; unsigned packet_count;
+};
 
 const char *esp_err_to_name(esp_err_t err) { (void)err; return "stub-error"; }
 void stub_log(const char *format, ...) {
@@ -43,6 +50,7 @@ int64_t esp_timer_get_time(void) { return fake_time_us; }
 void vTaskDelay(unsigned ticks) {
     if (sender_rounds) {
         fake_time_us+=(int64_t)ticks*1000;
+        if (slow_sdk) pump_sdk();
         if (!--sender_rounds) longjmp(sender_exit,1);
     }
 }
@@ -208,19 +216,59 @@ int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t c, const char *topic, int
     }
     return (int)subscribes;
 }
-int esp_mqtt_client_publish(esp_mqtt_client_handle_t c,const char *t,const char *p,int n,int qos,int retain) { return esp_mqtt_client_enqueue(c,t,p,n,qos,retain,1); }
-int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t c,const char *t,const char *p,int n,int qos,int retain,int store) {
-    (void)p; assert(qos==1 && !retain && store);
-    assert(!measurement_context && "telemetry enqueue must not take the SDK network mutex");
-    sdk_enqueues++;
-    if (reject_enqueue) { reject_enqueue--;return -1; }
+/* Model the relevant esp-mqtt behavior: enqueue appends QUEUED packets to
+ * a FIFO, while publish writes now and retains TRANSMITTED QoS1 packets
+ * until PUBACK. A quiet receive loop may wait 1 s before sending queued data. */
+static void record_delivery(const char *topic) {
+    if (strstr(topic,"/ack")) delivered_acks++;
+    else delivered_telemetry++;
+}
+static int transfer(esp_mqtt_client_handle_t c,const char *t,const char *p,int n,
+                    int qos,int retain,bool immediate) {
+    assert(qos==1 && !retain);
+    assert(!measurement_context && "sender must not take the SDK network mutex from sampling");
+    sdk_transfers++;
+    if (reject_transfer) { reject_transfer--;return -1; }
     /* Match esp-mqtt 1.0.0: its limit check omits MQTT packet overhead. */
     if (c->bytes+n > c->limit) return -2;
-    if (sdk_enqueues==1) strcpy(first_transfer_topic,t);
+    if (sdk_transfers==1) strcpy(first_transfer_topic,t);
     strcpy(last_transfer_topic,t);
     assert(n<(int)sizeof(last_transfer_payload));
     memcpy(last_transfer_payload,p,(size_t)n);last_transfer_payload[n]=0;
-    c->bytes+=n+(int)strlen(t)+8; return 1;
+    int bytes=n+(int)strlen(t)+8;
+    c->bytes+=bytes;
+    if (slow_sdk) {
+        assert(c->packet_count<512);
+        struct pending_packet *packet=&c->packets[c->packet_count++];
+        strcpy(packet->topic,t);packet->bytes=bytes;packet->transmitted=immediate;
+        if (immediate) record_delivery(t);
+    }
+    return (int)sdk_transfers;
+}
+int esp_mqtt_client_publish(esp_mqtt_client_handle_t c,const char *t,const char *p,int n,int qos,int retain) {
+    return transfer(c,t,p,n,qos,retain,true);
+}
+int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t c,const char *t,const char *p,int n,int qos,int retain,int store) {
+    assert(store);return transfer(c,t,p,n,qos,retain,false);
+}
+static void pump_sdk(void) {
+    esp_mqtt_client_handle_t c=last_client;
+    if (!c) return;
+    bool can_send=fake_time_us>=sdk_poll_due_us;
+    if (can_send) sdk_poll_due_us=fake_time_us+1000000;
+    unsigned remaining=0;
+    for (unsigned i=0;i<c->packet_count;i++) {
+        struct pending_packet packet=c->packets[i];
+        if (!packet.transmitted && can_send) {
+            record_delivery(packet.topic);packet.transmitted=true;can_send=false;
+        }
+        if (packet.transmitted) {
+            c->bytes-=packet.bytes;
+            esp_mqtt_event_t ev={.client=c,.msg_id=(int)i+1};
+            c->callback(NULL,"mqtt",MQTT_EVENT_PUBLISHED,&ev);
+        } else c->packets[remaining++]=packet;
+    }
+    c->packet_count=remaining;
 }
 int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c) {
     assert(!measurement_context && "outbox diagnostics must not take the SDK mutex");return c->bytes;
@@ -344,7 +392,7 @@ int main(int argc,char **argv) {
         (void)hrc_mqtt_outbox_size();
         assert(hrc_mqtt_publish("ack","ack",3)==ESP_OK);
         measurement_context=false;
-        assert(sdk_enqueues==0);
+        assert(sdk_transfers==0);
     } else if (!strcmp(test,"mqtt_headroom")) {
         char payload[222];memset(payload,'x',sizeof(payload));
         for (unsigned i=0;i<500;i++) {
@@ -361,35 +409,35 @@ int main(int argc,char **argv) {
         /* PUBACKs drain the SDK backlog; telemetry resumes without losing the
          * oldest RAM message or starving queued control ACKs. */
         last_client->bytes=0;
-        unsigned before=sdk_enqueues;
+        unsigned before=sdk_transfers;
         pump_sender(1);
-        assert(sdk_enqueues>before);
+        assert(sdk_transfers>before);
     } else if (!strcmp(test,"mqtt_subscribe_retry")) {
         reject_subscribe=1;
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(1);
-        assert(subscribe_failures==1 && !hrc_mqtt_control_ready() && sdk_enqueues==0);
+        assert(subscribe_failures==1 && !hrc_mqtt_control_ready() && sdk_transfers==0);
         pump_sender(11);
-        assert(subscribes==2 && hrc_mqtt_control_ready() && sdk_enqueues==1);
+        assert(subscribes==2 && hrc_mqtt_control_ready() && sdk_transfers==1);
     } else if (!strcmp(test,"mqtt_suback_gate")) {
         defer_suback=true;
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(1);
-        assert(!hrc_mqtt_control_ready() && sdk_enqueues==0);
+        assert(!hrc_mqtt_control_ready() && sdk_transfers==0);
         char grant=1;esp_mqtt_event_t ev={.client=last_client,.msg_id=(int)subscribes,.data=&grant,.data_len=1};
         last_client->callback(NULL,"mqtt",MQTT_EVENT_SUBSCRIBED,&ev);
         pump_sender(1);
-        assert(hrc_mqtt_control_ready() && sdk_enqueues==1);
+        assert(hrc_mqtt_control_ready() && sdk_transfers==1);
     } else if (!strcmp(test,"mqtt_offline")) {
         pump_sender(1);
         last_client->callback(NULL,"mqtt",MQTT_EVENT_DISCONNECTED,NULL);
-        unsigned before=sdk_enqueues;
+        unsigned before=sdk_transfers;
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(2);
-        assert(sdk_enqueues==before && hrc_mqtt_pending_count()==1);
+        assert(sdk_transfers==before && hrc_mqtt_pending_count()==1);
         assert(esp_mqtt_client_start(last_client)==ESP_OK);
         pump_sender(1);
-        assert(hrc_mqtt_control_ready() && sdk_enqueues==before+1);
+        assert(hrc_mqtt_control_ready() && sdk_transfers==before+1);
     } else if (!strcmp(test,"mqtt_puback_watchdog")) {
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(1);
@@ -414,22 +462,22 @@ int main(int argc,char **argv) {
         pump_sender(1);
         char rejected=(char)0x80;esp_mqtt_event_t ev={.client=last_client,.msg_id=(int)subscribes,.data=&rejected,.data_len=1};
         last_client->callback(NULL,"mqtt",MQTT_EVENT_SUBSCRIBED,&ev);
-        assert(!hrc_mqtt_control_ready() && sdk_enqueues==0);
+        assert(!hrc_mqtt_control_ready() && sdk_transfers==0);
         defer_suback=false;
         pump_sender(11);
-        assert(hrc_mqtt_control_ready() && sdk_enqueues==1);
+        assert(hrc_mqtt_control_ready() && sdk_transfers==1);
     } else if (!strcmp(test,"mqtt_suback_timeout")) {
         defer_suback=true;
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(151);
-        assert(subscribes==2 && !hrc_mqtt_control_ready() && sdk_enqueues==0);
+        assert(subscribes==2 && !hrc_mqtt_control_ready() && sdk_transfers==0);
     } else if (!strcmp(test,"mqtt_sdk_retry")) {
-        reject_enqueue=1;
+        reject_transfer=1;
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         pump_sender(1);
         assert(hrc_mqtt_pending_count()==1 && last_client->bytes==0);
         pump_sender(1);
-        assert(hrc_mqtt_pending_count()==0 && sdk_enqueues==2);
+        assert(hrc_mqtt_pending_count()==0 && sdk_transfers==2);
     } else if (!strcmp(test,"mqtt_ack_priority")) {
         for (unsigned i=0;i<16;i++) assert(hrc_mqtt_enqueue("t","data",4)==ESP_OK);
         assert(hrc_mqtt_enqueue("t","data",4)==ESP_ERR_NO_MEM);
@@ -437,6 +485,41 @@ int main(int argc,char **argv) {
         pump_sender(1);
         assert(hrc_mqtt_pending_count()==13 && last_client->bytes>0);
         assert(!strcmp(first_transfer_topic,"ack"));
+    } else if (!strcmp(test,"mqtt_ack_backlog")) {
+        slow_sdk=true;
+        /* Telemetry already admitted to the SDK must not delay session ACKs. */
+        for (unsigned i=0;i<80;i++)
+            assert(esp_mqtt_client_enqueue(last_client,"hrc/v1/devices/esp32_01/telemetry","data",4,1,0,true)>0);
+        assert(hrc_mqtt_publish("hrc/v1/devices/esp32_01/ack","start",5)==ESP_OK);
+        pump_sender(2);
+        assert(delivered_acks==1 && "START ACK blocked behind SDK telemetry FIFO");
+        assert(last_client->packet_count>0); /* QoS1 backlog is preserved. */
+    } else if (!strcmp(test,"mqtt_slow_sdk_sessions")) {
+        slow_sdk=true;
+        char payload[222];memset(payload,'x',sizeof(payload));
+        /* Quiet SDK poll between messages, then six 30 s START/STOP sessions
+         * with the same 10 Hz sampler continuing between session boundaries. */
+        for (unsigned i=0;i<300;i++) {
+            (void)hrc_mqtt_enqueue("hrc/v1/devices/esp32_01/telemetry",payload,sizeof(payload));
+            pump_sender(1);
+        }
+        for (unsigned run=0;run<6;run++) {
+            assert(hrc_mqtt_publish("hrc/v1/devices/esp32_01/ack","start",5)==ESP_OK);
+            for (unsigned tick=0;tick<80 && delivered_acks<2*run+1;tick++) {
+                (void)hrc_mqtt_enqueue("hrc/v1/devices/esp32_01/telemetry",payload,sizeof(payload));
+                pump_sender(1);
+            }
+            assert(delivered_acks==2*run+1 && "START ACK exceeded 8 s deadline");
+            for (unsigned tick=0;tick<300;tick++) {
+                assert(hrc_mqtt_enqueue("hrc/v1/devices/esp32_01/telemetry",payload,sizeof(payload))==ESP_OK);
+                pump_sender(1);
+            }
+            assert(hrc_mqtt_publish("hrc/v1/devices/esp32_01/ack","stop",4)==ESP_OK);
+            pump_sender(2);
+            assert(delivered_acks==2*run+2 && "STOP ACK delayed");
+            assert(hrc_mqtt_pending_count()==0 && last_client->bytes==0);
+        }
+        assert(delivered_telemetry==2106 && forced_disconnects==0);
     } else if (!strcmp(test,"mqtt_payload_copy")) {
         char payload[]="data";
         assert(hrc_mqtt_enqueue("t",payload,4)==ESP_OK);

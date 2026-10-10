@@ -19,10 +19,10 @@ def test_distance_logging(tmp_path, case, interval):
         compiler, "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
         f"-DCONFIG_HRC_DISTANCE_LOG_PERIOD_MS={interval}",
         "-I", str(ROOT / "tests/firmware/stubs"),
-        "-I", str(ROOT / "iot_code/esp32/main"),
+        "-I", str(ROOT / "firmware/esp32/main"),
         str(ROOT / "tests/firmware/telemetry_harness.c"),
-        str(ROOT / "iot_code/esp32/main/telemetry.c"),
-        str(ROOT / "iot_code/esp32/main/diagnostics.c"),
+        str(ROOT / "firmware/esp32/main/telemetry.c"),
+        str(ROOT / "firmware/esp32/main/diagnostics.c"),
         "-o", str(executable),
     ], capture_output=True, text=True)
     assert build.returncode == 0, build.stderr
