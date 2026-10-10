@@ -535,3 +535,40 @@ sự kiện có API riêng; IoT không giữ private key và không tự ký gia
   horizon. Rule `[hidden]` được khóa bằng `display:none !important` để empty
   chart overlay không phủ dữ liệu thật. Đây là browser smoke/responsive evidence,
   chưa phải full scenario E2E CLEAR → WARNING → VIOLATION → CHAIN CONFIRMED.
+
+## Canonical AI release và deployment retry — 2026-10-11
+
+- Quyết định hiện hành: chỉ giữ một release AI canonical cho demo/runtime:
+  `ai_model/artifacts/lstm-v1/` và `data/results/lstm-v1/`. Không dùng lại tên
+  artifact/report có hậu tố ngày cho runtime. Artifact/report cũ đã được dọn;
+  dataset nguồn `data/synthetic/square-40mm-20261010/` và evidence blockchain
+  `data/results/edge-blockchain-20261010/` được giữ vì có vai trò khác.
+- `lstm-v1` được train lại bằng TensorFlow 2.20.0/Keras 3.15.1, seed 20261010,
+  input `(10,2)`, output `(5,)`, horizons 100-500 ms, split session 280/60/60,
+  windows 63280/13560/13560, scaler train-only. Model hash:
+  `94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52`;
+  scaler hash:
+  `20281417e61b5847f61413afa12245284ac88e6ae16b0d1c12b01da53e03986d`;
+  dataset hash:
+  `0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8`.
+- Kết quả synthetic benchmark horizon 500 ms: MAE mean 2.56 mm, RMSE mean
+  3.24 mm, F1 offline 0.9375; detector 2/3: precision 1.0, recall 0.6471,
+  F1 0.7857, miss rate 0.3529, lead time mean 124.2 ms. Luôn gắn nhãn
+  synthetic-only; không suy diễn thành hiệu năng HC-SR04 hoặc safety hardware.
+- Firmware source đã được regenerate theo hash mới và native parity tests đã
+  cập nhật. Hardware flash, serial inference, sensor measurement, calibration,
+  reconnect/soak vẫn chưa verified.
+- Compose/env/settings/docs mặc định trỏ `lstm-v1`; khi thay source phải
+  rebuild image vì service không mount source code. Deployment retry phải dùng
+  `docker compose build iot_backend ai` rồi recreate `mqtt` và `iot_backend`,
+  kiểm tra health/API và chạy test host + Docker.
+
+- Deployment retry đã hoàn tất ngày 2026-10-11: build image AI/backend PASS;
+  Compose recreate với MQTT và iot_backend PASS sau khi healthcheck backend
+  tăng `start_period` từ 20 lên 60 giây để bao phủ cold-start TensorFlow.
+  `/health` healthy; `/models/active` xác nhận `lstm-v1` và đúng các hash;
+  `/live/latest` trả prediction `OK` năm horizon, simulator source và không
+  claim hardware verification.
+- Regression cuối: host `441 passed/12 skipped`, Docker `380 passed/73 skipped`,
+  targeted firmware/runtime `11 passed/1 skipped`; synthetic verifier trong
+  image mới PASS. `docker compose config` và `git diff --check` PASS.

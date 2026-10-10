@@ -72,14 +72,17 @@ def main(argv: list[str] | None = None) -> int:
             stream = sorted(streams[sid], key=lambda r: int(r["sequence_last"]))
             origin = int(stream[0]["monotonic_us"])
             samples = sorted(sources[sid], key=lambda r: r["sequence"])
+            sample_by_sequence = {int(sample["sequence"]): sample for sample in samples}
             all_events.extend(find_events([r["distance_mm"] / 1000 for r in samples],
                                           [offset + (r["monotonic_us"] - origin) / 1e6 for r in samples], report["sp_m"]))
             for row in stream:
                 current = float(row["current_m"])
                 distances = [float(row[f"lstm_{h}ms_m"]) for h in report["horizons_ms"]]
                 ref = {"device_id": row["device_id"], "boot_id": row["boot_id"], "sequence": int(row["sequence_last"])}
+                source_sample = sample_by_sequence[ref["sequence"]]
                 record = {
                     "sample_ref": ref, "session_id": sid,
+                    "measured_at": source_sample.get("measured_at"),
                     "safety": {"status": "CLEAR" if current > report["sp_m"] else "VIOLATION",
                                "config_version": "synthetic-square40"},
                     "prediction": {"status": "OK", "model_version": manifest["model_version"],

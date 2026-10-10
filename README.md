@@ -349,7 +349,7 @@ TF_NUM_INTEROP_THREADS=1 TF_NUM_INTRAOP_THREADS=1 OMP_NUM_THREADS=1 \
   --output data/lstm-report.json
 
 # Backend LSTM, cần broker tại MQTT_HOST/MQTT_PORT
-HRC_SOURCE_MODE=simulator MODEL_TYPE=lstm MODEL_ARTIFACT_DIR=ai_model/artifacts/lstm-benchmark-square40-20261010 \
+HRC_SOURCE_MODE=simulator MODEL_TYPE=lstm MODEL_ARTIFACT_DIR=ai_model/artifacts/lstm-v1 \
   .venv-ai/bin/uvicorn iot_backend.main:app --host 127.0.0.1 --port 8000
 
 # MQTT simulator, telemetry synthetic; recording giữ nhãn nguồn

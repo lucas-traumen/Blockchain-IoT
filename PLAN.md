@@ -7,7 +7,7 @@ không xóa RF ngay mà chuyển dần sang LSTM theo các mốc nhỏ, có roll
 TV1–TV2 (Smart Contract, canonicalize, hash, dashboard và bộ gom sự kiện
 chính thức) nằm ngoài phạm vi; TV3/TV4 chỉ bàn giao assessment/event package.
 
-**Trạng thái kế hoạch: M1–M21 đã hoàn tất ở mức software/demo local. M4 firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; MQTT/iot_backend Docker, Hardhat local, blockchain API và dashboard đang healthy. Hardware flash, đo/hiệu chuẩn thật, dữ liệu thật bổ sung và soak trên bo vẫn là các gate nghiệm thu phần cứng riêng. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
+**Trạng thái kế hoạch: M1–M21 đã hoàn tất ở mức software/demo local. Release AI canonical hiện là `lstm-v1`; artifact/report cũ theo ngày đã được dọn khỏi runtime. M4 firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; MQTT/iot_backend Docker, Hardhat local, blockchain API và dashboard đang healthy. Hardware flash, đo/hiệu chuẩn thật, dữ liệu thật bổ sung và soak trên bo vẫn là các gate nghiệm thu phần cứng riêng. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
 
 ## 1. Kiến trúc
 
@@ -989,3 +989,70 @@ Evidence ngày 2026-10-10:
 - Browser smoke: Chrome headless rendered live dashboard with actual distance, Sp and five forecasts; desktop/mobile screenshots verified. Empty-chart overlay hidden state regression fixed.
 
 Không commit `.opencode/state/`; không đưa private key/bearer token vào dashboard.
+
+## R4 — Dọn artifact cũ, chốt release AI canonical và retry triển khai — 2026-10-11
+
+**Trạng thái: software release và local deployment PASS; hardware gate vẫn mở.**
+
+Người dùng yêu cầu xóa các thư mục model/result cũ, train lại gọn và triển khai.
+Đã chọn một release duy nhất để tránh runtime trỏ nhầm artifact theo ngày:
+
+```text
+ai_model/artifacts/lstm-v1/
+data/results/lstm-v1/
+```
+
+- Đã xóa toàn bộ artifact AI cũ dưới `ai_model/artifacts/`, các report AI
+  `lstm-real-*`, `lstm-only-*`, `lstm-benchmark-*` và ZIP tương ứng. Giữ
+  `data/synthetic/square-40mm-20261010/` làm dataset nguồn và giữ
+  `data/results/edge-blockchain-20261010/` vì đây là evidence blockchain,
+  không phải report model cũ.
+- Đã train lại bằng TensorFlow `2.20.0`, Keras `3.15.1`, seed `20261010`,
+  đúng `configs/model.yaml`, split theo session trước windowing và scaler
+  train-only. Artifact gồm đúng năm file: `model.keras`, `scaler.json`,
+  `split_manifest.json`, `manifest.json`, `metrics.json`.
+- Manifest: input `(10,2)`, output `(5,)`, horizons `100/200/300/400/500 ms`,
+  train/val/test windows `63280/13560/13560`; model SHA-256
+  `94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52`,
+  scaler SHA-256
+  `20281417e61b5847f61413afa12245284ac88e6ae16b0d1c12b01da53e03986d`,
+  dataset SHA-256
+  `0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8`.
+- Report canonical có đánh giá từng horizon, persistence/constant-velocity
+  baseline, predictions CSV, figures PNG/SVG/PDF, verification và replay
+  detector 2/3. Horizon 500 ms: LSTM MAE trung bình `2.56 mm`, RMSE trung
+  bình `3.24 mm`, F1 offline `0.9375`; sau debounce 2/3: precision `1.0`,
+  recall `0.6471`, F1 `0.7857`, miss rate `0.3529`, lead time trung bình
+  `124.2 ms`. Đây là synthetic-only benchmark, không phải chứng nhận an toàn.
+- Đã regenerate `firmware/esp32/main/lstm_inference.c` từ artifact canonical
+  và cập nhật native reference/hash tests. Chưa claim flash, đo HC-SR04,
+  calibration, reconnect hoặc soak trên phần cứng.
+- Đã đồng bộ `.env.example`, `compose.env.example`, `compose.yaml`, settings,
+  README và docs để runtime mặc định dùng `MODEL_TYPE=lstm` và
+  `MODEL_ARTIFACT_DIR=.../lstm-v1`. `scripts/verify_synthetic_benchmark.py`
+  replay truyền `measured_at` từ source để kiểm tra timestamp đúng.
+- Bằng chứng verifier: synthetic labels, dataset/model hash, split không chồng
+  session và metric tính lại từ CSV đều PASS. `git diff --check` PASS.
+
+Triển khai retry cần rebuild image để không dùng source/image cũ, recreate
+`mqtt` và `iot_backend`, sau đó kiểm tra `/health`, `/models/active`,
+`/live/latest`, native/runtime tests và full suite. Không commit
+`.opencode/state/`, secret hoặc artifact generated bị ignore.
+
+### R4 evidence chốt
+
+- `docker compose build iot_backend ai`: PASS.
+- `docker compose up -d --force-recreate --wait mqtt iot_backend`: PASS sau
+  khi tăng healthcheck grace period lên 60 giây; cả MQTT và backend healthy.
+- `/health`: `status=ok`, `mqtt=true`, `model_type=lstm`,
+  `model_available=true`.
+- `/models/active`: `ACTIVE`, `model_version=lstm-v1`, đúng model/scaler/dataset
+  hash; artifact path `/app/ai_model/artifacts/lstm-v1`.
+- `/live/latest`: prediction `OK`, đủ năm horizon, provenance trỏ `lstm-v1`,
+  source `simulator`, `threshold_verified_on_hardware=false`.
+- Host full suite: `441 passed, 12 skipped, 2 warnings`.
+- Docker full suite: `380 passed, 73 skipped, 41 warnings`.
+- Targeted firmware/runtime: `11 passed, 1 skipped`.
+- Synthetic verifier trong image mới: PASS; `51` events, debounce precision
+  `1.0`, recall `0.6471`, F1 `0.7857`.
+- `docker compose config` và `git diff --check`: PASS.

@@ -110,14 +110,14 @@ Hình minh họa policy:
 
 ## Edge LSTM
 
-Firmware dùng đúng model thật `ai_model/artifacts/lstm-real-20261010`, không dùng
-model synthetic. Contract artifact của firmware là:
+Firmware dùng đúng model canonical `ai_model/artifacts/lstm-v1`. Artifact này
+được train synthetic-only cho demo và không phải chứng nhận an toàn phần cứng.
+Contract artifact của firmware là:
 
 - input `(10, 2)`: `[distance_m, delta_distance_m]`;
 - output `(5,)` theo 5 horizon;
 - threshold `0.040 m = 40 mm`;
-- SHA-256 model: `6713054121907c92645924d7e34a13db10867d19871fa161fe747f1fab1a9f0b`;
-- SHA-256 scaler: `164c42206f8214f0be20d8788b018a2fcb46c0ef132b3dc53f19b2ff43457734`.
+- SHA-256 model/scaler: xem `ai_model/artifacts/lstm-v1/manifest.json`.
 
 Native parity có **7 passing, 1 skipped**; bài skipped chỉ yêu cầu `h5py` trên
 máy tạo lại weights. ESP-IDF **6.0.1** build target **ESP32-S3** đã pass, binary
@@ -136,8 +136,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 Chỉ dùng `/dev/ttyACM0` nếu `esptool chip-id` xác nhận đó là ESP32-S3; với ESP32
 classic phải build target `esp32` riêng.
 
-Các ảnh đánh giá LSTM thật đang ở
-[data/results/lstm-only-20261010/figures](../../data/results/lstm-only-20261010/figures).
-Kết quả real hiện có MAE/RMSE tốt để báo cáo hồi quy, nhưng F1 cảnh báo sớm ở
-horizon 500 ms vẫn là 0 do model không tạo warning episode trong test; benchmark
-synthetic không được dùng làm firmware runtime.
+Các ảnh đánh giá canonical đang ở
+[data/results/lstm-v1/figures](../../data/results/lstm-v1/figures).
+Mọi metric trong bundle này phải được hiển thị là synthetic-only; không dùng
+MAE/RMSE để suy diễn an toàn phần cứng.

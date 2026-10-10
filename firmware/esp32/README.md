@@ -16,7 +16,10 @@ network_config.local.h → SSID/password matrix → scan/select/retry
 ## Trạng thái kiểm chứng
 
 - Build ESP-IDF **6.0.1**, Xtensa GCC 15.2.0: **esp32s3 và esp32 PASS**.
-- Lần kiểm tra edge LSTM ngày **2026-10-10**: artifact runtime là `lstm-real-20261010`, threshold `40 mm`, input `(10,2)` → output `(5,)`; ESP32-S3 build lại bằng ESP-IDF **6.0.1** PASS. Native parity: **7 passed, 1 skipped**. Chưa flash vì lần kiểm tra không có `/dev/ttyACM*` hoặc `/dev/ttyUSB*`.
+- Artifact edge canonical là `ai_model/artifacts/lstm-v1`, threshold mô phỏng
+  `40 mm`, input `(10,2)` → output `(5,)`. ESP32-S3 build bằng ESP-IDF
+  **6.0.1** PASS; native parity dùng đúng hash của artifact này. Chưa claim
+  flash/đo/soak nếu chưa có evidence trên board.
   App, bootloader và partition size checks đều pass. MQTT managed
   `espressif/mqtt` **1.0.0**, GPIO/RMT/UART/USB driver dependencies khai báo
   trực tiếp. Nhánh IDF 5.5 giữ bundled MQTT; chưa build IDF 5.5 trong phiên này.

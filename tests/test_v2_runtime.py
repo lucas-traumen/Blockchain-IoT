@@ -70,7 +70,7 @@ def test_source_mode_is_explicit_not_inferred_from_artifact_or_device(tmp_path):
         mqtt_enabled=False,
         db_path=str(tmp_path / "source.db"),
         device_id="esp32_01",
-        model_artifact_dir="ai_model/artifacts/lstm-benchmark-square40-20261010",
+        model_artifact_dir="ai_model/artifacts/lstm-v1",
         source_mode="simulator",
     )
     with TestClient(create_app(settings)) as client:

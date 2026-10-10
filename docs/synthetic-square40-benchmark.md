@@ -16,8 +16,8 @@ Bộ benchmark dùng để kiểm chứng pipeline LSTM trong mô hình cảm bi
 
 Artifact và report của lần chạy bằng `configs/model.yaml`:
 
-- Model: `ai_model/artifacts/lstm-benchmark-square40-20261010/`
-- Report: `data/results/lstm-benchmark-square40-20261010/`
+- Model: `ai_model/artifacts/lstm-v1/`
+- Report: `data/results/lstm-v1/`
 - Dataset hash: `0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8`
 
 | Metric tại horizon 500 ms | Trước debounce | Sau xác nhận 2/3 |
@@ -39,12 +39,13 @@ Sau detector 2/3 còn 18/51 crossing bị bỏ sót. Constant-velocity có F1 0,
 
 ## Ảnh và tài liệu
 
-- `data/results/lstm-benchmark-square40-20261010/figures/warning_confirmation.png`
-- `data/results/lstm-benchmark-square40-20261010/figures/event_metrics_500ms.png`
-- `data/results/lstm-benchmark-square40-20261010/figures/f1_by_horizon.png`
-- `data/results/lstm-benchmark-square40-20261010/figures/regression_errors.png`
-- `data/results/lstm-benchmark-square40-20261010/figures/training_history.png`
-- `data/results/lstm-benchmark-square40-20261010/figures/figures.pdf`
-- `data/results/lstm-benchmark-square40-20261010/README.md`
+- `data/results/lstm-v1/figures/event_outcomes.png`
+- `data/results/lstm-v1/figures/event_metrics_500ms.png`
+- `data/results/lstm-v1/figures/f1_by_horizon.png`
+- `data/results/lstm-v1/figures/regression_errors.png`
+- `data/results/lstm-v1/figures/training_history.png`
+- `data/results/lstm-v1/figures/figures.pdf`
+- `data/results/lstm-v1/verification.json`
 
-Kết quả đo thực tế vẫn nằm riêng trong `data/results/lstm-only-20261010/`.
+Đây là benchmark synthetic-only dùng cho demo; không có report model real song
+song trong runtime canonical.

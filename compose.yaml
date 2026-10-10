@@ -46,7 +46,7 @@ services:
       SAFETY_CONFIG: /app/configs/${HRC_SAFETY_CONFIG:-safety-square.yaml}
       MODEL_CONFIG: /app/configs/model.yaml
       MODEL_TYPE: ${HRC_MODEL_TYPE:-lstm}
-      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-lstm-benchmark-square40-20261010}
+      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-lstm-v1}
       KERAS_HOME: /tmp/keras
       TF_CPP_MIN_LOG_LEVEL: "2"
       TF_NUM_INTEROP_THREADS: "1"
@@ -74,7 +74,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      # TensorFlow import/model load can exceed 20s on a cold container.
+      start_period: 60s
     logging:
       driver: json-file
       options:

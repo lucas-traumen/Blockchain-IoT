@@ -11,8 +11,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "ai_model/artifacts/lstm-real-20261010/model.keras"
-SCALER = ROOT / "ai_model/artifacts/lstm-real-20261010/scaler.json"
+ARTIFACT = ROOT / "ai_model/artifacts/lstm-v1/model.keras"
+SCALER = ROOT / "ai_model/artifacts/lstm-v1/scaler.json"
 SOURCE = ROOT / "firmware/esp32/main/lstm_inference.c"
 HEADER = ROOT / "firmware/esp32/main/lstm_inference.h"
 HARNESS = ROOT / "tests/firmware/lstm_harness.c"
@@ -22,19 +22,19 @@ GENERATOR = ROOT / "scripts/generate_esp32_lstm.py"
 # contract (input [0.180, ..., 0.315] m, delta[0]=0). Keep this vector in the
 # test so the native check does not call the implementation under test.
 REFERENCE_FORECAST_M = [
-    0.263965666,
-    0.255195320,
-    0.244677514,
-    0.243034109,
-    0.236447200,
+    0.213127851,
+    0.218651801,
+    0.216729075,
+    0.221079051,
+    0.221869230,
 ]
 
 REFERENCE_SLIDING_FORECAST_M = [
-    0.286391407,
-    0.277889788,
-    0.265032113,
-    0.265353143,
-    0.260280609,
+    0.221045554,
+    0.226572514,
+    0.223114431,
+    0.227835357,
+    0.227717817,
 ]
 
 
@@ -80,7 +80,7 @@ def run_case(binary: Path, case: str) -> str:
 
 def test_generated_source_contains_artifact_hash() -> None:
     source = SOURCE.read_text(encoding="utf-8")
-    assert "model.keras sha256=6713054121907c92645924d7e34a13db10867d19871fa161fe747f1fab1a9f0b" in source
+    assert "model.keras sha256=94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52" in source
     assert HEADER.exists()
 
 

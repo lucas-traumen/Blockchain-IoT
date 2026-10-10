@@ -94,7 +94,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         safety_config_path=os.environ.get("SAFETY_CONFIG", "configs/safety.yaml"),
         model_config_path=os.environ.get("MODEL_CONFIG", "configs/model.yaml"),
         model_artifact_dir=os.environ.get(
-            "MODEL_ARTIFACT_DIR", "ai_model/artifacts/lstm-benchmark-square40-20261010"
+            "MODEL_ARTIFACT_DIR", "ai_model/artifacts/lstm-v1"
         ),
         model_type=os.environ.get("MODEL_TYPE", "lstm"),
         mqtt_enabled=_env_bool("HRC_MQTT_ENABLED", True),
