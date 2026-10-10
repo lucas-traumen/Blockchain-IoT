@@ -9,8 +9,14 @@
 
 Tài liệu này là kế hoạch triển khai tiếp theo của HRC Safety Log. Mục tiêu không
 phải thêm nhiều chức năng rời rạc, mà biến các khối đang có thành một sản phẩm
-demo hoàn chỉnh, có dữ liệu thật, có bằng chứng AI, có đường ghi sự kiện lên
-blockchain và có dashboard hiển thị đúng dữ liệu trực tiếp.
+demo hoàn chỉnh, có dataset mô phỏng tái lập được, có bằng chứng AI, có đường
+ghi sự kiện lên blockchain và có dashboard hiển thị đúng dữ liệu trực tiếp.
+
+Phạm vi AI của phiên bản này là **synthetic-only**: tự sinh dataset theo ma trận
+kịch bản, huấn luyện và đánh giá hoàn toàn trên các session mô phỏng. Không có
+hạng mục bắt buộc thu dataset từ HC-SR04 thật. Vì vậy mọi metric AI trong tài
+liệu chỉ chứng minh chất lượng trên phân phối mô phỏng, không được diễn giải
+thành độ an toàn hoặc độ chính xác ngoài thực tế.
 
 Tài liệu này không thay thế lịch sử trong [PLAN.md](../PLAN.md). Khi kế hoạch
 được duyệt, từng milestone bên dưới phải được đưa vào PLAN.md với trạng thái,
@@ -23,10 +29,10 @@ task key, file được phép sửa, lệnh kiểm tra và evidence tương ứn
 Hệ thống hiện đã có đủ khối phần mềm cơ bản, nhưng chưa nên gọi là sản phẩm hoàn
 chỉnh vì còn bốn khoảng trống quan trọng:
 
-1. Model LSTM thật có MAE/RMSE tương đối tốt nhưng **F1 cảnh báo sớm bằng 0**:
-   model chưa phát hiện được crossing trên test thật.
-2. Ngưỡng demo 40 mm nằm dưới vùng đo đã khai báo là đã kiểm chứng của HC-SR04
-   là 100 mm; cấu hình hiện tự phát cảnh báo về sự không phù hợp này.
+1. Model hiện có cho kết quả tốt trên bộ synthetic cũ nhưng chưa có một bộ sinh
+   dữ liệu V2 đủ bao phủ, bất biến và chống leakage để kết luận chắc chắn.
+2. Ngưỡng 40 mm sẽ là tham số của thế giới mô phỏng. Nó không còn phụ thuộc gate
+   hiệu chuẩn HC-SR04, nhưng cũng không được coi là ngưỡng phần cứng đã xác minh.
 3. Sự kiện VIOLATION đã được lưu trong SQLite, nhưng chưa có cầu nối chuẩn từ
    event_packages sang POST /api/safety-event và HRCSafetyLog.
 4. Dashboard hiện đọc chủ yếu dữ liệu blockchain lịch sử; biểu đồ khoảng cách,
@@ -34,8 +40,8 @@ chỉnh vì còn bốn khoảng trống quan trọng:
 
 Do đó thứ tự triển khai bắt buộc là:
 
-1. chốt ngưỡng và chất lượng phép đo;
-2. sửa dữ liệu và khả năng cảnh báo của AI;
+1. chốt đặc tả thế giới mô phỏng và ma trận kịch bản;
+2. sinh dataset V2, khóa split và sửa khả năng cảnh báo của AI;
 3. khóa luồng runtime và cơ chế xác nhận sự kiện;
 4. thêm outbox ghi sự kiện an toàn lên blockchain;
 5. cuối cùng mới nối dashboard realtime và hoàn thiện trải nghiệm sản phẩm.
@@ -49,10 +55,10 @@ thái phía dưới đã có hợp đồng rõ ràng.
 
 | Khối | Đã có | Khoảng trống phải xử lý |
 |---|---|---|
-| Phần cứng | ESP32/ESP32-S3 + HC-SR04, đo 100 ms, MQTT QoS1 | Cần hiệu chuẩn vùng gần, soak nhiều session, đo tỷ lệ invalid/outlier |
+| Phần cứng | ESP32/ESP32-S3 + HC-SR04, đo 100 ms, MQTT QoS1 | Chỉ dùng cho live demo tùy chọn; không dùng làm nguồn train hoặc bằng chứng chất lượng AI V2 |
 | Telemetry | telemetry_v1, device/boot/sequence, dedup, SQLite WAL | Payload raw không mang kết quả Edge LSTM; chưa có schema riêng cho edge prediction |
-| Safety | CLEAR/VIOLATION/UNKNOWN, Sp, margin | Ngưỡng 40 mm không khớp vùng đo 100 mm; VIOLATION đo tức thời chưa tách với VIOLATION dùng để phạt |
-| AI backend | LSTM input 10×2, output 5 khoảng cách 100–500 ms | Test thật: 82 crossing nhưng không có predicted-positive, recall/F1 bằng 0 |
+| Safety | CLEAR/VIOLATION/UNKNOWN, Sp, margin | Cần tách rõ VIOLATION đo tức thời với VIOLATION dùng để phạt; 40 mm chỉ là tham số benchmark mô phỏng |
+| AI backend | LSTM input 10×2, output 5 khoảng cách 100–500 ms | Cần synthetic V2 có kịch bản khó, split theo session/seed và metric ở cấp episode |
 | AI edge | LSTM float32 đã sinh vào firmware, có parity native | Chưa flash/soak đầy đủ; chưa gửi prediction có model hash về backend |
 | Event | Debounce warning 2/3, event_packages, raw pre/post | Thiếu log quan sát; thiếu trạng thái confirmation riêng cho vi phạm nhiễu |
 | Blockchain safety | HRCSafetyLog và POST /api/safety-event | Chưa tự động lấy event_packages và anchor từng event |
@@ -62,8 +68,11 @@ thái phía dưới đã có hợp đồng rõ ràng.
 
 ### 2.1 Sự thật phải giữ nguyên trong báo cáo
 
-- Kết quả synthetic tốt chỉ chứng minh pipeline có thể học một quy luật synthetic;
-  không thay thế kết quả từ ESP32/HC-SR04 thật.
+- Kết quả synthetic tốt chỉ chứng minh pipeline có thể học và tổng quát trong
+  không gian mô phỏng đã khai báo; không thay thế kết quả từ ESP32/HC-SR04 thật.
+- Confusion matrix là đầu ra đánh giá từ ground truth mô phỏng và dự đoán của model;
+  không phải công cụ sinh dữ liệu. Dataset được sinh bằng ma trận kịch bản và bộ
+  tham số chuyển động/nhiễu có seed.
 - MAE thấp không đồng nghĩa hệ thống cảnh báo tốt. Với bài toán này, recall,
   miss rate và lead time của event quan trọng hơn một con số MAE tổng hợp.
 - Blockchain không được nằm trong vòng điều khiển an toàn thời gian thực.
@@ -85,7 +94,10 @@ thái phía dưới đã có hợp đồng rõ ràng.
 
 ### 3.2 Nguồn sự thật
 
-- Raw measurement: telemetry_v1 trong raw_samples.
+- Raw measurement: telemetry_v1 trong raw_samples; mặc định do simulator phát,
+  tùy chọn do ESP32 phát khi demo live.
+- Ground truth synthetic: dataset release bất biến; chỉ pipeline tạo nhãn/eval
+  được đọc, runtime inference và blockchain không được dùng trường này.
 - Trạng thái safety có thẩm quyền: iot_backend tính từ raw và safety config.
 - Edge LSTM: dùng cho phản ứng sớm tại thiết bị và đối chiếu parity; không tự
   quyết định token.
@@ -134,20 +146,16 @@ Phải duy trì hai profile rõ ràng:
 | Profile | Mục đích | Ngưỡng |
 |---|---|---|
 | hrc-ssm-v1 | Demo công thức SSM một chiều | Sp động; fixture hiện tại khoảng 0,44 m |
-| square-bench-v2 | Bàn thử hình học | Ngưỡng cố định, nhưng phải nằm trong vùng cảm biến đã hiệu chuẩn |
+| square-bench-v2 | Benchmark synthetic và demo luồng | Sp cố định 0,04 m trong thế giới mô phỏng |
 
-Ngưỡng 40 mm chỉ được giữ làm benchmark hoặc demo thật nếu phép hiệu chuẩn vùng
-20–100 mm đạt toàn bộ gate:
+Với phạm vi synthetic-only, 40 mm là một tham số toán học dùng để tạo nhãn và
+kiểm thử crossing. Mọi payload, manifest, model card và dashboard phải hiển thị
+`simulation_mode=true` và `threshold_verified_on_hardware=false` khi dùng profile
+này. Cấm suy ra rằng HC-SR04 đã đo chính xác ở 40 mm chỉ vì model đạt metric.
 
-- bias tuyệt đối ≤ 5 mm;
-- MAE ≤ 5 mm;
-- p95 sai số tuyệt đối ≤ 10 mm;
-- invalid rate < 1%;
-- không có bước nhảy giả trên 100 mm trong 30 phút stationary;
-- kết quả lặp lại với ít nhất ba loại bề mặt mục tiêu.
-
-Nếu không đạt, square-bench-v2 phải nâng ngưỡng lên ít nhất 100–150 mm hoặc dùng
-cảm biến phù hợp hơn. Không được chỉ sửa measurement_zone_m để xóa warning.
+Nếu sau này nhóm muốn chuyển sang tuyên bố chạy thật, đó là milestone độc lập:
+phải hiệu chuẩn cảm biến, chọn lại vùng vận hành, tạo dataset thật và đánh giá
+domain shift. Milestone tương lai đó không chặn bản demo synthetic hiện tại.
 
 ---
 
@@ -155,7 +163,7 @@ cảm biến phù hợp hơn. Không được chỉ sửa measurement_zone_m đ�
 
 ~~~mermaid
 flowchart TD
-    A["ESP32 + HC-SR04<br/>raw safety + Edge LSTM"] --> B["MQTT QoS1<br/>telemetry + edge prediction"]
+    A["Simulator mặc định<br/>ESP32 tùy chọn"] --> B["MQTT QoS1<br/>telemetry + prediction"]
     B --> C["IoT backend<br/>validate, session, safety, LSTM"]
     C --> D["SQLite WAL<br/>raw, assessment, event, outbox"]
     D --> E["Blockchain API<br/>canonicalize, sign, retry"]
@@ -170,15 +178,15 @@ flowchart TD
 
 ~~~mermaid
 sequenceDiagram
-    participant S as ESP32
+    participant S as Simulator hoặc ESP32
     participant M as MQTT
     participant I as IoT backend
     participant B as Blockchain API
     participant C as Contracts
     participant D as Dashboard
 
-    S->>S: Đo + kiểm tra ngưỡng tức thời
-    S->>S: Edge LSTM dự báo 100–500 ms
+    S->>S: Sinh/đo sample + kiểm tra ngưỡng
+    S->>S: Edge LSTM tùy chọn dự báo 100–500 ms
     S->>M: telemetry_v1 + edge_prediction_v1
     M->>I: QoS1 delivery
     I->>I: Commit raw trước
@@ -218,6 +226,10 @@ telemetry_v1 tiếp tục chỉ chứa dữ liệu nguồn:
 Không nhét model output vào schema này để tránh phá firmware/backend hiện có và
 giữ raw measurement độc lập với thuật toán.
 
+Simulator phải phát đúng schema trên, dùng device_id có prefix sim-, và kèm
+source/simulation_mode ở envelope hoặc registry thiết bị. distance_true_m tuyệt
+đối không được phát trong telemetry runtime vì đây là nhãn đặc quyền.
+
 ### 5.2 Thêm edge_prediction_v1
 
 Topic đề xuất:
@@ -237,14 +249,15 @@ Payload:
     "sequence": 14727
   },
   "source": "esp32-edge",
+  "simulation_trained": true,
   "model_version": "lstm-v2",
   "model_sha256": "...",
   "scaler_sha256": "...",
   "preprocessing_version": "pp-lstm-v2",
-  "threshold_m": 0.15,
+  "threshold_m": 0.04,
   "horizons_ms": [100, 200, 300, 400, 500],
-  "distance_m": [0.20, 0.17, 0.14, 0.12, 0.10],
-  "predicted_violation_ms": 300,
+  "distance_m": [0.080, 0.065, 0.052, 0.039, 0.028],
+  "predicted_violation_ms": 400,
   "early_warning": true,
   "inference_us": 8200,
   "valid": true
@@ -276,6 +289,8 @@ Nên bổ sung khối provenance trong schema version mới:
 {
   "prediction_provenance": {
     "authority": "backend",
+    "training_data": "synthetic-only",
+    "dataset_sha256": "...",
     "model_sha256": "...",
     "scaler_sha256": "...",
     "edge_available": true,
@@ -351,229 +366,398 @@ Output tối thiểu vẫn là năm khoảng cách dự báo. Cảnh báo sản 
 - warning đạt debounce;
 - model/config/hash đúng phiên bản đã duyệt.
 
-### 6.2 Gate AI-0 — sửa bài toán đo trước khi train
+### 6.2 Gate AI-0 — khóa hợp đồng mô phỏng trước khi train
 
-Không train lại ngay trên cùng lỗi dữ liệu. Thực hiện:
+Không dùng confusion matrix để sinh dữ liệu. Confusion matrix chỉ được tính sau
+khi model dự đoán trên tập có nhãn. Nguồn sinh dữ liệu là một simulator có seed
+và ma trận kịch bản được version hóa.
 
-1. chọn profile ngưỡng;
-2. hiệu chuẩn cảm biến ở 20, 30, 40, 50, 75, 100, 150, 200, 300, 440,
-   600 và 1000 mm;
-3. mỗi điểm tối thiểu 200 mẫu;
-4. ba loại bề mặt: phẳng cứng, vải/quần áo, bề mặt nghiêng;
-5. lưu khoảng cách tham chiếu độc lập, không chỉ lấy HC-SR04 làm chân lý;
-6. xuất bias, MAE, RMSE, p95, invalid rate và outlier rate theo distance/material.
+Hợp đồng mô phỏng V2:
 
-Deliverable:
-
-- data/calibration/{run_id}.csv;
-- calibration-report.json;
-- đồ thị measured-vs-reference;
-- quyết định giữ/bỏ 40 mm có chữ ký/ngày/version.
-
-### 6.3 Kế hoạch dataset thật
-
-Mỗi session chỉ chứa một hành vi liên tục, không reboot giữa session. Metadata
-bắt buộc:
-
-- session_id, device_id, boot_id;
-- ngày/ca đo và operator;
-- scenario;
-- speed_level và tốc độ tham chiếu nếu đo được;
-- target_type/material/angle;
-- safety profile và Sp;
-- firmware/model/config hash;
-- khoảng cách bắt đầu/kết thúc;
-- synthetic=false;
-- chất lượng PASS/WARN/REJECT và lý do.
-
-Ma trận tối thiểu:
-
-| Nhóm | Số session tối thiểu | Ghi chú |
+| Thuộc tính | Giá trị mặc định | Quy tắc |
 |---|---:|---|
-| Stationary CLEAR | 20 | Nhiều khoảng cách trong vùng an toàn |
-| Stationary gần Sp | 20 | Hai phía của Sp, không rung vật |
-| Approach crossing chậm | 20 | Có đoạn CLEAR dài trước crossing |
-| Approach crossing vừa | 20 | Độc lập session chậm |
-| Approach crossing nhanh | 20 | Đủ mẫu nhưng không vượt khả năng 10 Hz |
-| Stop-before-Sp | 30 | Âm tính khó, dừng ở nhiều margin |
-| Recede | 20 | Đi ra xa để tránh học một chiều |
-| Oscillation quanh Sp | 30 | Kiểm tra false warning/chattering |
-| Material/angle variations | 30 | Vải, phẳng, nghiêng; phân tầng rõ |
-| Sensor fault | 30 | Dataset riêng, không trộn vào forecast regression |
+| Chu kỳ mẫu | 100 ms | 10 Hz, có jitter riêng nếu kịch bản yêu cầu |
+| Input window | 10 mẫu | 1 giây lịch sử, không vượt session boundary |
+| Forecast horizon | 100, 200, 300, 400, 500 ms | Năm output cố định |
+| Ngưỡng Sp | 0,04 m | Chỉ là ngưỡng benchmark synthetic |
+| Đơn vị chuẩn | m, s, m/s, m/s² | Không trộn mm vào tensor |
+| Ground truth | distance_true_m | Chỉ dùng tạo nhãn và audit |
+| Model input | distance_measured_m và feature nhân quả | Không chứa future/label |
+| Randomness | PRNG có seed/session | Mọi session tái sinh được |
+| Chế độ | simulation_mode=true | Hiển thị xuyên suốt API và dashboard |
 
-Tối thiểu 210 session cho forecast và 30 session fault. Nếu nguồn lực hạn chế,
-pilot có thể dùng 60 session, nhưng không được dùng pilot để tuyên bố đạt tiêu
-chí cuối.
+Deliverable của AI-0:
 
-Tập test cuối phải:
+- configs/simulation/square-bench-v2.yaml;
+- schema generator và schema sample;
+- scenario_catalog.json;
+- lệnh dry-run sinh 10 session;
+- test cùng config + seed tạo cùng dữ liệu canonical và SHA-256;
+- kiểm tra đơn vị, monotonic timestamp, sequence và boundary.
 
-- thu ở ngày hoặc ca khác train;
-- không được chọn lại sau khi xem metric;
-- có ít nhất 50 crossing episode;
-- có ít nhất 50 negative session khó;
-- có ít nhất 20 fault session để test fail-safe;
-- không có session/window trùng train hoặc validation.
+### 6.3 Bộ sinh quỹ đạo và mô hình phép đo
 
-### 6.4 Tiền xử lý
+Mỗi session có một quỹ đạo ẩn d_true(t). Simulator tạo số đo d_measured(t) từ
+quỹ đạo đó. Nhờ tách hai lớp, model học từ tín hiệu có nhiễu nhưng nhãn vẫn có
+ground truth chính xác.
 
-Giữ nguyên các nguyên tắc:
+Các họ quỹ đạo bắt buộc:
 
-- split theo session trước windowing;
-- scaler fit train-only;
-- không nội suy qua invalid/gap/reboot/session boundary;
-- không tạo window qua sequence gap;
-- không xóa spike mà không ghi audit;
-- raw threshold dùng số đo raw valid; filter cho AI không được làm thay đổi raw
-  safety status;
-- lưu drop statistics theo nguyên nhân.
+- stationary: d_true(t) = d0;
+- approach: d_true(t) = max(d_min, d0 − v·t − 0,5·a·t²);
+- recede: d_true(t) = d0 + v·t + 0,5·a·t²;
+- oscillation: d_true(t) = Sp + b + A·sin(2πf·t + φ);
+- stop-before: approach theo từng đoạn, giảm tốc rồi dừng tại Sp + margin;
+- sudden-step: giữ ổn định rồi đổi khoảng cách trong một hoặc hai chu kỳ;
+- mixed-motion: nhiều đoạn approach/hold/recede nhưng vẫn thuộc một session.
+
+Mô hình đo V2:
+
+~~~text
+d_measured(t) =
+  quantize(d_true(t) + bias + gaussian_noise + correlated_drift)
+~~~
+
+Sau đó mới áp dụng fault độc lập:
+
+- spike dương/âm;
+- dropout hoặc timeout;
+- frozen value;
+- timestamp jitter;
+- sequence gap;
+- burst noise.
+
+Mọi tham số phải nằm trong config, không hard-code trong generator. Tối thiểu
+gồm d0, duration, v, a, b, A, f, φ, bias, noise_sigma, drift_sigma,
+quantization_mm, spike_probability, dropout_probability, jitter_ms và seed.
+Generator phải từ chối cấu hình phi vật lý như khoảng cách âm hoặc timestamp
+không tăng.
+
+### 6.4 Ma trận kịch bản Synthetic Dataset V2
+
+Mục tiêu là 1.200 session forecast và 150 session fault. Con số này có thể tăng,
+nhưng tỷ lệ và support test không được giảm.
+
+| Nhóm | Session | Nhãn chính | Biến thiên bắt buộc |
+|---|---:|---|---|
+| Stationary CLEAR | 120 | Negative | d0 xa/gần Sp, bias, drift |
+| Stationary near-threshold | 120 | Negative và observed | Hai phía Sp, noise biên |
+| Approach crossing chậm | 120 | Positive | v thấp, nhiều d0 và lead time |
+| Approach crossing vừa | 120 | Positive | v trung bình, a âm/dương nhẹ |
+| Approach crossing nhanh | 120 | Positive | v cao nhưng vẫn có ≥10 input mẫu |
+| Stop-before-Sp | 180 | Hard negative | margin 1–30 mm, giảm tốc khác nhau |
+| Recede | 100 | Negative | Bắt đầu gần Sp rồi đi xa |
+| Oscillation quanh Sp | 160 | Mixed/hard | A, f, phase, nhiều lần crossing |
+| Sudden step | 80 | Mixed | Bước 1–2 chu kỳ, có/không crossing |
+| Mixed acceleration | 80 | Mixed | Approach/hold/recede theo đoạn |
+| Fault-only, tách riêng | 150 | UNKNOWN | dropout, spike, frozen, gap |
+
+Sampling tham số phải là phân phối, không phải vài giá trị cố định. Các vùng biên
+được lấy dày hơn nhưng vẫn giữ đủ vùng bình thường:
+
+- d0: 0,045–1,0 m;
+- tốc độ approach: 0,02–0,80 m/s;
+- gia tốc: −0,60 đến 0,60 m/s²;
+- stop margin: 0,001–0,030 m;
+- noise sigma: 0–0,008 m;
+- bias: −0,005 đến 0,005 m;
+- jitter: 0–20 ms;
+- session duration: 12–40 s.
+
+Các khoảng trên là hợp đồng mô phỏng, không phải thông số đã đo từ HC-SR04.
+Mỗi session chỉ chứa một chuỗi thời gian độc lập và có metadata:
+
+- dataset_version, generator_version, generator_commit;
+- session_id, scenario, scenario_parameters;
+- seed, split, simulation_mode=true;
+- sample_period_ms, Sp, safety_profile;
+- noise/fault parameters;
+- start/end timestamp mô phỏng;
+- expected crossing episode count;
+- quality status và rejection reason;
+- config SHA-256 và session payload SHA-256.
+
+### 6.5 Schema dữ liệu và chống rò rỉ nhãn
+
+Mỗi sample phải giữ ít nhất:
+
+| Trường | Dùng ở đâu | Được đưa vào model? |
+|---|---|---|
+| session_id, sequence, measured_at | boundary/audit | Không |
+| distance_true_m | tạo target và nhãn | Không |
+| distance_measured_m | input gốc | Có |
+| delta_distance_m | input dẫn xuất nhân quả | Có |
+| sensor_valid, fault_code | quality/fault | Có nếu experiment khai báo |
+| Sp, scenario, seed, split | metadata/slice | Không trong model V2 |
+| crossing_h100…h500 | label classification | Không |
+| target_d100…d500 | label regression | Không |
+
+Quy tắc nhân quả:
+
+- feature tại t chỉ được dùng sample có timestamp ≤ t;
+- rolling feature phải reset ở đầu session, gap và invalid boundary;
+- scaler chỉ fit trên train;
+- không nội suy qua gap/dropout;
+- không dùng scenario, seed, split hoặc distance_true_m làm feature;
+- không shuffle sample trước khi tạo window;
+- raw synthetic JSONL bất biến; window dataset là artifact dẫn xuất.
+
+Audit bắt buộc chạy trước train:
+
+- schema và range validation;
+- timestamp/sequence tăng đúng;
+- không trùng session_id hoặc seed giữa split;
+- không trùng SHA-256 payload session;
+- tỷ lệ scenario và nhãn theo từng split;
+- số window bị loại theo lý do;
+- xác nhận không có feature tương lai;
+- tái sinh ngẫu nhiên ít nhất 20 session và so hash.
+
+### 6.6 Chia train/validation/test đúng theo session
+
+Split được gán **trước khi windowing** và khóa trong split_manifest.json:
+
+| Split | Tỷ lệ | Mục đích |
+|---|---:|---|
+| Train | 70% session mỗi scenario | Fit scaler, weight và model |
+| Validation | 15% session mỗi scenario | Chọn architecture, threshold, debounce |
+| Test | 15% session mỗi scenario | Chỉ chạy khi candidate đã khóa |
+
+Quy tắc bắt buộc:
+
+1. Toàn bộ window của một session chỉ thuộc đúng một split.
+2. Seed và session_id không được tái sử dụng giữa các split.
+3. Stratify theo scenario và crossing support, không stratify bằng từng window.
+4. Train có thể weighted-sample positive/hard-negative; validation và test giữ
+   phân phối nguyên bản.
+5. Không oversample, augment hoặc hard-mine trên test.
+6. Test manifest được ghi hash trước lần train chính thức.
+7. Sau khi xem test, mọi chỉnh sửa generator/model tạo experiment version mới;
+   không âm thầm chạy lại để chọn kết quả đẹp nhất.
+8. Fault-only dataset có manifest riêng; không biến UNKNOWN thành negative.
+
+Ngoài test cùng phân phối, tạo một challenge set độc lập từ seed chưa từng dùng,
+có noise cao, stop margin 1–5 mm và tham số ở rìa. Challenge set dùng để báo cáo
+độ bền, không dùng để chọn hyperparameter và không thay thế test chính.
+
+### 6.7 Tạo nhãn forecast và early warning
+
+Với window kết thúc ở thời điểm t:
+
+- regression target là d_true(t+100)…d_true(t+500);
+- crossing_hK = 1 khi d_true(t) > Sp và tồn tại d_true trong (t, t+K] ≤ Sp;
+- window có d_true(t) ≤ Sp là current violation, không phải positive
+  early-warning;
+- window thiếu future horizon không được pad và phải loại có lý do;
+- window chứa invalid/gap theo policy được gắn INVALID_WINDOW, không gán 0;
+- các crossing liên tục được gom thành một episode bằng crossing_id.
+
+Một bản kiểm tra nhãn độc lập phải tính lại label trực tiếp từ quỹ đạo ẩn và so
+khớp 100%. Kiểm thử biên phải có trường hợp đúng tại Sp, ngay trên/dưới Sp và
+crossing đúng ở 100/200/300/400/500 ms.
+
+### 6.8 Confusion matrix dùng đúng chỗ
+
+Confusion matrix được tạo từ nhãn test và prediction sau khi candidate, scaler,
+probability threshold và detector 2-of-3 đã bị khóa.
+
+| Ô | Window-level | Episode/session-level |
+|---|---|---|
+| TP | Dự báo crossing và label = 1 | Có warning hợp lệ 100–500 ms trước crossing |
+| FP | Dự báo crossing nhưng label = 0 | Có warning trong negative episode/session |
+| TN | Không dự báo và label = 0 | Negative episode/session không có warning |
+| FN | Không dự báo nhưng label = 1 | Crossing không có warning hợp lệ |
+
+Episode-level là metric chính. Mỗi crossing chỉ được ghép tối đa một warning;
+nhiều warning liên tiếp được collapse thành một episode. Báo cáo phải có cả ma
+trận số lượng tuyệt đối và ma trận chuẩn hóa, không chỉ accuracy.
+
+Confusion matrix được dùng để tìm nhóm lỗi theo scenario, tốc độ, noise, margin
+và horizon. Nó có thể dẫn tới **Synthetic V3**, nhưng quy trình phải là:
+
+~~~text
+scenario matrix V2
+  → dataset/split V2 đã khóa
+  → train + validation
+  → test V2 một lần
+  → confusion matrix + error slices
+  → thiết kế generator V3
+  → dataset/split/test V3 mới
+~~~
+
+Không sao chép FN/FP từ test V2 vào train V2. Nếu cần hard-negative mining, chỉ
+mine từ train/validation hoặc sinh session mới bằng seed mới cho phiên bản sau.
+
+### 6.9 Tiền xử lý và experiment
 
 Thử nghiệm feature theo thứ tự:
 
-1. E0: distance_m + delta_distance_m như hiện tại;
+1. E0: distance_measured_m + delta_distance_m như hiện tại;
 2. E1: thêm velocity estimate và rolling robust slope;
-3. E2: thêm quality features như echo_us hợp lệ và recent invalid count;
-4. chỉ giữ feature nếu validation cải thiện và firmware tái tạo được chính xác.
+3. E2: thêm recent valid mask, jitter và fault-count nhân quả;
+4. chỉ giữ feature nếu validation cải thiện và firmware/backend tái tạo giống
+   nhau.
 
-Không đưa measured_at wall-clock hoặc session ID vào model.
+Mỗi experiment chỉ thay một nhóm yếu tố và phải ghi:
 
-### 6.5 Label cảnh báo
+- experiment_id;
+- dataset/split/config hash;
+- feature set;
+- architecture và hyperparameter;
+- training seed;
+- class/sample weight;
+- threshold/debounce;
+- best validation epoch;
+- test_evaluated=false cho đến khi candidate bị khóa.
 
-Với mỗi window kết thúc tại t:
+Baseline bắt buộc:
 
-- regression target: d(t+100)...d(t+500);
-- crossing label mỗi horizon:
-  current distance > Sp và tồn tại future distance ≤ Sp trước hoặc tại horizon;
-- loại window current distance ≤ Sp khỏi positive early-warning vì đó đã là
-  VIOLATION;
-- UNKNOWN/invalid không gán thành negative;
-- event episode được gom theo crossing liên tục, không tính từng window là một
-  sự kiện độc lập.
+- persistence: mọi horizon bằng khoảng cách cuối;
+- constant velocity;
+- threshold-only không AI;
+- LSTM V1 hiện tại.
 
-### 6.6 Chiến lược model
+Bộ synthetic hiện có square-40mm-20261010 chỉ là baseline tham khảo: 400
+session, 96.000 sample, split 280/60/60; test có 13.560 window và 51 crossing.
+Kết quả đã ghi nhận trước debounce F1 0,9375; sau detector 2-of-3 precision 1,0,
+recall 0,6471, F1 0,7857 và miss rate 0,3529. Synthetic V2 phải giải quyết trực
+tiếp mức recall sau debounce này.
 
-#### Bước AI-1 — giữ kiến trúc đơn giản nhưng sửa dữ liệu/loss
+### 6.10 Chiến lược model
 
-Đầu tiên giữ LSTM regression hiện tại để cô lập nguyên nhân:
+#### Bước AI-1 — LSTM regression tương thích hiện tại
 
-- input 10×2;
+- input 10×2 cho E0;
 - LSTM 32;
 - Dropout 0,2;
 - Dense 32 ReLU;
-- Dense 5;
-- weighted Huber: tăng trọng số cho window gần Sp và window trước crossing;
-- sampler cân bằng crossing/negative khó ở mức session/window;
-- không oversample test.
+- Dense 5 khoảng cách;
+- weighted Huber cho near-threshold và pre-crossing window;
+- threshold prediction tại Sp rồi chạy detector 2-of-3.
 
-Nếu đạt gate event sau debounce thì giữ kiến trúc này.
+Giữ model này nếu đạt cả regression gate và episode gate.
 
-#### Bước AI-2 — multi-task LSTM nếu AI-1 không đạt
+#### Bước AI-2 — multi-task LSTM nếu AI-1 bỏ sót crossing
 
-Nếu regression vẫn có MAE tốt nhưng bỏ sót crossing, chuyển sang LSTM hai đầu:
-
-- head A: năm khoảng cách dự báo;
-- head B: năm xác suất crossing theo horizon;
+- shared LSTM encoder;
+- head A dự báo năm khoảng cách;
+- head B dự báo năm xác suất crossing;
 - loss = weighted Huber + λ × weighted binary cross-entropy;
-- λ và class weight chỉ chọn trên validation;
-- threshold xác suất được calibrate trên validation, test chỉ chạy một lần;
-- output vẫn map được về predicted_violation_ms.
+- λ, class weight và threshold chỉ chọn bằng validation;
+- predicted_violation_ms là horizon sớm nhất vượt threshold đã khóa.
 
-Model vẫn là LSTM-only; persistence và constant velocity chỉ dùng làm baseline
-offline.
+Persistence và constant velocity chỉ là baseline offline, không được dùng để
+điều chỉnh nhãn cho có lợi cho LSTM.
 
-### 6.7 Metric bắt buộc
+### 6.11 Metric và báo cáo bắt buộc
 
 #### Regression
 
-- MAE và RMSE từng horizon;
-- bias từng horizon;
-- MAE trong vùng near-threshold;
+- MAE/RMSE/bias cho từng horizon;
 - p50/p95 absolute error;
-- breakdown theo speed, scenario, material và ngày thu.
+- MAE near-threshold;
+- so sánh persistence và constant velocity;
+- slice theo scenario, speed, acceleration, noise và stop margin.
 
-#### Event
+#### Classification/event
 
-- precision, recall, F1;
-- miss rate;
-- false warnings mỗi negative session và mỗi phút;
+- confusion matrix window-level trước debounce;
+- confusion matrix episode-level sau detector 2-of-3;
+- precision, recall, F1, miss rate, specificity;
+- false warning trên mỗi negative session và mỗi phút;
 - lead time p10/p50/p90;
-- số crossing episode support;
-- metric trước debounce và sau detector 2/3;
-- confusion matrix ở cấp episode.
+- support tuyệt đối của positive, negative và từng scenario.
+
+#### Độ tin cậy
+
+- bootstrap confidence interval 95% theo session, không bootstrap window;
+- metric trên challenge set;
+- chênh lệch train/validation/test;
+- ba training seed và mean ± standard deviation cho candidate cuối.
 
 #### Runtime
 
 - inference latency p50/p95/p99;
-- stale rate;
-- INVALID_WINDOW rate;
-- model availability;
-- edge/backend parity;
-- heap/stack/flash trên ESP32-S3;
-- số mẫu bị trễ hoặc mất do inference.
+- stale và INVALID_WINDOW rate;
+- edge/backend parity nếu bật Edge AI;
+- heap/stack/flash và ảnh hưởng chu kỳ 100 ms nếu deploy ESP32-S3.
 
-### 6.8 Gate chấp nhận AI
+### 6.12 Gate chấp nhận AI synthetic
 
-| Tiêu chí trên test thật độc lập | Gate tối thiểu |
+| Tiêu chí trên test synthetic đã khóa | Gate tối thiểu |
 |---|---:|
-| Crossing episode support | ≥ 50 |
-| Negative session support | ≥ 50 |
+| Crossing episode support | ≥ 100 |
+| Negative session/episode support | ≥ 100 |
 | Recall sau debounce | ≥ 0,85 |
-| Precision sau debounce | ≥ 0,90 |
-| F1 sau debounce | ≥ 0,87 |
+| Precision sau debounce | ≥ 0,95 |
+| F1 sau debounce | ≥ 0,89 |
 | Miss rate | ≤ 0,15 |
 | False warning | ≤ 0,10/session âm tính |
 | Lead time median | ≥ 200 ms |
 | Lead time p10 | ≥ 100 ms |
-| MAE 500 ms | ≤ 10 mm hoặc tốt hơn baseline có ý nghĩa |
-| Edge inference p95 | < 50 ms |
-| Edge/backend max absolute difference | ≤ 0,1 mm cho vector parity cố định |
-| Sampling | Không làm mất deadline 100 ms |
+| MAE tại 500 ms | ≤ 5 mm |
+| Near-threshold MAE | Không tệ hơn best baseline và mục tiêu tốt hơn ≥5% |
+| Session leakage | 0 |
+| Reproducibility | Cùng config/seed tạo cùng dataset hash |
+| Edge inference p95, nếu deploy | < 50 ms |
+| Edge/backend parity, nếu deploy | Sai lệch tối đa ≤ 0,1 mm |
 
-Nếu không đạt recall/F1, dashboard phải hiển thị AI là EXPERIMENTAL và sản phẩm
-không được quảng bá là cảnh báo sớm đáng tin cậy.
+Pass gate chỉ cho phép nhãn **SYNTHETIC_VALIDATED**. Dashboard vẫn phải hiện
+“Mô hình được huấn luyện và đánh giá bằng dữ liệu mô phỏng; chưa xác minh trên
+phần cứng/thế giới thật”. Không dùng chữ certified, production-safe hoặc
+hardware-validated.
 
-### 6.9 Artifact và promotion
+### 6.13 Artifact và promotion
 
-Mỗi artifact phải có:
+Mỗi dataset release phải có:
+
+- dataset.jsonl hoặc session files bất biến;
+- generator_config.yaml;
+- scenario_catalog.json;
+- dataset_manifest.json;
+- split_manifest.json;
+- audit_report.json;
+- SHA-256 toàn dataset, từng split và config.
+
+Mỗi model artifact phải có:
 
 - model.keras;
 - scaler.json;
 - manifest.json;
-- split_manifest.json;
 - metrics.json;
-- calibration.json nếu có probability head;
+- confusion_matrix_window.json;
+- confusion_matrix_episode.json;
+- predictions_test.jsonl;
 - model/scaler/dataset/split SHA-256;
-- source commit;
-- TensorFlow/Keras version;
-- architecture, features, units, horizons;
-- threshold profile được đánh giá;
-- acceptance status.
+- source commit, TensorFlow/Keras version và training seed;
+- architecture, features, units, horizons, threshold/debounce;
+- acceptance status và limitations.
 
-Promotion:
+Promotion trong phạm vi này:
 
 ~~~text
-candidate → offline_validated → shadow_runtime → hardware_validated → active
+candidate → synthetic_validated → shadow_runtime_optional → demo_active
 ~~~
 
-Không ghi đè thư mục artifact active. Dùng thư mục versioned và đổi symlink/env
-chỉ sau khi gate pass.
+Không ghi đè artifact active. Chỉ đổi symlink/env sau khi hash, audit, gate và
+model card pass. hardware_validated không tồn tại trong phạm vi synthetic-only.
 
-### 6.10 Triển khai Edge AI
+### 6.14 Triển khai Edge AI tùy chọn
 
-1. sinh source weights/scaler từ artifact active;
+Edge AI không phải điều kiện để chứng minh metric synthetic. Nếu vẫn cần demo
+ESP32:
+
+1. sinh source weights/scaler từ artifact demo_active;
 2. kiểm tra hash trong firmware;
-3. parity test với tối thiểu 100 vector gồm near-threshold và outlier;
-4. build ESP32-S3;
-5. flash, ghi serial model hash và thời gian inference;
-6. chạy 30 phút stationary, 30 session động và reconnect test;
-7. phát edge_prediction_v1;
-8. backend đối chiếu edge/backend và ghi parity_status.
+3. parity test tối thiểu 100 vector synthetic gồm near-threshold và outlier;
+4. build/flash và ghi serial model hash, latency;
+5. phát edge_prediction_v1 với simulation_trained=true;
+6. backend đối chiếu edge/backend và ghi parity_status;
+7. dashboard gắn nhãn EXPERIMENTAL trên dữ liệu sensor live.
 
-Nếu inference làm trễ chu kỳ đo:
-
-- ưu tiên raw sampling;
-- chạy inference task riêng;
-- bỏ prediction của cửa sổ cũ thay vì bỏ raw sample;
-- không giảm QoS hoặc xóa raw safety để cứu AI.
+Việc chạy sensor thật trong demo không biến telemetry đó thành dataset train và
+không thay đổi trạng thái SYNTHETIC_VALIDATED. Nếu inference làm trễ chu kỳ đo,
+ưu tiên raw sampling, chạy task riêng và bỏ prediction cũ thay vì bỏ raw sample.
 
 ---
 
@@ -581,8 +765,9 @@ Nếu inference làm trễ chu kỳ đo:
 
 ### 7.1 Startup
 
-1. ESP32 tạo boot_id mới.
-2. Khởi tạo sensor, Wi-Fi, MQTT và model.
+1. Chọn source_mode=simulator mặc định hoặc source_mode=esp32 tùy chọn.
+2. Nguồn dữ liệu tạo boot_id mới; simulator load scenario/seed, ESP32 khởi tạo
+   sensor/Wi-Fi.
 3. In model_version, model hash, scaler hash, threshold profile.
 4. Backend mở SQLite, chạy migrations và load safety/model.
 5. Backend catch-up raw chưa xử lý trước khi nhận stream mới.
@@ -591,10 +776,10 @@ Nếu inference làm trễ chu kỳ đo:
 
 ### 7.2 Xử lý mỗi mẫu
 
-1. ESP32 bắt đầu đo và chốt monotonic_us/measured_at.
-2. Kiểm tra sensor validity.
+1. Simulator sinh hoặc ESP32 đo sample rồi chốt monotonic_us/measured_at.
+2. Kiểm tra sample/sensor validity.
 3. So raw distance với threshold cục bộ để fail-safe.
-4. Đẩy sample vào Edge LSTM nếu window hợp lệ.
+4. Đẩy sample vào Edge LSTM nếu source có edge runtime và window hợp lệ.
 5. Publish telemetry_v1.
 6. Publish edge_prediction_v1 nếu inference hoàn tất đúng sample.
 7. Backend validate schema và device/topic.
@@ -643,6 +828,7 @@ còn lại
 
 | Lỗi | Safety/AI | Lưu dữ liệu | Blockchain | Dashboard |
 |---|---|---|---|---|
+| Simulator dừng | Không có sample mới | Không giả dữ liệu | Không ảnh hưởng outbox cũ | STALE/DISCONNECTED |
 | Sensor timeout | UNKNOWN, fail-safe | Lưu raw invalid | Không phạt; có thể ghi fault event | Đỏ/UNKNOWN, hiện error_code |
 | Mất MQTT ngắn | ESP32 local safety vẫn chạy | Buffer hữu hạn, đếm drop | Không ảnh hưởng | STALE/DISCONNECTED |
 | Backend restart | Edge safety vẫn chạy | WAL + catch-up | Outbox tiếp tục retry | Reconnecting |
@@ -859,6 +1045,10 @@ Dashboard phải hiển thị ba nguồn, không trộn:
 Mỗi card hoặc row phải có nguồn và timestamp. Không dùng on-chain event cuối
 cùng để giả làm khoảng cách realtime.
 
+Toàn trang phải có badge nguồn dữ liệu: SYNTHETIC STREAM hoặc HARDWARE
+EXPERIMENTAL. Khi model được train synthetic-only, banner limitation luôn hiện
+ở Overview và AI Quality, kể cả khi input runtime đến từ ESP32.
+
 ### 9.2 Kiến trúc truy cập
 
 Khuyến nghị thêm reverse proxy cùng origin:
@@ -914,6 +1104,7 @@ dashboard chuyển sang polling snapshot 1 giây/lần và hiển thị DEGRADED
 - device online/offline;
 - MQTT/backend/model/chain health;
 - current session;
+- source mode, scenario và seed nếu là simulator;
 - current distance, Sp và margin;
 - safety state;
 - predicted violation time;
@@ -947,9 +1138,13 @@ Card cạnh chart:
 #### C. AI Quality
 
 - active model và promotion status;
+- training_data=synthetic-only và limitation banner;
+- generator/config/scenario catalog version;
 - dataset/split hash;
 - MAE/RMSE từng horizon;
 - precision/recall/F1 sau debounce;
+- confusion matrix window-level và episode-level;
+- bộ lọc error slice theo scenario/noise/speed/margin;
 - event support;
 - lead-time distribution;
 - false warning rate;
@@ -1151,50 +1346,55 @@ Migration phải:
 
 ## 11. Milestone triển khai
 
-### M22 — Chốt safety profile và hiệu chuẩn
-
-Chủ trì: TV3. Phối hợp: TV4.
-
-Phạm vi:
-
-- configs/safety*.yaml;
-- configs/sensor.yaml;
-- scripts/calibrate.py;
-- docs/calibration.md;
-- test calibration/safety.
-
-Deliverable:
-
-- report vùng 20–1000 mm;
-- quyết định 40 mm;
-- profile hrc-ssm-v1 và square-bench-v2;
-- dashboard label demo/non-certified.
-
-DoD:
-
-- không còn warning cấu hình bị bỏ qua;
-- mọi dataset mới ghi config_version;
-- test Sp/margin/profile pass.
-
-### M23 — Dataset thật V2
+### M22 — Đặc tả simulator và safety profile synthetic
 
 Chủ trì: TV4. Phối hợp: TV3.
 
 Phạm vi:
 
-- collection plan;
-- session runner;
-- metadata schema;
-- quality audit;
-- held-out test manifest.
+- configs/simulation/square-bench-v2.yaml;
+- profile square-bench-v2 với Sp = 0,04 m;
+- schema session/sample và scenario catalog;
+- deterministic PRNG, trajectory/fault generator;
+- validator và test nhãn biên;
+- simulation provenance trên API/dashboard.
+
+Deliverable:
+
+- generator chạy CLI được;
+- 10 golden sessions có hash cố định;
+- tài liệu công thức, đơn vị và giới hạn phân phối;
+- profile hrc-ssm-v1 và square-bench-v2 không bị trộn semantics;
+- dashboard label synthetic/non-certified.
 
 DoD:
 
-- đạt ma trận session;
-- split theo session/ngày;
+- cùng config/seed sinh cùng canonical hash;
+- ground truth tách khỏi measured input;
+- test Sp/margin/label 100–500 ms pass;
+- không có feature nhìn tương lai;
+- 40 mm được ghi rõ là ngưỡng mô phỏng, không phải calibration phần cứng.
+
+### M23 — Synthetic Dataset V2 và split manifest
+
+Chủ trì: TV4.
+
+Phạm vi:
+
+- sinh đủ ma trận 1.200 forecast + 150 fault session;
+- metadata/session/sample schema;
+- split 70/15/15 trước windowing;
+- quality/leakage audit;
+- frozen test và challenge manifests.
+
+DoD:
+
+- đạt support theo từng scenario;
+- train/validation/test không trùng session, seed hoặc payload hash;
 - test crossing và negative support đủ;
-- dataset hash, audit và provenance hoàn chỉnh;
-- fault dataset tách riêng.
+- dataset/config/split hash và provenance hoàn chỉnh;
+- raw dataset bất biến, derived windows tái tạo được;
+- fault dataset tách riêng và UNKNOWN không bị gán negative.
 
 ### M24 — LSTM V2 và metric event
 
@@ -1203,39 +1403,42 @@ Chủ trì: TV4.
 Pha:
 
 1. retrain architecture hiện tại với balanced/weighted loss;
-2. đánh giá sau detector thật;
+2. khóa candidate bằng validation và đánh giá sau detector 2-of-3;
 3. chỉ khi fail mới multi-task LSTM;
-4. calibration threshold;
-5. artifact promotion.
+4. calibration probability threshold trên validation;
+5. chạy frozen test một lần, xuất hai confusion matrix;
+6. artifact promotion.
 
 DoD:
 
-- metric regression/event/runtime đầy đủ;
-- đạt gate AI hoặc ghi rõ fail;
-- không chọn test split theo kết quả;
+- metric regression/window/episode đầy đủ;
+- confusion matrix trước và sau debounce có số tuyệt đối;
+- đạt gate synthetic hoặc ghi rõ fail;
+- không chọn lại test split/model theo kết quả test;
+- ba training seed và confidence interval theo session;
 - baseline offline được báo cáo trung thực;
 - artifact candidate không ghi đè active.
 
-### M25 — Edge LSTM, parity và schema prediction
+### M25 — Runtime inference và Edge AI tùy chọn
 
 Chủ trì: TV3 + TV4.
 
 Phạm vi:
 
-- edge_prediction_v1 schema;
-- firmware inference/log/publish;
+- backend inference từ artifact demo_active;
+- prediction schema có simulation_trained/model/dataset hash;
+- edge_prediction_v1 nếu cần demo firmware;
 - backend ingest/store/parity;
-- generator model;
-- firmware/native test.
+- generator model weights và native test.
 
 DoD:
 
-- 100 parity vectors pass;
+- backend inference/replay synthetic pass;
+- 100 parity vectors pass nếu bật Edge AI;
 - model/scaler hash khớp;
-- inference p95 < 50 ms;
-- sampling 100 ms không trễ;
-- flash/serial/30-minute soak pass;
-- backend hiển thị parity status.
+- inference p95 < 50 ms và sampling 100 ms không trễ nếu deploy edge;
+- dashboard hiển thị SYNTHETIC_VALIDATED/EXPERIMENTAL đúng nguồn;
+- chạy sensor thật, nếu có, không được đổi nhãn thành hardware-validated.
 
 ### M26 — Runtime flow, confirmation và observability
 
@@ -1313,24 +1516,24 @@ Phạm vi:
 DoD:
 
 - không còn placeholder;
-- số liệu lấy từ API thật;
+- số liệu lấy từ API runtime, không dùng placeholder hard-code;
 - live latency dưới 1 giây;
 - state/stale/source rõ ràng;
 - contract/network không hard-code;
 - browser E2E pass.
 
-### M30 — E2E, hardware acceptance và demo bundle
+### M30 — E2E synthetic acceptance và demo bundle
 
 Chủ trì: cả nhóm.
 
 Kịch bản:
 
-1. CLEAR;
-2. approach tạo PREDICTED_WARNING;
-3. crossing tạo VIOLATION_OBSERVED rồi CONFIRMED;
+1. simulator phát session CLEAR;
+2. simulator phát approach tạo PREDICTED_WARNING;
+3. synthetic crossing tạo VIOLATION_OBSERVED rồi CONFIRMED;
 4. chain tắt rồi phục hồi;
 5. duplicate MQTT;
-6. sensor fault;
+6. fault injection;
 7. backend restart;
 8. session valid reward;
 9. session violation penalty;
@@ -1372,10 +1575,10 @@ Quy tắc phối hợp:
 
 | Milestone | Công sức ước lượng | Phụ thuộc |
 |---|---:|---|
-| M22 | 2–4 ngày công | Phần cứng |
-| M23 | 6–10 ngày công | M22 |
+| M22 | 3–5 ngày công | Đặc tả synthetic |
+| M23 | 3–6 ngày công | M22 |
 | M24 | 5–8 ngày công | M23 |
-| M25 | 4–6 ngày công | M24 |
+| M25 | 2–5 ngày công | M24; edge là tùy chọn |
 | M26 | 4–6 ngày công | M22, contract dữ liệu |
 | M27 | 4–6 ngày công | M26 |
 | M28 | 2–4 ngày công | M26 |
@@ -1396,11 +1599,11 @@ penalty trước khi confirmation semantics ở M26 hoàn tất.
 
 ## 14. Ma trận kiểm thử tổng
 
-| Lớp | Unit | Integration | E2E/Hardware |
+| Lớp | Unit | Integration | E2E/Runtime |
 |---|---|---|---|
-| Sensor | conversion/error code | firmware telemetry | ruler/reference + surfaces |
-| Safety | Sp/margin/state | config version/replay | crossing thật |
-| AI | window/scaler/loss/metric | artifact/runtime/parity | edge latency + event recall |
+| Simulator/source | trajectory/noise/fault/seed | telemetry schema + replay | deterministic scenario stream |
+| Safety | Sp/margin/state | config version/replay | synthetic crossing/fault |
+| AI | window/scaler/loss/metric | artifact/runtime/parity | confusion matrix + event recall |
 | MQTT | queue/dedup/gap | reconnect/catch-up | Wi-Fi outage/soak |
 | Event | debounce/confirmation | atomic event+outbox | warning/violation sequence |
 | Blockchain API | validation/idempotency | durable send/restart | Hardhat/Sepolia receipt |
@@ -1413,7 +1616,7 @@ Test bắt buộc trước merge:
 Python unit/integration
 AI environment tests
 native firmware harness
-ESP-IDF build ESP32-S3
+ESP-IDF build ESP32-S3 nếu bật Edge AI
 Node blockchain_api tests
 Hardhat contract tests
 dashboard browser E2E
@@ -1428,16 +1631,17 @@ secret scan
 ### 15.1 Khởi động
 
 1. Dựng MQTT, iot_backend, blockchain node, deploy contracts, blockchain_api,
-   reverse proxy và dashboard bằng một compose profile.
+   simulator, reverse proxy và dashboard bằng một compose profile.
 2. Health tổng hợp phải xanh.
 3. Dashboard hiển thị device chưa online cho tới khi có telemetry mới.
-4. ESP32 boot và công bố firmware/model/config hash.
+4. Simulator công bố dataset/scenario/seed/model/config hash. Nếu dùng ESP32,
+   thiết bị công bố thêm firmware hash và giao diện phải gắn nhãn EXPERIMENTAL.
 
 ### 15.2 Session an toàn
 
 1. Operator START session.
 2. Stake 2 HRC chuyển sang started.
-3. Vật giữ ngoài Sp.
+3. Simulator phát quỹ đạo stationary ngoài Sp.
 4. Dashboard vẽ actual/forecast, trạng thái CLEAR.
 5. STOP sau đủ duration/coverage.
 6. Outcome VALID_NO_VIOLATION.
@@ -1447,18 +1651,18 @@ secret scan
 ### 15.3 Cảnh báo rồi vi phạm
 
 1. START session mới.
-2. Vật tiến gần từ vùng CLEAR.
+2. Simulator phát quỹ đạo approach từ vùng CLEAR.
 3. AI tạo warning đủ 2/3 trước crossing.
 4. Dashboard chuyển vàng và hiển thị lead time.
-5. Vật vượt Sp: local stop/cảnh báo ngay.
+5. Quỹ đạo vượt Sp: local stop/cảnh báo ngay.
 6. Sau 2/3 mẫu valid, event VIOLATION được confirmed.
 7. Event local chuyển pending rồi on-chain confirmed.
 8. STOP session; outcome VIOLATION_CONFIRMED.
 9. Contract thu stake/penalty đúng policy.
 
-### 15.4 Sensor fault
+### 15.4 Fault injection
 
-1. Rút/che sensor để tạo timeout.
+1. Simulator tạo timeout/dropout theo seed đã ghi.
 2. Trạng thái UNKNOWN/fail-safe.
 3. Không phạt token.
 4. Session outcome SENSOR_FAULT.
@@ -1479,21 +1683,23 @@ secret scan
 
 Chỉ được đánh dấu hoàn thành khi đồng thời đạt:
 
-### Hardware/IoT
+### Simulator/IoT
 
-- sensor calibration pass cho vùng vận hành;
-- flash đúng firmware/model active;
-- telemetry 10 Hz ổn định;
-- reconnect và 30-minute soak pass;
-- không mất deadline vì AI.
+- generator/config/seed tạo lại đúng dataset hash;
+- simulator phát telemetry_v1 10 Hz ổn định;
+- scenario, source_mode và simulation_mode truy vết được;
+- reconnect, duplicate, gap và fault injection pass;
+- Edge AI/ESP32, nếu bật, không làm mất deadline 100 ms.
 
 ### AI
 
-- test set độc lập đủ support;
+- frozen synthetic test đủ support;
+- train/validation/test tách theo session và seed, leakage bằng 0;
 - đạt gate precision/recall/F1/lead time sau debounce;
-- artifact/hash/split/scaler audit pass;
-- edge/backend parity pass;
-- dashboard hiện đúng model status.
+- hai confusion matrix và error slices được xuất;
+- artifact/hash/split/scaler/generator audit pass;
+- edge/backend parity pass nếu bật Edge AI;
+- dashboard hiện đúng SYNTHETIC_VALIDATED và limitation.
 
 ### Flow
 
@@ -1512,7 +1718,7 @@ Chỉ được đánh dấu hoàn thành khi đồng thời đạt:
 
 ### Dashboard
 
-- realtime data thật, không placeholder;
+- realtime data từ simulator/API runtime, không placeholder hard-code;
 - chart actual/Sp/prediction;
 - event local/pending/on-chain;
 - session/reward/transaction đầy đủ;
@@ -1535,10 +1741,12 @@ Chỉ được đánh dấu hoàn thành khi đồng thời đạt:
 Dừng promotion nếu:
 
 - test split bị leakage;
-- 40 mm không qua calibration;
+- generator không tái lập được cùng hash;
+- session/seed/payload bị trùng giữa các split;
+- confusion matrix thiếu support hoặc được tính trước khi khóa threshold;
 - F1/recall không đạt;
-- edge/backend lệch vượt tolerance;
-- AI làm trễ sampling;
+- edge/backend lệch vượt tolerance nếu bật Edge AI;
+- AI làm trễ sampling/runtime stream;
 - event duplicate on-chain;
 - reward có thể settle hai lần;
 - dashboard chứa key/token;
@@ -1547,7 +1755,7 @@ Dừng promotion nếu:
 Rollback:
 
 - đổi MODEL_ARTIFACT_DIR về artifact active trước;
-- firmware quay về model hash trước;
+- firmware, nếu dùng, quay về model hash trước;
 - giữ safety trực tiếp hoạt động;
 - pause chain worker nhưng không xóa outbox;
 - không reset DB/contract để che lỗi;
@@ -1557,17 +1765,20 @@ Rollback:
 
 ## 18. Thứ tự phê duyệt
 
-Trước khi triển khai source, nhóm cần duyệt bốn quyết định:
+Trước khi triển khai source, nhóm cần duyệt năm quyết định:
 
-1. Giữ 40 mm sau calibration hay chuyển sang ngưỡng nằm trong vùng ≥100 mm.
-2. Chấp nhận mô hình hai tầng: edge dự báo nhanh, backend là authority/audit.
-3. Chỉ dùng VIOLATION_CONFIRMED cho penalty.
-4. Hoàn tất local Hardhat trước; Sepolia chỉ thực hiện sau M30 local pass.
+1. Chấp nhận phạm vi AI synthetic-only và Sp = 40 mm chỉ là benchmark mô phỏng.
+2. Chốt ma trận 1.200 forecast + 150 fault session và split 70/15/15.
+3. Chấp nhận backend là authority/audit; Edge AI chỉ là tùy chọn demo.
+4. Chỉ dùng VIOLATION_CONFIRMED cho penalty.
+5. Hoàn tất local Hardhat trước; Sepolia chỉ thực hiện sau M30 local pass.
 
 Mặc định khuyến nghị của kế hoạch:
 
-- không dùng 40 mm làm ngưỡng sản phẩm khi chưa qua calibration;
+- không thu dataset thật trong phạm vi V2;
+- hiển thị rõ 40 mm chưa được xác minh trên phần cứng;
 - giữ raw safety độc lập với AI;
 - dùng backend event đã xác nhận làm nguồn blockchain;
 - dùng local Hardhat cho bản demo cuối đầu tiên;
-- dashboard chỉ được gọi hoàn tất khi đã hiển thị live data thật.
+- dashboard chỉ được gọi hoàn tất khi hiển thị live data từ simulator/API và
+  nhãn synthetic limitation, không dùng placeholder.
