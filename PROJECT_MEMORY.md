@@ -518,3 +518,20 @@ sự kiện có API riêng; IoT không giữ private key và không tự ký gia
   khi chưa có serial chip-id, log LSTM, HC-SR04 đo thật và MQTT soak.
 - Evidence triển khai được lưu ở `data/results/edge-blockchain-20261010/`; ảnh policy ở
   `reward-policy.png` và `reward-policy.svg`, report chính ở `deployment-report.json`.
+
+## V2 runtime/dashboard verification — 2026-10-10
+
+- Compose demo mặc định dùng artifact synthetic benchmark
+  `lstm-benchmark-square40-20261010`, `Sp=0.04 m`, và `HRC_SOURCE_MODE=simulator`.
+  Source label là cấu hình operator (`simulator|esp32`), không suy luận từ
+  `DEVICE_ID` hoặc tên artifact. Mọi response live vẫn giữ
+  `threshold_verified_on_hardware=false`.
+- Database runtime đã vượt 1,1 triệu raw rows. Index
+  `idx_raw_device_received(device_id, received_at DESC, id DESC)` và truy vấn
+  live đi từ raw mới nhất; đo sau restart container: `/live/latest` p50/p95
+  khoảng 1–2 ms, `/system/health` 1–2 ms, `/live/history?limit=600` 23/56 ms.
+- Chrome headless browser smoke đã render desktop 1440×1000 và mobile 390×844:
+  SSE/polling hiển thị `SYNTHETIC STREAM · LIVE`, actual distance, Sp và năm
+  horizon. Rule `[hidden]` được khóa bằng `display:none !important` để empty
+  chart overlay không phủ dữ liệu thật. Đây là browser smoke/responsive evidence,
+  chưa phải full scenario E2E CLEAR → WARNING → VIOLATION → CHAIN CONFIRMED.

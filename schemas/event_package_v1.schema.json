@@ -36,6 +36,19 @@
         "PREDICTED_WARNING"
       ]
     },
+    "confirmation_status": {
+      "enum": ["OBSERVED", "CONFIRMED"]
+    },
+    "confirmation_rule": {
+      "enum": ["legacy_transition", "2_of_3_valid_consecutive"]
+    },
+    "evidence_count": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "chain_eligible": {
+      "type": "boolean"
+    },
     "processor_version": {
       "type": "string",
       "minLength": 1

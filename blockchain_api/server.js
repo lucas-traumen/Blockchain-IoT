@@ -6,7 +6,13 @@ const { ApiError, identifier } = require("./eventPayload");
 function createApp({ service, tokens = process.env } = {}) {
     service ||= require("./safetyService");
     const app = express();
-    app.use(cors());
+    const allowedOrigins = String(tokens.HRC_CORS_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080")
+        .split(",").map(value => value.trim().replace(/\/$/, "")).filter(Boolean);
+    if (allowedOrigins.includes("*")) throw new Error("HRC_CORS_ORIGINS must be an explicit allowlist");
+    app.use(cors({ origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) return callback(null, true);
+        return callback(null, false);
+    }}));
     app.use(express.json({ limit: "64kb", strict: true }));
     const respond = async (res, operation, defaultFailure = 503) => {
         const result = await operation();
@@ -20,8 +26,12 @@ function createApp({ service, tokens = process.env } = {}) {
             unlockRobot: "POST /api/robots/:deviceId/unlock", startRewardSession: "POST /api/session-start",
             settleRewardSession: "POST /api/session-outcome", rewardConfig: "GET /api/rewards/config",
             rewardSummary: "GET /api/rewards/summary?beneficiary=0x...", rewardSessions: "GET /api/rewards/sessions",
-            rewardTransactions: "GET /api/rewards/transactions", adminAccess: "GET /api/admin/access (admin)", archivedPayload: "GET /api/events/:eventId/payload (admin)" }
+            rewardTransactions: "GET /api/rewards/transactions", publicConfig: "GET /api/config", adminAccess: "GET /api/admin/access (admin)", archivedPayload: "GET /api/events/:eventId/payload (admin)" }
     }));
+    app.get("/api/config", async (req, res) => {
+        const read = service.getPublicConfig || (() => require("./publicConfig").getPublicConfig(tokens));
+        await respond(res, () => read());
+    });
     app.post("/api/safety-event", requireToken("ingest", tokens), async (req, res) => {
         await respond(res, () => service.processSafetyEvent(req.body));
     });

@@ -46,7 +46,7 @@ services:
       SAFETY_CONFIG: /app/configs/${HRC_SAFETY_CONFIG:-safety-square.yaml}
       MODEL_CONFIG: /app/configs/model.yaml
       MODEL_TYPE: ${HRC_MODEL_TYPE:-lstm}
-      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-lstm-real-20261010}
+      MODEL_ARTIFACT_DIR: /app/ai_model/artifacts/${HRC_MODEL_SUBDIR:-lstm-benchmark-square40-20261010}
       KERAS_HOME: /tmp/keras
       TF_CPP_MIN_LOG_LEVEL: "2"
       TF_NUM_INTEROP_THREADS: "1"
@@ -58,6 +58,13 @@ services:
       HRC_REWARD_AUTO_START: ${HRC_REWARD_AUTO_START:-false}
       HRC_REWARD_AUTO_SETTLE: ${HRC_REWARD_AUTO_SETTLE:-false}
       HRC_REWARD_TIMEOUT_S: ${HRC_REWARD_TIMEOUT_S:-10.0}
+      HRC_SOURCE_MODE: ${HRC_SOURCE_MODE:-simulator}
+      HRC_CHAIN_API_URL: ${HRC_CHAIN_API_URL:-}
+      HRC_CHAIN_INGEST_TOKEN: ${HRC_CHAIN_INGEST_TOKEN:-}
+      HRC_CHAIN_AUTO_SUBMIT: ${HRC_CHAIN_AUTO_SUBMIT:-false}
+      HRC_CHAIN_MAX_ATTEMPTS: ${HRC_CHAIN_MAX_ATTEMPTS:-8}
+      HRC_VIOLATION_CONFIRMATION: ${HRC_VIOLATION_CONFIRMATION:-true}
+      HRC_CORS_ORIGINS: ${HRC_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
     volumes:
       - iot_backend_data:/app/data
       - ./ai_model/artifacts:/app/ai_model/artifacts:ro

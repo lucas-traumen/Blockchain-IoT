@@ -1,11 +1,24 @@
 # Kế hoạch V2 — AI → luồng vận hành → blockchain → dashboard sản phẩm
 
-> Trạng thái: **PROPOSED — chờ duyệt trước khi sửa source**
+> Trạng thái: **ĐÃ TRIỂN KHAI MỘT PHẦN — synthetic-only, local verification**
 >
 > Ngày lập: 2026-10-10
 >
 > Phạm vi: ESP32/HC-SR04, LSTM, iot_backend, blockchain_api, smart contracts,
 > reward/session và dashboard.
+
+Người dùng đã duyệt triển khai trực tiếp ngày 2026-10-10. Các hạng mục runtime,
+confirmation, chain outbox, public config và dashboard live đã được triển khai
+trong workspace. Các gate cần metric model V2 hoặc browser/E2E evidence vẫn giữ
+trạng thái mở, không được suy diễn là đã đạt chỉ từ unit/integration test.
+
+Evidence bổ sung ngày 2026-10-10: Chrome headless browser smoke đã render
+dashboard live ở desktop `1440x1000` và mobile `390x844`; actual distance, Sp,
+năm horizon forecast và `SYNTHETIC STREAM · LIVE` đều hiển thị. Database runtime
+hơn 1,1 triệu raw rows đạt `/live/latest` và `/system/health` p50/p95 khoảng
+`1–2 ms`, còn `/live/history?limit=600` khoảng `23/56 ms` sau khi thêm index
+theo `device_id, received_at`. Đây là browser smoke/performance evidence, chưa
+thay thế full scenario E2E hay chain outage recovery.
 
 Tài liệu này là kế hoạch triển khai tiếp theo của HRC Safety Log. Mục tiêu không
 phải thêm nhiều chức năng rời rạc, mà biến các khối đang có thành một sản phẩm

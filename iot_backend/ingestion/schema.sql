@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS raw_samples (
   UNIQUE (device_id, boot_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_device_boot_seq ON raw_samples(device_id, boot_id, sequence);
+-- Live endpoints need newest samples without sorting the complete raw table.
+CREATE INDEX IF NOT EXISTS idx_raw_device_received
+  ON raw_samples(device_id, received_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS rejected_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +45,12 @@ CREATE TABLE IF NOT EXISTS processed_samples (
 CREATE INDEX IF NOT EXISTS idx_processed_key ON processed_samples(device_id, boot_id, sequence, processor_version);
 
 -- M3: lượt thu (session) — ranh giới từ ack thiết bị hoặc fallback DB.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL,
+  checksum TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,
@@ -89,3 +98,47 @@ CREATE TABLE IF NOT EXISTS reward_settlements (
   response_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- M27: durable safety-event bridge. Payload/hash are immutable after PREPARED;
+-- transaction metadata is updated as the signer API advances the row.
+CREATE TABLE IF NOT EXISTS chain_event_outbox (
+  event_id TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('LOCAL_ONLY','OUTBOX_PENDING','SUBMITTED','CONFIRMED','RETRYABLE_ERROR','DEAD_LETTER')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  transaction_hash TEXT,
+  block_number INTEGER,
+  chain_data_hash TEXT,
+  last_http_status INTEGER,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  confirmed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chain_outbox_due ON chain_event_outbox(status, next_attempt_at);
+
+-- M25/M26: active artifact metadata and runtime counters are local audit data.
+CREATE TABLE IF NOT EXISTS model_registry (
+  model_sha256 TEXT PRIMARY KEY,
+  model_version TEXT NOT NULL,
+  scaler_sha256 TEXT NOT NULL,
+  preprocessing_version TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  promotion_status TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  activated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS edge_predictions (
+  device_id TEXT NOT NULL,
+  boot_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  received_at TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  model_sha256 TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (device_id, boot_id, sequence, model_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_edge_prediction_sample ON edge_predictions(device_id, boot_id, sequence);

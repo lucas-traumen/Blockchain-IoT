@@ -153,12 +153,12 @@
                     <span class="status-dot online"></span>
 
                     <div>
-                        <span>TEST NETWORK</span>
-                        <strong>Hardhat Local</strong>
+                        <span id="networkEnvironment">NETWORK</span>
+                        <strong id="networkNameHeader">Loading</strong>
                     </div>
                 </div>
 
-                <button type="button" title="Connect MetaMask on Hardhat Local"
+                <button type="button" title="Connect MetaMask on the configured network"
                     id="connectWalletBtn"
                     class="wallet-btn"
                 >
@@ -282,9 +282,7 @@
 
                 </div>
 
-                <div class="card-value">
-                    LOCAL 31337
-                </div>
+                <div class="card-value" id="networkOverview">Loading</div>
 
                 <div class="card-meta">
 
@@ -346,8 +344,8 @@
 
                     </div>
 
-                    <div class="live-badge">
-                        LIVE
+                    <div class="live-badge" id="sourceBadge">
+                        CONNECTING
                     </div>
 
                 </div>
@@ -374,7 +372,9 @@
                         <div class="chart-grid-line"></div>
                         <div class="chart-grid-line"></div>
 
-                        <div class="chart-placeholder">
+                        <svg id="liveChart" class="live-chart" viewBox="0 0 800 220" role="img" aria-label="Actual distance, safety threshold and AI forecast"></svg>
+
+                        <div class="chart-placeholder" id="chartPlaceholder">
 
                             <div class="chart-message">
 
@@ -387,7 +387,7 @@
                                 </strong>
 
                                 <small>
-                                    Real-time telemetry will appear here
+                            Waiting for iot_backend telemetry
                                 </small>
 
                             </div>
@@ -449,9 +449,7 @@
 
                         <span>Update Rate</span>
 
-                        <strong>
-                            Not available
-                        </strong>
+                        <strong id="updateRate">--</strong>
 
                     </div>
 
@@ -480,8 +478,8 @@
 
                     </div>
 
-                    <div class="ai-model">
-                        Not available
+                    <div class="ai-model" id="activeModelLabel">
+                        MODEL UNAVAILABLE
                     </div>
 
                 </div>
@@ -509,20 +507,20 @@
                 </div>
 
 
-                <div class="prediction-list">
-                    <p>No forecast data available from the current API.</p>
+                <div class="prediction-list" id="predictionList">
+                    <p>Waiting for a runtime assessment.</p>
                 </div>
 
                 <div class="ai-footer">
 
                     <div>
                         <span>Model</span>
-                        <strong>Not provided by historical API</strong>
+                        <strong id="modelProvenance">--</strong>
                     </div>
 
                     <div>
                         <span>Inference</span>
-                        <strong>Not available</strong>
+                        <strong id="inferenceLatency">--</strong>
                     </div>
 
                 </div>
@@ -807,14 +805,18 @@
         </div>
 
         <section id="view-live-monitoring" class="sidebar-view panel" hidden aria-labelledby="liveHeading">
-            <div class="panel-header"><div><h3 id="liveHeading">Live Monitoring</h3><p>Telemetry will be connected later.</p></div></div>
+            <div class="panel-header"><div><h3 id="liveHeading">Live Monitoring</h3><p id="liveSourceDescription">Runtime telemetry and backend assessment.</p></div><div class="live-badge" id="liveHealthBadge">DISCONNECTED</div></div>
             <div class="view-body"><dl class="view-info">
                 <div><dt>Robot device</dt><dd>ROBOT-ARM-01</dd></div>
                 <div><dt>Backend connection</dt><dd id="liveConnection">UNKNOWN</dd></div>
-                <div><dt>Telemetry connection</dt><dd>Not connected yet</dd></div>
-                <div><dt>Current distance</dt><dd>Not available</dd></div>
-                <div><dt>Safety threshold</dt><dd>Not available</dd></div>
-                <div><dt>AI prediction</dt><dd>Not available</dd></div>
+                <div><dt>Telemetry connection</dt><dd id="liveTelemetryConnection">DISCONNECTED</dd></div>
+                <div><dt>Current distance</dt><dd id="liveCurrentDistance">--</dd></div>
+                <div><dt>Safety threshold</dt><dd id="liveThreshold">--</dd></div>
+                <div><dt>AI prediction</dt><dd id="livePrediction">--</dd></div>
+                <div><dt>Last update</dt><dd id="liveLastUpdate">--</dd></div>
+                <div><dt>Provenance</dt><dd id="liveProvenance">--</dd></div>
+                <div><dt>Model status</dt><dd id="liveModelStatus">--</dd></div>
+                <div><dt>Edge parity</dt><dd id="liveParity">--</dd></div>
             </dl></div>
         </section>
         <section id="view-safety-events" class="sidebar-view panel" hidden aria-labelledby="eventsHeading">
@@ -825,15 +827,15 @@
         <section id="view-blockchain" class="sidebar-view panel" hidden aria-labelledby="blockchainHeading">
             <div class="panel-header"><div><h3 id="blockchainHeading">Blockchain</h3><p>Deployment information for the existing contract.</p></div></div>
             <div class="view-body"><dl class="view-info">
-                <div><dt>Network</dt><dd>Hardhat Local</dd></div>
-                <div><dt>Chain ID</dt><dd>31337</dd></div>
-                <div><dt>Safety contract</dt><dd class="mono">0x5FbDB2315678afecb367f032d93F642f64180aa3</dd></div>
-                <div><dt>Reward contract</dt><dd class="mono">0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0</dd></div>
-                <div><dt>RPC</dt><dd class="mono">http://127.0.0.1:8545</dd></div>
+                <div><dt>Network</dt><dd id="networkViewName">Loading</dd></div>
+                <div><dt>Chain ID</dt><dd id="networkViewChainId">--</dd></div>
+                <div><dt>Safety contract</dt><dd id="networkViewSafety" class="mono">--</dd></div>
+                <div><dt>Reward contract</dt><dd id="networkViewReward" class="mono">--</dd></div>
+                <div><dt>RPC</dt><dd id="networkViewRpc" class="mono">--</dd></div>
             </dl></div>
         </section>
         <section id="view-transactions" class="sidebar-view panel" hidden aria-labelledby="transactionsHeading">
-            <div class="panel-header"><div><h3 id="transactionsHeading">Transactions</h3><p>Safety and reward transactions recorded on Hardhat Local.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <div class="panel-header"><div><h3 id="transactionsHeading">Transactions</h3><p id="transactionsDescription">Safety and reward transactions recorded on the configured network.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
             <p class="view-message" id="transactionsMessage" role="status" aria-live="polite"></p>
             <div class="table-wrapper"><table><thead><tr><th>TRANSACTION HASH</th><th>TYPE</th><th>BLOCK</th><th>EVENT ID</th><th>DEVICE</th><th>RISK</th><th>ETHERSCAN</th></tr></thead><tbody id="transactionsTableBody"></tbody></table></div>
         </section>
@@ -860,8 +862,9 @@
         <section id="view-settings" class="sidebar-view panel" hidden aria-labelledby="settingsHeading">
             <div class="panel-header"><div><h3 id="settingsHeading">Settings</h3><p>Information only. Configuration controls are not available yet.</p></div></div>
             <div class="view-body"><dl class="view-info">
-                <div><dt>Backend API</dt><dd>http://localhost:3000</dd></div>
-                <div><dt>Network</dt><dd>Hardhat Local</dd></div>
+                <div><dt>Blockchain API</dt><dd id="settingsChainApi">--</dd></div>
+                <div><dt>IoT API</dt><dd id="settingsIotApi">--</dd></div>
+                <div><dt>Network</dt><dd id="settingsNetwork">--</dd></div>
                 <div><dt>Monitored device</dt><dd>ROBOT-ARM-01</dd></div>
                 <div><dt>Data refresh</dt><dd>Manual, using Refresh Data</dd></div>
                 <div><dt>Telemetry / AI</dt><dd>ESP32 → MQTT → iot_backend → LSTM</dd></div>
@@ -879,9 +882,7 @@
 
                 <span>NETWORK</span>
 
-                <strong id="networkName">
-                    Hardhat Local
-                </strong>
+                <strong id="networkName">Loading</strong>
 
             </div>
 
@@ -891,7 +892,7 @@
                 <span>CONTRACT</span>
 
                 <strong class="mono">
-                    0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
+                    <span id="footerRewardContract">--</span>
                 </strong>
 
             </div>
@@ -912,7 +913,7 @@
 
                 <span>STATUS</span>
 
-                <strong>
+                <strong id="footerStatus">
                     ● Connected
                 </strong>
 

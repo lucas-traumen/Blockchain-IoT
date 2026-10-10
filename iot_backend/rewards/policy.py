@@ -55,6 +55,9 @@ def evaluate_session(
     status = session.get("status")
     sample_count = int(stats.get("sample_count", 0) or 0)
     violation_count = int(stats.get("violation_count", 0) or 0)
+    confirmed_violation_count = int(
+        stats.get("confirmed_violation_count", violation_count) or 0
+    )
     unknown_count = int(stats.get("unknown_count", 0) or 0)
     gap_count = int(stats.get("gap_count", 0) or 0)
     late_count = int(stats.get("late_count", 0) or 0)
@@ -68,7 +71,7 @@ def evaluate_session(
         ).total_seconds()
 
     details: list[str] = []
-    if violation_count > 0:
+    if confirmed_violation_count > 0:
         outcome = VIOLATION_CONFIRMED
         details.append("confirmed_violation")
     elif status != "closed":
@@ -102,6 +105,7 @@ def evaluate_session(
         "durationS": duration_s,
         "sampleCount": sample_count,
         "violationCount": violation_count,
+        "confirmedViolationCount": confirmed_violation_count,
         "unknownCount": unknown_count,
         "gapCount": gap_count,
         "lateCount": late_count,

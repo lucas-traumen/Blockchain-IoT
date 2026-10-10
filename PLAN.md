@@ -968,3 +968,24 @@ cd firmware/esp32 && source /home/lucas/.espressif/v6.0.1/esp-idf/export.sh && i
 - `M21:orchestrator-verify`: regression Python/Node/Hardhat, smoke HTTP/MQTT local có provenance, screenshot PNG, lệnh demo trong docs, cập nhật PLAN/MEMORY; bổ sung test durable outbox cho lỗi/retry/idempotency.
 
 Tiêu chí: start giữ 2 HRC trước session; clear đủ coverage trả stake và xét 3 HRC/ngày; vi phạm valid mất 2; fault/incomplete trả stake; retry không trùng thanh toán; dashboard đọc số dư, evidence, tx/block đúng chain 31337. LSTM runtime real giữ nguyên. **M21: done.**
+
+## V2 — AI → blockchain → dashboard product pass (2026-10-10)
+
+**Trạng thái: triển khai trực tiếp, software verification pass; các gate model/browser/hardware còn mở.**
+
+- `M22/M23`: đã thêm profile `square-bench-v2`, generator deterministic, telemetry/ground-truth tách riêng, split theo session, hash manifest và kiểm tra seed không trùng giữa split. Chưa claim đủ release 1.200 forecast + 150 fault nếu chưa chạy release đầy đủ.
+- `M25/M26`: runtime model metadata, edge prediction schema/store/parity, source provenance, CORS allowlist, SSE/polling live snapshot và violation confirmation 2-of-3. `OBSERVED` không tạo chain outbox; `CONFIRMED` mới đủ điều kiện reward/chain.
+- `M27/M28`: chain event outbox/bridge retry cùng payload, xử lý `202 pending`, dead-letter cho 4xx, public deployment config và reward policy dùng confirmed violation.
+- `M29`: dashboard đã nối `/api/config`, `/live/latest`, `/live/history`, `/system/health`, SSE reconnect/polling fallback, SVG actual/threshold/forecast chart, source/model/provenance/stale state và dynamic wallet config. Chrome headless browser smoke/responsive screenshot pass ở 1440x1000 và 390x844; full scenario E2E vẫn mở nên chưa đánh dấu complete.
+- `M24/M30`: chưa đánh dấu hoàn tất. Cần artifact metric synthetic V2 (episode-level recall/precision/F1/lead time), model promotion evidence, browser E2E và demo chain outage recovery.
+- Live performance sau index migration trên database hơn 1,1 triệu raw rows: `/live/latest` và `/system/health` p50/p95 khoảng 1–2 ms; `/live/history?limit=600` khoảng 23/56 ms. Compose source label hiện tường minh qua `HRC_SOURCE_MODE`, demo mặc định là `simulator` và vẫn hiển thị `threshold_verified_on_hardware=false`.
+
+Evidence ngày 2026-10-10:
+
+- `.venv/bin/python -m pytest -q`: **441 passed, 12 skipped, 2 warnings**.
+- `npm --prefix blockchain_api test`: **53 passed**.
+- `docker compose config`: **PASS**.
+- `git diff --check`, `node --check dashboard/app.js`, `node --check dashboard/wallet.js`, `python -m py_compile scripts/synthetic_v2.py`: **PASS**.
+- Browser smoke: Chrome headless rendered live dashboard with actual distance, Sp and five forecasts; desktop/mobile screenshots verified. Empty-chart overlay hidden state regression fixed.
+
+Không commit `.opencode/state/`; không đưa private key/bearer token vào dashboard.

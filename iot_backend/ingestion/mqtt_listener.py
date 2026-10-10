@@ -26,6 +26,7 @@ from iot_backend.ingestion.store import Store
 
 __all__ = [
     "ACK_SUBSCRIBE_TOPIC",
+    "EDGE_PREDICTION_SUBSCRIBE_TOPIC",
     "TELEMETRY_SUBSCRIBE_TOPIC",
     "MqttListener",
     "main",
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 TELEMETRY_SUBSCRIBE_TOPIC = "hrc/v1/devices/+/telemetry"
 ACK_SUBSCRIBE_TOPIC = "hrc/v1/devices/+/ack"
+EDGE_PREDICTION_SUBSCRIBE_TOPIC = "hrc/v1/devices/+/edge-prediction"
 
 TELEMETRY_TOPIC_RE = re.compile(r"^hrc/v1/devices/([^/]+)/telemetry$")
 
@@ -131,6 +133,7 @@ class MqttListener:
         logger.info("MQTT connected (reason_code=%s)", reason_code)
         client.subscribe(TELEMETRY_SUBSCRIBE_TOPIC, qos=1)
         client.subscribe(ACK_SUBSCRIBE_TOPIC, qos=1)
+        client.subscribe(EDGE_PREDICTION_SUBSCRIBE_TOPIC, qos=1)
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
         """Log khi mất kết nối — paho tự reconnect (1..60s)."""
@@ -159,6 +162,10 @@ class MqttListener:
                     )
                 else:
                     logger.debug("%s → %s", message.topic, accepted)
+                return
+            if message.topic.endswith("/edge-prediction"):
+                result = self._service.handle_edge_prediction(message.topic, message.payload)
+                logger.debug("%s → %s", message.topic, result)
                 return
             handler = self._topic_handlers.get(message.topic)
             if handler is None:
@@ -191,6 +198,7 @@ def main() -> None:
     service = IngestionService(
         store, configs, session_assigner=SessionManager(store, settings.device_id, control=None),
         predictor=build_predictor(settings.model_artifact_dir, settings.model_config_path, settings.model_type),
+        violation_confirmation_enabled=settings.violation_confirmation_enabled,
     )
     # M3c m-5: restart recovery — tính nốt raw pending của lần chạy trước
     # (mẫu đã lưu raw nhưng chưa kịp compute) trước khi vào vòng lặp chờ.

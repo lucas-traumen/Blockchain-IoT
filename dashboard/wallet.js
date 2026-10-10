@@ -1,7 +1,9 @@
 // Local ethers bundle is used only for ABI encoding; MetaMask owns signing.
-function createWalletAccess(ethereum, ethers, changed = () => {}) {
-    const address = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
-    const chain = "0x7a69";
+function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig = {}) {
+    // API config is authoritative; defaults only support the standalone legacy test.
+    const legacyAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+    const contractAddress = () => runtimeConfig.safety?.address || runtimeConfig.safetyAddress || legacyAddress;
+    const chain = () => "0x" + Number(runtimeConfig.chainId || 31337).toString(16);
     const abi = new ethers.Interface([
         "function owner() view returns (address)",
         "function isRobotLocked(string) view returns (bool)",
@@ -14,7 +16,7 @@ function createWalletAccess(ethereum, ethers, changed = () => {}) {
     let generation = 0;
     const notify = () => changed(state);
     async function read(name, args = []) {
-        const result = await ethereum.request({ method: "eth_call", params: [{ to: address, data: abi.encodeFunctionData(name, args) }, "latest"] });
+        const result = await ethereum.request({ method: "eth_call", params: [{ to: contractAddress(), data: abi.encodeFunctionData(name, args) }, "latest"] });
         const values = abi.decodeFunctionResult(name, result);
         return name === "getSafetyEvent" ? values : values[0];
     }
@@ -30,13 +32,13 @@ function createWalletAccess(ethereum, ethers, changed = () => {}) {
             const network = await ethereum.request({ method: "eth_chainId" });
             if (version !== generation) return;
             if (!state.account) state.message = "Wallet disconnected. Connect MetaMask.";
-            else if (network.toLowerCase() !== chain) state.message = "Wrong network. Click Connect Wallet to switch to Hardhat Local.";
+            else if (network.toLowerCase() !== chain()) state.message = "Wrong network. Click Connect Wallet to switch to the configured network.";
             else {
                 const owner = await read("owner");
                 if (version !== generation) return;
                 state.owner = owner;
                 state.isOwner = state.account.toLowerCase() === owner.toLowerCase();
-                state.message = state.isOwner ? "Owner verified on Hardhat Local. Lock/Unlock requires MetaMask confirmation."
+                state.message = state.isOwner ? "Owner verified on the configured network. Lock/Unlock requires MetaMask confirmation."
                     : "Read-only wallet. Contract owner: " + owner;
             }
         } catch (error) {
@@ -54,22 +56,22 @@ function createWalletAccess(ethereum, ethers, changed = () => {}) {
             if (!ethereum) throw new Error("MetaMask is not available. Install or enable the extension in this browser.");
             await ethereum.request({ method: "eth_requestAccounts" });
             const network = await ethereum.request({ method: "eth_chainId" });
-            if (network.toLowerCase() !== chain) {
-                await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain }] });
+            if (network.toLowerCase() !== chain()) {
+                await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain() }] });
             }
             await refresh();
         } catch (error) {
             state.isOwner = false;
             state.message = error.code === 4001 ? "MetaMask request cancelled. Click Connect Wallet to retry."
                 : error.code === -32002 ? "Open MetaMask: a connection request is already pending."
-                : error.code === 4902 ? "Add Hardhat Local (chain 31337) to MetaMask, then reconnect."
+                : error.code === 4902 ? "Add the configured network to MetaMask, then reconnect."
                 : error.message;
         } finally { state.connecting = false; notify(); }
     }
     async function control(deviceId, eventId, submitted = () => {}) {
         const locking = eventId !== null;
         await refresh();
-        if (!state.isOwner) throw new Error("Connect the contract owner wallet on Hardhat Local before controlling the robot.");
+        if (!state.isOwner) throw new Error("Connect the contract owner wallet on the configured network before controlling the robot.");
         const account = state.account;
         const version = generation;
         const locked = await read("isRobotLocked", [deviceId]);
@@ -84,12 +86,12 @@ function createWalletAccess(ethereum, ethers, changed = () => {}) {
         }
         const accounts = await ethereum.request({ method: "eth_accounts" });
         const network = await ethereum.request({ method: "eth_chainId" });
-        if (version !== generation || accounts[0]?.toLowerCase() !== account.toLowerCase() || network.toLowerCase() !== chain) {
+        if (version !== generation || accounts[0]?.toLowerCase() !== account.toLowerCase() || network.toLowerCase() !== chain()) {
             throw new Error("Wallet account or network changed. Reconnect before unlocking.");
         }
         const data = locking ? abi.encodeFunctionData("triggerEmergencyStop", [deviceId, eventId])
             : abi.encodeFunctionData("unlockRobot", [deviceId]);
-        const hash = await ethereum.request({ method: "eth_sendTransaction", params: [{ from: account, to: address, data }] });
+        const hash = await ethereum.request({ method: "eth_sendTransaction", params: [{ from: account, to: contractAddress(), data }] });
         submitted(hash);
         const deadline = Date.now() + 90000;
         while (Date.now() < deadline) {

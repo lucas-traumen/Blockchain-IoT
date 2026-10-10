@@ -6,6 +6,7 @@ MQTT và thread pool FastAPI).
 """
 
 import json
+import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from iot_backend.safety import STATUS_CLEAR, STATUS_UNKNOWN, STATUS_VIOLATION
+from iot_backend.util import utc_now_iso
 
 __all__ = ["RawInsertResult", "Store"]
 
@@ -46,6 +48,10 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
         self._lock = threading.RLock()
+        self._conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at, checksum) VALUES (?,?,?)",
+            (1, utc_now_iso(), hashlib.sha256(_SCHEMA_PATH.read_bytes()).hexdigest()),
+        )
 
     def __enter__(self):
         return self
@@ -544,6 +550,17 @@ class Store:
                   "AND (? IS NULL OR p.processor_version=?)",
                 (session_id, processor_version, processor_version),
             ).fetchall()
+            if processor_version is None:
+                event_rows = self._conn.execute(
+                    "SELECT event_json FROM event_packages WHERE session_id=?",
+                    (session_id,),
+                ).fetchall()
+            else:
+                event_rows = self._conn.execute(
+                    "SELECT event_json FROM event_packages WHERE session_id=? "
+                    "AND processor_version=?",
+                    (session_id, processor_version),
+                ).fetchall()
 
         late_count = sum(1 for row in sample_rows if row["is_late"])
         gap_count = 0
@@ -566,6 +583,20 @@ class Store:
             if status in counts:
                 counts[status] += 1
 
+        confirmed_violation_count = 0
+        observed_violation_count = 0
+        for row in event_rows:
+            try:
+                event = json.loads(row["event_json"])
+            except ValueError:
+                continue
+            if event.get("event_type") != "VIOLATION":
+                continue
+            if event.get("confirmation_status", "CONFIRMED") == "CONFIRMED":
+                confirmed_violation_count += 1
+            else:
+                observed_violation_count += 1
+
         return {
             "sample_count": len(sample_rows),
             "late_count": late_count,
@@ -573,6 +604,8 @@ class Store:
             "violation_count": counts[STATUS_VIOLATION],
             "clear_count": counts[STATUS_CLEAR],
             "unknown_count": counts[STATUS_UNKNOWN],
+            "confirmed_violation_count": confirmed_violation_count,
+            "observed_violation_count": observed_violation_count,
         }
 
     # ------------------------------------------------------------- queries
@@ -595,7 +628,7 @@ class Store:
         with self._lock:
             latest = self._conn.execute(
                 "SELECT boot_id FROM raw_samples WHERE device_id=? "
-                "ORDER BY received_at DESC, rowid DESC LIMIT 1",
+                "ORDER BY received_at DESC, id DESC LIMIT 1",
                 (device_id,),
             ).fetchone()
             if latest is None:
@@ -645,6 +678,55 @@ class Store:
                 (device_id, boot_id, sequence, processor_version),
             ).fetchone()
 
+    def latest_processed(self, device_id: str, processor_version: str) -> sqlite3.Row | None:
+        """Newest processed assessment by source receive time for one device."""
+        with self._lock:
+            return self._conn.execute(
+                """SELECT p.* FROM raw_samples r INDEXED BY idx_raw_device_received
+                   JOIN processed_samples p INDEXED BY idx_processed_key
+                     ON p.device_id=r.device_id
+                    AND p.boot_id=r.boot_id AND p.sequence=r.sequence
+                   WHERE r.device_id=? AND p.processor_version=?
+                   ORDER BY r.received_at DESC, r.id DESC LIMIT 1""",
+                (device_id, processor_version),
+            ).fetchone()
+
+    def recent_processed(self, device_id: str, processor_version: str, limit: int = 600) -> list[sqlite3.Row]:
+        """Processed assessments in source receive order, oldest first."""
+        with self._lock:
+            return self._conn.execute(
+                """SELECT p.* FROM raw_samples r INDEXED BY idx_raw_device_received
+                   JOIN processed_samples p INDEXED BY idx_processed_key
+                     ON p.device_id=r.device_id
+                    AND p.boot_id=r.boot_id AND p.sequence=r.sequence
+                   WHERE r.device_id=? AND p.processor_version=?
+                   ORDER BY r.received_at DESC, r.id DESC LIMIT ?""",
+                (device_id, processor_version, limit),
+            ).fetchall()[::-1]
+
+    def list_model_registry(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM model_registry ORDER BY activated_at DESC").fetchall()
+
+    def insert_edge_prediction(self, payload: dict[str, Any], received_at: str) -> bool:
+        ref = payload["sample_ref"]
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT OR IGNORE INTO edge_predictions
+                   (device_id,boot_id,sequence,received_at,model_version,model_sha256,payload_json)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (ref["device_id"], ref["boot_id"], ref["sequence"], received_at,
+                 payload["model_version"], payload["model_sha256"], json.dumps(payload, sort_keys=True)),
+            )
+            return cur.rowcount > 0
+
+    def edge_prediction(self, device_id: str, boot_id: str, sequence: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM edge_predictions WHERE device_id=? AND boot_id=? AND sequence=? ORDER BY received_at DESC LIMIT 1",
+                (device_id, boot_id, sequence),
+            ).fetchone()
+
     # -------------------------------------------------------------- events
 
     def event_state(self, key: str) -> dict | None:
@@ -670,7 +752,123 @@ class Store:
                 (event["event_id"],ref["device_id"],ref["boot_id"],event["session_id"],
                  event["processor_version"],ref["sequence"],json.dumps(event,allow_nan=False)),
             )
+            if cur.rowcount and event.get("chain_eligible", True):
+                payload = self._chain_payload(event)
+                payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+                now = utc_now_iso()
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO chain_event_outbox
+                       (event_id,payload_json,payload_hash,status,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (event["event_id"], payload_json, payload_hash, "OUTBOX_PENDING", now, now),
+                )
             return cur.rowcount > 0
+
+    def confirm_event(
+        self, event_id: str, *, confirmed_ref: dict[str, Any], evidence_count: int
+    ) -> bool:
+        """Promote an observed violation and create its immutable outbox row."""
+        if evidence_count < 2:
+            raise ValueError("violation confirmation needs at least two samples")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT event_json FROM event_packages WHERE event_id=?", (event_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            event = json.loads(row["event_json"])
+            if event.get("event_type") != "VIOLATION":
+                return False
+            if event.get("confirmation_status") == "CONFIRMED":
+                return True
+            event["confirmed_ref"] = confirmed_ref
+            event["confirmation_status"] = "CONFIRMED"
+            event["confirmation_rule"] = "2_of_3_valid_consecutive"
+            event["evidence_count"] = int(evidence_count)
+            event["chain_eligible"] = True
+            self._conn.execute(
+                "UPDATE event_packages SET event_json=? WHERE event_id=?",
+                (json.dumps(event, allow_nan=False), event_id),
+            )
+            payload = self._chain_payload(event)
+            payload_json = json.dumps(
+                payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            )
+            payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+            now = utc_now_iso()
+            self._conn.execute(
+                """INSERT OR IGNORE INTO chain_event_outbox
+                   (event_id,payload_json,payload_hash,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (event_id, payload_json, payload_hash, "OUTBOX_PENDING", now, now),
+            )
+            return True
+
+    @staticmethod
+    def _chain_payload(event: dict) -> dict:
+        assessment = event["assessment"]
+        safety = assessment["safety"]
+        prediction = assessment["prediction"]
+        state = event["event_type"]
+        risk = {"PREDICTED_WARNING": 2, "UNKNOWN": 2, "VIOLATION": 3}.get(state, 2)
+        measured_at = assessment.get("measured_at") or assessment.get("computed_at")
+        from iot_backend.util import parse_iso_utc
+        timestamp = int(parse_iso_utc(measured_at).timestamp())
+        return {
+            "schemaVersion": "1.0",
+            "eventId": event["event_id"],
+            "deviceId": assessment["sample_ref"]["device_id"],
+            "bootId": assessment["sample_ref"]["boot_id"],
+            "sessionId": event.get("session_id"),
+            "sequence": assessment["sample_ref"]["sequence"],
+            "timestamp": timestamp,
+            "sensorData": {
+                "distance": assessment.get("distance_m"),
+                "valid": safety.get("sensor_valid"),
+                "safetyThreshold": safety.get("sp_m"),
+                "margin": safety.get("margin_m"),
+            },
+            "aiResult": {
+                "state": state,
+                "riskLevel": risk,
+                "confirmationStatus": event.get("confirmation_status"),
+                "confirmationRule": event.get("confirmation_rule"),
+                "evidenceCount": event.get("evidence_count"),
+                "earlyWarning": prediction.get("early_warning"),
+                "predictedViolationMs": prediction.get("predicted_violation_ms"),
+                "model": prediction.get("model_version"),
+            },
+        }
+
+    def get_chain_outbox(self, event_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM chain_event_outbox WHERE event_id=?", (event_id,)).fetchone()
+
+    def due_chain_outbox(self, limit: int = 20) -> list[sqlite3.Row]:
+        now = utc_now_iso()
+        with self._lock:
+            return self._conn.execute(
+                """SELECT * FROM chain_event_outbox
+                   WHERE status IN ('OUTBOX_PENDING','RETRYABLE_ERROR','SUBMITTED')
+                     AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+                   ORDER BY created_at LIMIT ?""", (now, limit)
+            ).fetchall()
+
+    def update_chain_outbox(self, event_id: str, **fields: Any) -> None:
+        allowed = {"status", "attempts", "next_attempt_at", "transaction_hash", "block_number", "chain_data_hash", "last_http_status", "last_error", "confirmed_at"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported chain outbox fields: {sorted(unknown)}")
+        if not fields:
+            return
+        fields["updated_at"] = utc_now_iso()
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE chain_event_outbox SET {assignments} WHERE event_id=?",
+                (*fields.values(), event_id),
+            )
 
     def list_events(self, processor_version: str, session_id: str | None = None,
                     limit: int = 1000) -> list[dict]:

@@ -44,6 +44,12 @@ def test_confirmed_violation_wins_over_later_sensor_fault():
     assert result["reason"] == "confirmed_violation"
 
 
+def test_single_observed_violation_does_not_trigger_penalty():
+    result = evaluate_session(session(), stats(violation_count=1, confirmed_violation_count=0))
+    assert result["outcome"] == VALID_NO_VIOLATION
+    assert result["confirmedViolationCount"] == 0
+
+
 def test_sensor_fault_is_zero_change_case():
     result = evaluate_session(session(), stats(unknown_count=1))
     assert result["outcome"] == SENSOR_FAULT

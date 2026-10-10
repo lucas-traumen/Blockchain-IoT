@@ -10,12 +10,14 @@ import logging
 import math
 import sqlite3
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from iot_backend.ingestion.store import Store
 from iot_backend.ingestion.validate import parse_topic, validate_telemetry
 from iot_backend.safety import SafetyConfigVersion, assess_sample, get_config_for_time
 from iot_backend.util import utc_now_iso
+from jsonschema import Draft202012Validator
 
 if TYPE_CHECKING:
     from iot_backend.inference.predictor import SafetyPredictor
@@ -44,6 +46,7 @@ class IngestionService:
         safety_configs: list[SafetyConfigVersion],
         session_assigner: SessionAssigner | None = None,
         predictor: "SafetyPredictor | None" = None,
+        violation_confirmation_enabled: bool = False,
     ):
         """Lưu store, danh sách phiên bản cấu hình safety (đã load sẵn), hook
         gán session tùy chọn (M3) — mọi object có ``.assign(...)`` — và
@@ -56,8 +59,27 @@ class IngestionService:
         self._session_assigner = session_assigner
         self._predictor = predictor
         from iot_backend.events import EventDetector
-        self._events = EventDetector(store)
+        self._events = EventDetector(
+            store, confirmation_enabled=violation_confirmation_enabled
+        )
         self._compute_lock = threading.RLock()
+        schema_path = Path(__file__).resolve().parents[2] / "schemas" / "edge_prediction_v1.schema.json"
+        self._edge_validator = Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8")))
+
+    def handle_edge_prediction(self, topic: str, payload_bytes: bytes | str, received_at: str | None = None) -> dict[str, Any]:
+        """Validate/store edge output without making it authoritative for safety."""
+        received_at = received_at or utc_now_iso()
+        text = payload_bytes.decode("utf-8", errors="replace") if isinstance(payload_bytes, bytes) else str(payload_bytes)
+        try:
+            payload = json.loads(text)
+            errors = sorted(self._edge_validator.iter_errors(payload), key=lambda error: list(error.path))
+            if errors:
+                raise ValueError(errors[0].message)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._store.mark_rejected(topic, f"edge_prediction:{exc}", text, received_at)
+            return {"action": "rejected", "reason": "invalid_edge_prediction"}
+        inserted = self._store.insert_edge_prediction(payload, received_at)
+        return {"action": "stored" if inserted else "duplicate", "sample_ref": payload["sample_ref"]}
 
     def handle_message(
         self,

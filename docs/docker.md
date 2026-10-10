@@ -60,9 +60,11 @@ Dùng cùng `--env-file compose.env` cho những lệnh Compose tiếp theo. Cá
 - `HRC_MQTT_HOST_PORT=1885`, `HRC_API_HOST_PORT=8001`.
 - `HRC_MQTT_BIND=0.0.0.0`, `HRC_API_BIND=0.0.0.0`.
 - `HRC_DEVICE_ID=esp32_01`: khớp firmware hoặc simulator khi thử session.
+  `HRC_SOURCE_MODE=simulator|esp32` là nhãn nguồn tường minh; không suy luận
+  từ tên device hoặc model artifact. Demo synthetic nên dùng `simulator`.
 - `HRC_RUNTIME_TARGET=ai`, `HRC_MODEL_TYPE=lstm`,
-  `HRC_MODEL_SUBDIR=lstm-real-20261010`: cấu hình mặc định của runtime báo cáo,
-  dùng image có TensorFlow với artifact LSTM đã train trên dataset real.
+  `HRC_MODEL_SUBDIR=lstm-benchmark-square40-20261010`: cấu hình mặc định của
+  demo synthetic-only, dùng image có TensorFlow với Sp mô phỏng 40 mm.
 - `HRC_AI_UID`/`HRC_AI_GID`: UID/GID máy host (`id -u`, `id -g`) để công cụ AI
   ghi dataset/artifact với quyền đúng. Backend chạy bằng UID 10001 và đọc
   configs/artifacts; các file cần có quyền đọc cho UID này.

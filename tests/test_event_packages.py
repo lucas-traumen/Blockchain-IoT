@@ -29,9 +29,10 @@ class Predictor:
         pass
 
 
-def service(store,warnings=(),manager=None):
+def service(store,warnings=(),manager=None,confirmation_enabled=False):
     return IngestionService(store,load_safety_configs('configs/safety.yaml'),
-        session_assigner=manager,predictor=Predictor(warnings))
+        session_assigner=manager,predictor=Predictor(warnings),
+        violation_confirmation_enabled=confirmation_enabled)
 
 
 def ingest(s,seq,distance=900,**overrides):
@@ -88,6 +89,33 @@ def test_safety_priority_and_transition_only(tmp_path):
         events=store.list_events(PROCESSOR_VERSION)
         assert [e['event_type'] for e in events]==['VIOLATION','UNKNOWN']
         assert [e['trigger_ref']['sequence'] for e in events]==[1,4]
+
+
+def test_violation_confirmation_promotes_once_and_delays_chain_outbox(tmp_path):
+    with Store(tmp_path/'db') as store:
+        manager=SessionManager(store,'esp32_sim',control=None)
+        manager.start_session(session_id='confirm-session')
+        s=service(store,manager=manager,confirmation_enabled=True)
+        ingest(s,1,300)
+        event=store.list_events(PROCESSOR_VERSION)[0]
+        assert event['confirmation_status']=='OBSERVED'
+        assert event['chain_eligible'] is False
+        assert store.get_chain_outbox(event['event_id']) is None
+
+        ingest(s,2,300)
+        event=store.list_events(PROCESSOR_VERSION)[0]
+        assert event['confirmation_status']=='CONFIRMED'
+        assert event['evidence_count']==2
+        assert event['confirmed_ref']['sequence']==2
+        outbox=store.get_chain_outbox(event['event_id'])
+        assert outbox is not None
+        assert outbox['status']=='OUTBOX_PENDING'
+
+        ingest(s,3,300)
+        assert len(store.list_events(PROCESSOR_VERSION))==1
+        stats=store.session_stats('confirm-session', PROCESSOR_VERSION)
+        assert stats['confirmed_violation_count']==1
+        assert stats['observed_violation_count']==0
 
 
 def test_gap_and_late_warning_cannot_confirm(tmp_path):

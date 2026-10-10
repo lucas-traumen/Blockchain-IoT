@@ -13,8 +13,9 @@ from iot_backend.ingestion.store import Store
 
 
 class EventDetector:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, *, confirmation_enabled: bool = False):
         self.store = store
+        self.confirmation_enabled = bool(confirmation_enabled)
 
     def observe(self, record: dict, payload: dict, processor_version: str) -> None:
         ref = record['sample_ref']
@@ -40,9 +41,20 @@ class EventDetector:
         history = state.get('history', [])
         history.append({'warning': warning, 'assessment': record, 'monotonic_us': mono})
         history = history[-3:]
+        valid_violation_history = state.get('valid_violation_history', [])
+        if record['safety'].get('sensor_valid') is True:
+            valid_violation_history.append({
+                'violation': safety == 'VIOLATION',
+                'sequence': seq,
+            })
+            valid_violation_history = valid_violation_history[-3:]
+        else:
+            # UNKNOWN/dropout breaks the consecutive-valid evidence window.
+            valid_violation_history = []
         triggers = []
+        observed_event_id = state.get('observed_violation_event_id')
         if safety in {'VIOLATION','UNKNOWN'} and safety != state.get('safety'):
-            triggers.append((safety,record,mono))
+            triggers.append((safety, record, mono))
         warning_active = state.get('warning_active',False)
         if safety != 'CLEAR':
             history = []
@@ -56,6 +68,7 @@ class EventDetector:
         for kind, first_assessment, trigger_mono in triggers:
             first_ref = first_assessment['sample_ref']
             identity = json.dumps([key,kind,first_ref['sequence']],separators=(',',':'))
+            legacy_confirmed = not self.confirmation_enabled or kind != 'VIOLATION'
             event = {
                 'schema_version':'1.0',
                 'event_id':str(uuid.uuid5(uuid.NAMESPACE_URL,identity)),
@@ -66,9 +79,34 @@ class EventDetector:
                 'trigger_monotonic_us':trigger_mono,
                 'assessment':first_assessment,
                 'pre_ms':2000, 'post_ms':1000,
+                'confirmation_status': 'CONFIRMED' if legacy_confirmed else 'OBSERVED',
+                'confirmation_rule': (
+                    'legacy_transition' if legacy_confirmed
+                    else '2_of_3_valid_consecutive'
+                ),
+                'evidence_count': 1 if kind == 'VIOLATION' else None,
+                'chain_eligible': legacy_confirmed,
             }
             self.store.insert_event(event)
+            if kind == 'VIOLATION':
+                observed_event_id = event['event_id']
+
+        if (
+            self.confirmation_enabled
+            and safety == 'VIOLATION'
+            and observed_event_id
+            and sum(item['violation'] for item in valid_violation_history) >= 2
+        ):
+            self.store.confirm_event(
+                observed_event_id,
+                confirmed_ref=ref,
+                evidence_count=sum(item['violation'] for item in valid_violation_history),
+            )
         self.store.save_event_state(key,{
             'sequence':seq,'monotonic_us':mono,'safety':safety,'token':token,
             'history':history,'warning_active':warning_active,
+            'valid_violation_history': valid_violation_history,
+            'observed_violation_event_id': (
+                observed_event_id if safety == 'VIOLATION' else None
+            ),
         })

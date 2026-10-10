@@ -1,4 +1,23 @@
-const API_URL = "http://localhost:3000";
+function serviceOrigin(port) {
+    if (window.location?.protocol === "http:" || window.location?.protocol === "https:") {
+        const url = new URL(window.location.href);
+        url.port = String(port);
+        url.pathname = "";
+        url.search = "";
+        url.hash = "";
+        return url.origin;
+    }
+    return "http://127.0.0.1:" + port;
+}
+const API_URL = window.HRC_CHAIN_API_URL || serviceOrigin(3000);
+const IOT_API_URL = window.HRC_IOT_API_URL || serviceOrigin(8001);
+window.hrcRuntimeConfig = window.hrcRuntimeConfig || {};
+let liveState = {
+    latest: null, history: [], source: "LIVE", sourceLabel: "UNKNOWN",
+    sourceMode: "unknown", connected: false, stream: null, retryMs: 1000,
+    lastHeartbeat: 0, loading: false, reconnectTimer: null,
+};
+let livePollTimer = null;
 const ROBOT_ID = "ROBOT-ARM-01";
 const byId = id => document.getElementById(id);
 const refreshBtn = byId("refreshBtn");
@@ -69,6 +88,340 @@ async function request(path, options = {}) {
         throw error;
     }
     return data;
+}
+async function requestIot(path, options = {}) {
+    const response = await fetch(IOT_API_URL + path, {
+        ...options,
+        signal: AbortSignal.timeout(8000),
+        headers: { Accept: "application/json", ...(options.headers || {}) },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        const error = new Error(data.detail || data.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+    return data;
+}
+function text(id, value) {
+    const element = byId(id);
+    if (element) element.textContent = String(value ?? "--");
+}
+function formatMeters(value) {
+    return Number.isFinite(Number(value)) ? Number(value).toFixed(3) + " m" : "-- m";
+}
+function formatAge(value) {
+    if (!value) return "--";
+    const age = Math.max(0, Date.now() - new Date(value).getTime());
+    if (!Number.isFinite(age)) return "--";
+    if (age < 1000) return "<1s ago";
+    return Math.round(age / 1000) + "s ago";
+}
+function sampleKey(record) {
+    const ref = record?.assessment?.sample_ref;
+    return ref ? [ref.device_id, ref.boot_id, ref.sequence].join(":") : null;
+}
+function recordDistance(record) {
+    const telemetry = record?.telemetry;
+    if (telemetry?.valid === true && Number.isFinite(Number(telemetry.distance_mm))) {
+        return Number(telemetry.distance_mm) / 1000;
+    }
+    const value = record?.assessment?.distance_m;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+function recordThreshold(record) {
+    const value = record?.assessment?.safety?.sp_m;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+function recordPrediction(record) {
+    const prediction = record?.assessment?.prediction || {};
+    return Array.isArray(prediction.distance_m)
+        ? prediction.distance_m.map(Number).filter(Number.isFinite) : [];
+}
+function recordTimestamp(record) {
+    return record?.received_at || record?.assessment?.received_at || record?.assessment?.measured_at || null;
+}
+function liveStatus() {
+    const timestamp = recordTimestamp(liveState.latest);
+    if (!timestamp) return "DISCONNECTED";
+    const age = Date.now() - new Date(timestamp).getTime();
+    if (!Number.isFinite(age) || age > 3000) return "STALE";
+    return liveState.connected ? "LIVE" : "DEGRADED";
+}
+function statusTone(status) {
+    return status === "LIVE" ? "clear-text" : ["DEGRADED", "STALE"].includes(status) ? "warning-text" : "violation-text";
+}
+function setBadge(id, value) {
+    const element = byId(id);
+    if (!element) return;
+    element.textContent = value;
+    element.classList.remove("clear-text", "warning-text", "violation-text");
+    const tone = statusTone(value);
+    if (tone) element.classList.add(tone);
+}
+function renderRuntimeConfig(config) {
+    const network = config?.network || "unknown";
+    const chainId = config?.chainId ?? "--";
+    const safety = config?.safety?.address || "--";
+    const rewards = config?.rewards?.address || "--";
+    text("networkEnvironment", String(network).toUpperCase());
+    text("networkNameHeader", network);
+    text("networkOverview", String(network).toUpperCase() + " · " + chainId);
+    text("networkName", String(network).toUpperCase() + " · " + chainId);
+    text("networkViewName", network);
+    text("networkViewChainId", chainId);
+    text("networkViewSafety", safety);
+    text("networkViewReward", rewards);
+    text("networkViewRpc", config?.rpcUrl || "--");
+    text("footerRewardContract", rewards);
+    text("settingsChainApi", API_URL);
+    text("settingsIotApi", IOT_API_URL);
+    text("settingsNetwork", String(network).toUpperCase() + " · " + chainId);
+    text("transactionsDescription", "Safety and reward transactions recorded on " + network + " (chain " + chainId + ").");
+}
+async function loadRuntimeConfig() {
+    try {
+        const config = await request("/api/config");
+        window.hrcRuntimeConfig = config;
+        renderRuntimeConfig(config);
+        return config;
+    } catch (error) {
+        window.hrcRuntimeConfig = {};
+        renderRuntimeConfig({ network: "unavailable" });
+        text("dashboardMessage", "Blockchain config unavailable: " + error.message);
+        return null;
+    }
+}
+function svgElement(name, attributes = {}) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+    return element;
+}
+function chartPath(points) {
+    return points.map(([x, y], index) => (index ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1)).join(" ");
+}
+function renderLiveChart() {
+    const svg = byId("liveChart");
+    if (!svg) return;
+    svg.replaceChildren();
+    const records = liveState.history.filter(record => recordDistance(record) !== null);
+    const latest = liveState.latest;
+    const actual = records.map(recordDistance);
+    const predictions = recordPrediction(latest);
+    const threshold = recordThreshold(latest) ?? recordThreshold(records[records.length - 1]);
+    if (!actual.length && !predictions.length) {
+        byId("chartPlaceholder")?.removeAttribute("hidden");
+        return;
+    }
+    byId("chartPlaceholder")?.setAttribute("hidden", "hidden");
+    const width = 800;
+    const height = 220;
+    const forecastStart = actual.length > 1 ? 625 : 250;
+    const maxValue = Math.max(2, threshold || 0, ...actual, ...predictions, 0.05);
+    const y = value => height - (Math.max(0, value) / maxValue) * (height - 8);
+    const xActual = index => actual.length > 1 ? (index / (actual.length - 1)) * forecastStart : forecastStart;
+    const actualPoints = actual.map((value, index) => [xActual(index), y(value)]);
+    if (threshold !== null) {
+        const thresholdY = y(threshold);
+        svg.appendChild(svgElement("rect", { class: "violation-zone", x: 0, y: thresholdY, width, height: height - thresholdY }));
+        svg.appendChild(svgElement("path", { class: "threshold-line", d: `M0 ${thresholdY} L${width} ${thresholdY}` }));
+    }
+    if (actualPoints.length > 1) {
+        svg.appendChild(svgElement("path", { class: "actual-line", d: chartPath(actualPoints) }));
+    }
+    if (predictions.length) {
+        const last = actualPoints[actualPoints.length - 1] || [forecastStart, y(predictions[0])];
+        const predictedPoints = [last, ...predictions.map((value, index) => [forecastStart + ((index + 1) * (width - forecastStart)) / predictions.length, y(value)])];
+        svg.appendChild(svgElement("path", { class: "prediction-line", d: chartPath(predictedPoints) }));
+        predictedPoints.slice(1).forEach(([x, value], index) => {
+            const dot = svgElement("circle", { class: "forecast-dot", cx: x, cy: value, r: 4 });
+            dot.setAttribute("aria-label", `${latest?.assessment?.prediction?.horizons_ms?.[index] || (index + 1) * 100} ms forecast`);
+            svg.appendChild(dot);
+        });
+    }
+    if (actualPoints.length) {
+        const [x, value] = actualPoints[actualPoints.length - 1];
+        svg.appendChild(svgElement("circle", { class: "actual-dot", cx: x, cy: value, r: 3.5 }));
+    }
+    if (predictions.length) {
+        const label = svgElement("text", { class: "chart-label", x: forecastStart + 8, y: 16 });
+        label.textContent = "FORECAST";
+        svg.appendChild(label);
+    }
+}
+function renderPrediction(record) {
+    const prediction = record?.assessment?.prediction || {};
+    const list = byId("predictionList");
+    if (!list) return;
+    list.replaceChildren();
+    const distances = Array.isArray(prediction.distance_m) ? prediction.distance_m : [];
+    const horizons = Array.isArray(prediction.horizons_ms) ? prediction.horizons_ms : [];
+    const threshold = recordThreshold(record);
+    if (!distances.length) {
+        const message = document.createElement("p");
+        message.textContent = prediction.status ? "Prediction status: " + prediction.status : "Waiting for a runtime assessment.";
+        list.appendChild(message);
+        return;
+    }
+    const scale = Math.max(0.05, threshold || 0, ...distances);
+    distances.forEach((distance, index) => {
+        const row = document.createElement("div");
+        row.className = "prediction-row";
+        const horizon = document.createElement("span");
+        horizon.textContent = (horizons[index] || (index + 1) * 100) + " ms";
+        const bar = document.createElement("div");
+        bar.className = "prediction-bar";
+        const fill = document.createElement("span");
+        fill.style.width = Math.min(100, Math.max(2, distance / scale * 100)) + "%";
+        if (threshold !== null && distance <= threshold) fill.style.background = "var(--violation)";
+        bar.appendChild(fill);
+        const value = document.createElement("strong");
+        value.className = threshold !== null && distance <= threshold ? "violation-text" : "clear-text";
+        value.textContent = formatMeters(distance);
+        row.append(horizon, bar, value);
+        list.appendChild(row);
+    });
+}
+function renderLiveState() {
+    const latest = liveState.latest;
+    const assessment = latest?.assessment;
+    const prediction = assessment?.prediction || {};
+    const model = latest?.model || liveState.model || {};
+    const provenance = latest?.provenance || {};
+    const state = assessment?.safety?.status || "UNKNOWN";
+    const status = liveStatus();
+    setBadge("sourceBadge", (liveState.sourceLabel || "UNKNOWN") + " · " + status);
+    setBadge("liveHealthBadge", status);
+    text("liveConnection", status === "DISCONNECTED" ? "DISCONNECTED" : status);
+    text("liveTelemetryConnection", status);
+    text("currentDistance", formatMeters(recordDistance(latest)));
+    text("safetyThreshold", formatMeters(recordThreshold(latest)));
+    text("updateRate", updateRate());
+    text("liveCurrentDistance", formatMeters(recordDistance(latest)));
+    text("liveThreshold", formatMeters(recordThreshold(latest)));
+    text("livePrediction", prediction.predicted_violation_ms ? prediction.predicted_violation_ms + " ms" : "No crossing predicted");
+    text("liveLastUpdate", formatAge(recordTimestamp(latest)));
+    text("liveProvenance", provenance.training_data === "synthetic-only" ? "synthetic-only · threshold unverified" : (provenance.training_data || "--"));
+    text("liveModelStatus", model.status ? model.status + (model.promotion_status ? " · " + model.promotion_status : "") : "--");
+    text("liveParity", provenance.parity_status ? provenance.parity_status + (provenance.edge_backend_max_abs_diff_m == null ? "" : " · " + (provenance.edge_backend_max_abs_diff_m * 1000).toFixed(2) + " mm") : "--");
+    text("activeModelLabel", model.model_version || "MODEL UNAVAILABLE");
+    text("modelProvenance", model.training_data === "synthetic-only" ? "synthetic-only" : (model.model_version || "--"));
+    text("inferenceLatency", latest?.edge_prediction?.inference_us ? (Number(latest.edge_prediction.inference_us) / 1000).toFixed(1) + " ms edge" : "backend runtime");
+    text("liveSourceDescription", liveState.sourceLabel === "SYNTHETIC STREAM"
+        ? "Synthetic runtime stream. Threshold is a mathematical benchmark and is not hardware-validated."
+        : "Experimental hardware runtime. Model remains synthetic-trained and is not hardware-validated.");
+    ["aiSafetyState", "predictionState"].forEach(id => setState(id, state));
+    renderPrediction(latest);
+    renderLiveChart();
+    const footer = byId("footerStatus");
+    if (footer) footer.textContent = status === "LIVE" ? "● Live" : "● " + status;
+}
+function updateRate() {
+    const timestamps = liveState.history.map(recordTimestamp).filter(Boolean).map(value => new Date(value).getTime()).filter(Number.isFinite);
+    if (timestamps.length < 2) return "--";
+    const deltas = timestamps.slice(1).map((value, index) => value - timestamps[index]).filter(value => value > 0);
+    if (!deltas.length) return "--";
+    const mean = deltas.reduce((sum, value) => sum + value, 0) / deltas.length;
+    return (1000 / mean).toFixed(1) + " Hz";
+}
+function applyLiveSnapshot(snapshot) {
+    if (!snapshot) return;
+    liveState.source = snapshot.source || liveState.source;
+    liveState.sourceMode = snapshot.source_mode || liveState.sourceMode;
+    liveState.sourceLabel = snapshot.source_label || liveState.sourceLabel;
+    liveState.model = snapshot.model || liveState.model;
+    const record = snapshot.latest || (snapshot.assessment ? snapshot : null);
+    if (record) {
+        const key = sampleKey(record);
+        const history = liveState.history.filter(item => sampleKey(item) !== key);
+        history.push(record);
+        liveState.history = history.sort((a, b) => new Date(recordTimestamp(a) || 0) - new Date(recordTimestamp(b) || 0)).slice(-600);
+        liveState.latest = record;
+    }
+    renderLiveState();
+}
+async function loadLiveRuntime() {
+    if (liveState.loading) return;
+    liveState.loading = true;
+    const [latestResult, historyResult, healthResult] = await Promise.allSettled([
+        requestIot("/live/latest"), requestIot("/live/history?seconds=60&limit=600"), requestIot("/system/health"),
+    ]);
+    if (latestResult.status === "fulfilled") applyLiveSnapshot(latestResult.value);
+    if (historyResult.status === "fulfilled") {
+        const data = historyResult.value;
+        liveState.history = Array.isArray(data.records) ? data.records : liveState.history;
+        if (!liveState.latest && liveState.history.length) {
+            liveState.latest = liveState.history[liveState.history.length - 1];
+        }
+        liveState.model = data.model || liveState.model;
+        liveState.source = data.source || liveState.source;
+        liveState.sourceLabel = data.source_label || liveState.sourceLabel;
+        liveState.sourceMode = data.source_mode || liveState.sourceMode;
+        renderLiveState();
+    }
+    if (healthResult.status === "fulfilled") {
+        backendConnected = healthResult.value.status === "ok";
+        liveState.health = healthResult.value;
+    } else if (latestResult.status === "rejected" && historyResult.status === "rejected") {
+        backendConnected = false;
+    }
+    renderLiveState();
+    liveState.loading = false;
+    syncSidebarViews();
+}
+function startPollingFallback() {
+    if (livePollTimer) return;
+    livePollTimer = window.setInterval(() => { void loadLiveRuntime(); }, 1000);
+    renderLiveState();
+}
+function stopPollingFallback() {
+    if (!livePollTimer) return;
+    window.clearInterval(livePollTimer);
+    livePollTimer = null;
+}
+function scheduleStreamReconnect() {
+    if (liveState.reconnectTimer) return;
+    startPollingFallback();
+    const delay = liveState.retryMs;
+    liveState.retryMs = Math.min(30000, liveState.retryMs * 2);
+    liveState.reconnectTimer = window.setTimeout(() => {
+        liveState.reconnectTimer = null;
+        connectLiveStream();
+    }, delay);
+}
+function connectLiveStream() {
+    if (liveState.stream || typeof EventSource === "undefined") {
+        if (typeof EventSource === "undefined") startPollingFallback();
+        return;
+    }
+    const stream = new EventSource(IOT_API_URL + "/live/stream");
+    liveState.stream = stream;
+    stream.onopen = () => {
+        liveState.connected = true;
+        liveState.retryMs = 1000;
+        stopPollingFallback();
+        renderLiveState();
+    };
+    stream.addEventListener("runtime", event => {
+        try {
+            applyLiveSnapshot(JSON.parse(event.data));
+            liveState.connected = true;
+        } catch (error) {
+            console.warn("Invalid live runtime event", error);
+        }
+    });
+    stream.addEventListener("heartbeat", event => {
+        liveState.lastHeartbeat = Date.now();
+        if (event.data) liveState.connected = true;
+        renderLiveState();
+    });
+    stream.onerror = () => {
+        liveState.connected = false;
+        stream.close();
+        liveState.stream = null;
+        scheduleStreamReconnect();
+        renderLiveState();
+    };
 }
 function tableMessage(message) {
     sidebarEvents = [];
@@ -252,6 +605,7 @@ async function loadDashboard() {
     tableMessage("Loading safety events...");
     backendConnected = null;
     syncSidebarViews();
+    if (typeof loadLiveRuntime === "function") void loadLiveRuntime();
     void loadTransactions();
     if (typeof loadRewards === "function") void loadRewards();
     const [eventsResult, robotResult] = await Promise.allSettled([
@@ -348,24 +702,26 @@ async function controlRobot(action) {
 async function unlockRobot() { return controlRobot("unlock"); }
 async function lockRobot() { return controlRobot("lock"); }
 refreshBtn.addEventListener("click", loadDashboard);
-if (typeof createWalletAccess === "function" && typeof ethers !== "undefined") {
-    const injected = window.ethereum?.providers?.find(provider => provider.isMetaMask) || window.ethereum;
-    window.hrcWallet = createWalletAccess(injected, ethers, state => {
-        byId("walletButtonLabel").textContent = state.connecting ? "Connecting..."
-            : state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : "Connect Wallet";
-        byId("connectWalletBtn").disabled = state.connecting || unlocking;
-        byId("walletAccessMessage").textContent = state.message;
-        byId("connectedWalletAddress").textContent = state.account || "Not connected";
-        byId("contractOwnerAddress").textContent = state.owner || "Not verified";
-        byId("walletRole").textContent = state.isOwner ? "OWNER" : state.account && state.owner ? "READ ONLY" : "NOT VERIFIED";
-        byId("walletSettingsState").textContent = state.account || "Not connected";
-        updateAdminControls();
-    });
-    byId("connectWalletBtn").addEventListener("click", () => { void window.hrcWallet.connect(); });
-} else {
-    byId("connectWalletBtn").addEventListener("click", () => {
-        byId("walletAccessMessage").textContent = "Wallet scripts could not load. Refresh the page with Ctrl+F5.";
-    });
+function initWallet() {
+    if (typeof createWalletAccess === "function" && typeof ethers !== "undefined") {
+        const injected = window.ethereum?.providers?.find(provider => provider.isMetaMask) || window.ethereum;
+        window.hrcWallet = createWalletAccess(injected, ethers, state => {
+            byId("walletButtonLabel").textContent = state.connecting ? "Connecting..."
+                : state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : "Connect Wallet";
+            byId("connectWalletBtn").disabled = state.connecting || unlocking;
+            byId("walletAccessMessage").textContent = state.message;
+            byId("connectedWalletAddress").textContent = state.account || "Not connected";
+            byId("contractOwnerAddress").textContent = state.owner || "Not verified";
+            byId("walletRole").textContent = state.isOwner ? "OWNER" : state.account && state.owner ? "READ ONLY" : "NOT VERIFIED";
+            byId("walletSettingsState").textContent = state.account || "Not connected";
+            updateAdminControls();
+        }, window.hrcRuntimeConfig);
+        byId("connectWalletBtn").addEventListener("click", () => { void window.hrcWallet.connect(); });
+    } else {
+        byId("connectWalletBtn").addEventListener("click", () => {
+            byId("walletAccessMessage").textContent = "Wallet scripts could not load. Refresh the page with Ctrl+F5.";
+        });
+    }
 }
 unlockBtn.addEventListener("click", unlockRobot);
 byId("lockRobotBtn").addEventListener("click", lockRobot);
@@ -408,9 +764,8 @@ function syncSidebarViews() {
     document.querySelectorAll("[data-load-message]").forEach(element => {
         element.textContent = byId("dashboardMessage").textContent;
     });
-    byId("liveConnection").textContent = loading ? "LOADING"
-        : backendConnected === true ? "CONNECTED"
-        : backendConnected === false ? "UNAVAILABLE" : "UNKNOWN";
+    byId("liveConnection").textContent = loading ? "LOADING" : liveStatus();
+    byId("liveTelemetryConnection").textContent = liveStatus();
     byId("robotViewStatus").textContent = byId("robotStatus").textContent;
     byId("robotViewStatus").style.color = byId("robotStatus").style.color;
     setState("robotViewSafety", byId("robotSafetyState").textContent);
@@ -492,5 +847,10 @@ document.querySelectorAll("[data-refresh]").forEach(button => {
 });
 window.addEventListener("hashchange", navigate);
 navigate();
-
-loadDashboard();
+async function bootstrap() {
+    await loadRuntimeConfig();
+    initWallet();
+    await Promise.allSettled([loadDashboard(), loadLiveRuntime()]);
+    connectLiveStream();
+}
+void bootstrap();

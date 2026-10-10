@@ -57,6 +57,11 @@
     box-sizing: border-box;
 }
 
+/* Preserve the native hidden state for overlays such as the empty chart. */
+[hidden] {
+    display: none !important;
+}
+
 html {
     scroll-behavior: smooth;
 }
@@ -906,6 +911,61 @@ a {
     border-bottom: 1px solid var(--border);
 
     overflow: hidden;
+}
+
+.live-chart {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.live-chart .actual-line,
+.live-chart .threshold-line,
+.live-chart .prediction-line {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.live-chart .actual-line {
+    stroke: var(--accent-blue);
+    stroke-width: 2.5;
+}
+
+.live-chart .threshold-line {
+    stroke: var(--warning);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 5;
+}
+
+.live-chart .prediction-line {
+    stroke: var(--accent-purple);
+    stroke-width: 2;
+    stroke-dasharray: 4 4;
+}
+
+.live-chart .violation-zone {
+    fill: rgba(248, 113, 113, 0.08);
+}
+
+.live-chart .forecast-dot {
+    fill: var(--accent-purple);
+    stroke: var(--panel);
+    stroke-width: 2;
+}
+
+.live-chart .actual-dot {
+    fill: var(--accent-blue);
+    stroke: var(--panel);
+    stroke-width: 1.5;
+}
+
+.live-chart .chart-label {
+    fill: var(--text-muted);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
 }
 
 .chart-grid-line {

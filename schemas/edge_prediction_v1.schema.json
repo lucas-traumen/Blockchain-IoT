@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hrc-safety-log.local/schemas/edge_prediction_v1.schema.json",
+  "title": "Edge LSTM prediction v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sample_ref", "source", "simulation_trained", "model_version", "model_sha256", "scaler_sha256", "preprocessing_version", "threshold_m", "horizons_ms", "distance_m", "predicted_violation_ms", "early_warning", "inference_us", "valid"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "sample_ref": {"type": "object", "additionalProperties": false, "required": ["device_id", "boot_id", "sequence"], "properties": {"device_id": {"type": "string", "minLength": 1}, "boot_id": {"type": "string", "minLength": 1}, "sequence": {"type": "integer", "minimum": 1}}},
+    "source": {"const": "esp32-edge"},
+    "simulation_trained": {"type": "boolean"},
+    "model_version": {"type": "string", "minLength": 1},
+    "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "scaler_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preprocessing_version": {"type": "string", "minLength": 1},
+    "threshold_m": {"type": "number", "minimum": 0},
+    "horizons_ms": {"const": [100, 200, 300, 400, 500]},
+    "distance_m": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 5, "maxItems": 5},
+    "predicted_violation_ms": {"type": ["integer", "null"], "enum": [100, 200, 300, 400, 500, null]},
+    "early_warning": {"type": ["boolean", "null"]},
+    "inference_us": {"type": "integer", "minimum": 0},
+    "valid": {"type": "boolean"}
+  }
+}

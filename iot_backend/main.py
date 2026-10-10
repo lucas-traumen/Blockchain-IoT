@@ -13,6 +13,8 @@ gọi ``create_app(settings)`` với settings tùy chỉnh.
 import json
 import logging
 import os
+import asyncio
+import hashlib
 from contextlib import asynccontextmanager
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +22,7 @@ from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -29,6 +32,7 @@ from iot_backend.ingestion.service import PROCESSOR_VERSION, IngestionService
 from iot_backend.ingestion.store import Store
 from iot_backend.safety import load_safety_configs
 from iot_backend.rewards import RewardSettlementError, build_reward_client, evaluate_session, evidence_hash
+from iot_backend.events.chain_bridge import ChainEventBridge
 from iot_backend.sessions import (
     MqttControlTransport,
     SessionManager,
@@ -77,10 +81,15 @@ def create_app(settings: Settings) -> FastAPI:
         )
         predictor = _build_predictor(settings)
         service = IngestionService(
-            store, configs, session_assigner=manager, predictor=predictor
+            store,
+            configs,
+            session_assigner=manager,
+            predictor=predictor,
+            violation_confirmation_enabled=settings.violation_confirmation_enabled,
         )
 
         listener: MqttListener | None = None
+        chain_bridge: ChainEventBridge | None = None
         if settings.mqtt_enabled:
             listener = MqttListener(service, settings.mqtt_host, settings.mqtt_port)
             control = MqttControlTransport(listener)  # tự đăng ký handler ack wildcard
@@ -99,6 +108,15 @@ def create_app(settings: Settings) -> FastAPI:
             app.state.listener = listener
             app.state.predictor = predictor
             app.state.reward_client = build_reward_client(settings)
+            chain_bridge = ChainEventBridge(
+                store,
+                settings.chain_api_url,
+                settings.chain_ingest_token,
+                max_attempts=settings.chain_max_attempts,
+            )
+            app.state.chain_bridge = chain_bridge
+            if settings.chain_auto_submit:
+                chain_bridge.start()
             logger.info(
                 "HRC iot_backend sẵn sàng: db=%s, mqtt=%s, reward_bridge=%s",
                 settings.db_path,
@@ -109,9 +127,19 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             if listener is not None:
                 listener.stop()
+            if chain_bridge is not None:
+                chain_bridge.stop()
             store.close()
 
     app = FastAPI(title="HRC Safety Log", version="1.0.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept", "Last-Event-ID", "X-HRC-Chain-Retry"],
+        expose_headers=["Content-Type"],
+    )
 
     # ------------------------------------------------------------------ health
 
@@ -128,7 +156,181 @@ def create_app(settings: Settings) -> FastAPI:
             "reward_bridge": request.app.state.reward_client is not None,
             "reward_auto_start": settings.reward_auto_start,
             "reward_auto_settle": settings.reward_auto_settle,
+            "chain_bridge": {
+                "configured": bool(settings.chain_api_url and settings.chain_ingest_token),
+                "running": bool(getattr(request.app.state, "chain_bridge", None) and settings.chain_auto_submit),
+            },
+            "violation_confirmation": {
+                "enabled": settings.violation_confirmation_enabled,
+                "rule": "2_of_3_valid_consecutive" if settings.violation_confirmation_enabled else "legacy_transition",
+            },
         }
+
+    # ----------------------------------------------------------- live/runtime
+
+    def _model_info(request: Request) -> dict[str, Any]:
+        predictor = request.app.state.predictor
+        manifest = getattr(predictor, "_manifest", None) or {}
+        artifact_path = str(settings.model_artifact_dir)
+        model_hash = manifest.get("model_file_sha256")
+        training_data = "synthetic-only" if "synthetic" in artifact_path or "benchmark" in artifact_path else "declared-by-artifact"
+        metrics = {}
+        metrics_path = Path(artifact_path) / "metrics.json"
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                metrics = {}
+        return {
+            "status": "ACTIVE" if predictor.available else "UNAVAILABLE",
+            "model_type": settings.model_type,
+            "model_version": manifest.get("model_version"),
+            "model_sha256": model_hash,
+            "scaler_sha256": manifest.get("scaler_sha256"),
+            "dataset_sha256": manifest.get("dataset_sha256"),
+            "split_manifest_sha256": manifest.get("split_manifest_sha256"),
+            "preprocessing_version": manifest.get("preprocessing_version"),
+            "input_shape": manifest.get("input_shape"),
+            "output_shape": manifest.get("output_shape"),
+            "horizons_ms": manifest.get("horizons_ms", [100, 200, 300, 400, 500]),
+            "training_data": training_data,
+            "simulation_mode": training_data == "synthetic-only",
+            "threshold_verified_on_hardware": False,
+            "artifact_path": artifact_path,
+            "load_error": predictor.load_error,
+            "metrics": metrics,
+            "promotion_status": manifest.get(
+                "promotion_status",
+                "SYNTHETIC_VALIDATED" if training_data == "synthetic-only" else "ACTIVE",
+            ),
+            "limitations": (
+                [
+                    "synthetic-only training and evaluation",
+                    "threshold is a mathematical benchmark, not hardware calibration",
+                ] if training_data == "synthetic-only" else []
+            ),
+        }
+
+    def _source_info() -> dict[str, Any]:
+        simulation_mode = settings.source_mode == "simulator"
+        return {
+            "source_mode": settings.source_mode,
+            "source_label": "SYNTHETIC STREAM" if simulation_mode else "HARDWARE EXPERIMENTAL",
+            "simulation_mode": simulation_mode,
+            "threshold_verified_on_hardware": False,
+        }
+
+    def _live_record(request: Request) -> dict[str, Any] | None:
+        store: Store = request.app.state.store
+        row = store.latest_processed(settings.device_id, PROCESSOR_VERSION)
+        if row is None:
+            return None
+        record = json.loads(row["result_json"])
+        raw = store.get_raw(row["device_id"], row["boot_id"], row["sequence"])
+        telemetry = json.loads(raw["payload_json"]) if raw else None
+        edge = store.edge_prediction(row["device_id"], row["boot_id"], row["sequence"])
+        edge_payload = json.loads(edge["payload_json"]) if edge else None
+        model = _model_info(request)
+        backend_distance = record.get("prediction", {}).get("distance_m")
+        edge_distance = edge_payload.get("distance_m") if edge_payload else None
+        parity_diff = None
+        parity_status = "UNAVAILABLE"
+        if isinstance(backend_distance, list) and isinstance(edge_distance, list) and len(backend_distance) == len(edge_distance):
+            parity_diff = max(abs(float(a) - float(b)) for a, b in zip(backend_distance, edge_distance))
+            parity_status = "MATCH" if parity_diff <= 0.0001 else "MISMATCH"
+        return {
+            "assessment": record,
+            "telemetry": telemetry,
+            "edge_prediction": edge_payload,
+            "provenance": {
+                "authority": "backend",
+                "training_data": model["training_data"],
+                "dataset_sha256": model["dataset_sha256"],
+                "model_sha256": model["model_sha256"],
+                "scaler_sha256": model["scaler_sha256"],
+                "edge_available": edge_payload is not None,
+                "edge_backend_max_abs_diff_m": parity_diff,
+                "parity_status": parity_status,
+            },
+            "received_at": raw["received_at"] if raw else None,
+        }
+
+    @app.get("/live/latest")
+    def live_latest(request: Request) -> dict[str, Any]:
+        record = _live_record(request)
+        model = _model_info(request)
+        source = _source_info()
+        return {
+            "source": "LIVE",
+            **source,
+            "limitations": model["limitations"],
+            "model": model,
+            "latest": record,
+        }
+
+    @app.get("/live/history")
+    def live_history(request: Request, seconds: int = Query(60, ge=1, le=3600), limit: int = Query(600, ge=1, le=5000)) -> dict[str, Any]:
+        rows = request.app.state.store.recent_processed(settings.device_id, PROCESSOR_VERSION, limit)
+        records = []
+        for row in rows:
+            record = json.loads(row["result_json"])
+            raw = request.app.state.store.get_raw(row["device_id"], row["boot_id"], row["sequence"])
+            records.append({"assessment": record, "telemetry": json.loads(raw["payload_json"]) if raw else None, "received_at": raw["received_at"] if raw else None})
+        if records:
+            newest = records[-1]["received_at"]
+            try:
+                from iot_backend.util import parse_iso_utc
+                cutoff = parse_iso_utc(newest).timestamp() - seconds
+                records = [r for r in records if not r["received_at"] or parse_iso_utc(r["received_at"]).timestamp() >= cutoff]
+            except (TypeError, ValueError):
+                pass
+        model = _model_info(request)
+        return {
+            "source": "LIVE",
+            **_source_info(),
+            "seconds": seconds,
+            "records": records,
+            "model": model,
+        }
+
+    @app.get("/models/active")
+    def models_active(request: Request) -> dict[str, Any]:
+        return _model_info(request)
+
+    @app.get("/models/metrics")
+    def models_metrics(request: Request) -> dict[str, Any]:
+        info = _model_info(request)
+        return {"model_version": info["model_version"], "metrics": info["metrics"], "training_data": info["training_data"], "simulation_mode": info["simulation_mode"], "threshold_verified_on_hardware": False}
+
+    @app.get("/system/health")
+    def system_health(request: Request) -> dict[str, Any]:
+        latest = _live_record(request)
+        return {"status": "ok", "mqtt": request.app.state.listener is not None, "db": True, "ai": _model_info(request), "chain_bridge": {"configured": bool(settings.chain_api_url and settings.chain_ingest_token), "pending": len(request.app.state.store.due_chain_outbox()), "running": settings.chain_auto_submit}, **_source_info(), "latest_received_at": latest.get("received_at") if latest else None}
+
+    @app.get("/live/stream")
+    async def live_stream(request: Request) -> StreamingResponse:
+        async def events():
+            last_key = request.headers.get("last-event-id", "")
+            last_seen = last_key
+            logger.info("SSE_CLIENT_CONNECTED last_event_id=%s", last_key or "none")
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    snapshot = _live_record(request)
+                    if snapshot:
+                        assessment = snapshot["assessment"]
+                        ref = assessment["sample_ref"]
+                        event_id = f"{ref['device_id']}:{ref['boot_id']}:{ref['sequence']}"
+                        if event_id != last_seen:
+                            last_seen = event_id
+                            for event_type, data in (("telemetry", snapshot["telemetry"]), ("assessment", assessment), ("runtime", snapshot)):
+                                yield f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data, ensure_ascii=True, separators=(',', ':'))}\n\n"
+                    yield f"event: heartbeat\ndata: {json.dumps({'at': utc_now_iso()}, separators=(',', ':'))}\n\n"
+                    await asyncio.sleep(1)
+            finally:
+                logger.info("SSE_CLIENT_DROPPED last_event_id=%s", last_seen or "none")
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
     # ---------------------------------------------------------------- sessions
 
@@ -314,6 +516,30 @@ def create_app(settings: Settings) -> FastAPI:
         if package is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy event")
         return package
+
+    @app.get("/events/{event_id}/chain")
+    def event_chain_status(event_id: str, request: Request) -> dict[str, Any]:
+        if request.app.state.store.event_package(event_id) is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy event")
+        row = request.app.state.store.get_chain_outbox(event_id)
+        if row is None:
+            return {"event_id": event_id, "status": "LOCAL_ONLY"}
+        return {key: row[key] for key in row.keys()}
+
+    @app.post("/events/{event_id}/chain/retry")
+    def retry_event_chain(event_id: str, request: Request) -> dict[str, Any]:
+        expected = settings.chain_ingest_token
+        supplied = request.headers.get("X-HRC-Chain-Retry")
+        if not expected or supplied != expected:
+            raise HTTPException(status_code=403, detail="operator chain retry authorization required")
+        row = request.app.state.store.get_chain_outbox(event_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy chain outbox row")
+        request.app.state.store.update_chain_outbox(event_id, status="OUTBOX_PENDING", next_attempt_at=None, last_error=None)
+        bridge = request.app.state.chain_bridge
+        if settings.chain_auto_submit:
+            bridge.start()
+        return {"event_id": event_id, "status": "OUTBOX_PENDING"}
 
     # ------------------------------------------------------ assessments/samples
 

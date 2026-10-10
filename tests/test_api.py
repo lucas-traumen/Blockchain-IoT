@@ -92,6 +92,30 @@ def test_health(client, tmp_path):
     assert data["processor_version"] == "safety-v1"
 
 
+def test_cors_allowlist_and_public_runtime_metadata(tmp_path):
+    settings = make_settings(tmp_path)
+    settings = Settings(**{**settings.__dict__, "cors_origins": ("http://localhost:8080",)})
+    with TestClient(create_app(settings)) as test_client:
+        allowed = test_client.options(
+            "/health",
+            headers={
+                "Origin": "http://localhost:8080",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert allowed.status_code == 200
+        assert allowed.headers["access-control-allow-origin"] == "http://localhost:8080"
+
+        denied = test_client.options(
+            "/health",
+            headers={
+                "Origin": "http://evil.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert "access-control-allow-origin" not in denied.headers
+
+
 # ---------------------------------------------------------------------------
 # 13. Vòng đời session qua API: start → ingest → stop → detail
 # ---------------------------------------------------------------------------

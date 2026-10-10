@@ -24,21 +24,40 @@ async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN
         async getRobotStatus(id) {
             const robotLocked = await f.contract.isRobotLocked(id);
             return { success: true, deviceId: id, robotLocked, status: robotLocked ? "LOCKED" : "UNLOCKED" };
+        },
+        getPublicConfig() {
+            return { success: true, network: "test", chainId: CHAIN_ID, rpcUrl: "http://127.0.0.1:8545",
+                safety: { address: ADDRESS, deploymentBlock: 10 }, rewards: { tokenAddress: null, address: null, deploymentBlock: 0 } };
         }
     };
     const server = createApp({ service, tokens }).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => new Promise(resolve => server.close(resolve)));
     const base = `http://127.0.0.1:${server.address().port}`;
-    const call = async (path, { method = "GET", token, body, raw } = {}) => {
+    const call = async (path, { method = "GET", token, body, raw, origin } = {}) => {
         const headers = {};
         if (token) headers.Authorization = "Bearer " + token;
+        if (origin) headers.Origin = origin;
         if (body !== undefined || raw !== undefined) headers["Content-Type"] = "application/json";
         const response = await fetch(base + path, { method, headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
-        return { status: response.status, body: await response.json() };
+        return { status: response.status, body: await response.json(), allowOrigin: response.headers.get("access-control-allow-origin") };
     };
-    return { ...f, tokens, call };
+    return { ...f, tokens, call, base };
 }
+
+test("public config is runtime-derived and CORS is an explicit allowlist", async t => {
+    const f = await api(t);
+    const config = await f.call("/api/config", { origin: "http://localhost:8080" });
+    assert.equal(config.status, 200);
+    assert.equal(config.body.network, "test");
+    assert.equal(config.body.chainId, CHAIN_ID);
+    assert.equal(config.body.safety.address, ADDRESS);
+    assert.equal(config.allowOrigin, "http://localhost:8080");
+
+    const denied = await f.call("/api/config", { origin: "http://evil.example" });
+    assert.equal(denied.status, 200);
+    assert.equal(denied.allowOrigin, null);
+});
 test("HTTP end-to-end: validated ingestion, dedupe, archive, dashboard reads and authorized unlock", async t => {
     const f = await api(t);
     const input = payload();

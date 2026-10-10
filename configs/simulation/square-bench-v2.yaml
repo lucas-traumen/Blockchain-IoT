@@ -1,0 +1,35 @@
+version: square-bench-v2
+generator_version: synthetic-v2
+simulation_mode: true
+threshold_m: 0.04
+sample_period_ms: 100
+window_size: 10
+horizons_ms: [100, 200, 300, 400, 500]
+duration_s: 20
+distance_bounds_m: [0.045, 1.0]
+measurement:
+  bias_m: [-0.005, 0.005]
+  noise_sigma_m: [0.0, 0.008]
+  drift_sigma_m: [0.0, 0.001]
+  quantization_mm: 1
+  jitter_ms: [0, 20]
+  spike_probability: 0.01
+  dropout_probability: 0.0
+  frozen_probability: 0.0
+forecast_sessions:
+  stationary_clear: 120
+  stationary_near_threshold: 120
+  approach_slow: 120
+  approach_medium: 120
+  approach_fast: 120
+  stop_before: 180
+  recede: 100
+  oscillation: 160
+  sudden_step: 80
+  mixed_motion: 80
+fault_sessions:
+  dropout: 30
+  spike: 30
+  frozen: 30
+  sequence_gap: 30
+  burst_noise: 30
