@@ -3,6 +3,7 @@ const path = require("node:path");
 const { ethers } = require("ethers");
 const { ApiError, identifier } = require("./eventPayload");
 const { CustomerStore } = require("./customerStore");
+const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
 
 function now() {
     return new Date().toISOString();
@@ -91,11 +92,11 @@ class CustomerService {
         const file = env.HRC_CUSTOMER_STORE_PATH || path.join(__dirname, "data", "customers.json");
         const configuredAdmins = String(env.HRC_APP_ADMIN_WALLETS || "")
             .split(",").map(value => value.trim()).filter(Boolean);
-        const networkChainIds = { localhost: 31337, sepolia: 11155111, amoy: 80002 };
+        const network = configuredNetwork(env);
         const store = new CustomerStore(file);
         const service = new CustomerService({
             store,
-            chainId: Number(env.HRC_APP_CHAIN_ID || env.CHAIN_ID || networkChainIds[env.NETWORK] || 31337),
+            chainId: Number(env.HRC_APP_CHAIN_ID || chainIdForNetwork(network)),
             challengeTtlMs: Number(env.HRC_AUTH_CHALLENGE_TTL_S || 300) * 1000,
             sessionTtlMs: Number(env.HRC_APP_SESSION_TTL_S || 86400) * 1000,
             adminWallets: configuredAdmins,

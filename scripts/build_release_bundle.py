@@ -36,6 +36,7 @@ def _git_commit() -> str:
 def build_bundle(
     *, release: str | Path, prepared: str | Path, model: str | Path,
     evaluation: str | Path, audit: str | Path, out_dir: str | Path,
+    deployment_dir: str | Path = "smart_contracts/deployments",
 ) -> dict[str, Any]:
     out = Path(out_dir)
     if out.exists():
@@ -46,6 +47,7 @@ def build_bundle(
     model = Path(model)
     evaluation = Path(evaluation)
     audit = Path(audit)
+    deployment_dir = Path(deployment_dir)
 
     for source, target in (
         (release / "dataset_manifest.json", out / "data/generation-manifest.json"),
@@ -58,8 +60,8 @@ def build_bundle(
         (model / "metrics.json", out / "ai/metrics.json"),
         (model / "split_manifest.json", out / "ai/model-split-manifest.json"),
         (evaluation, out / "ai/evaluation-all-horizons.json"),
-        (Path("smart_contracts/deployments/localhost.json"), out / "blockchain/safety-localhost.json"),
-        (Path("smart_contracts/deployments/reward-localhost.json"), out / "blockchain/reward-localhost.json"),
+        (deployment_dir / "localhost.json", out / "blockchain/safety-localhost.json"),
+        (deployment_dir / "reward-localhost.json", out / "blockchain/reward-localhost.json"),
     ):
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -187,10 +189,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evaluation", required=True)
     parser.add_argument("--audit", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--deployment-dir", default="smart_contracts/deployments")
     args = parser.parse_args(argv)
     result = build_bundle(
         release=args.release, prepared=args.prepared, model=args.model,
         evaluation=args.evaluation, audit=args.audit, out_dir=args.out_dir,
+        deployment_dir=args.deployment_dir,
     )
     print(json.dumps({"release_id": result["release_id"], "file_count": len(result["files"])}, sort_keys=True))
     return 0

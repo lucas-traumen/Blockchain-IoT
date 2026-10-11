@@ -26,7 +26,9 @@ async function main() {
     console.log(await contract.owner());
 
     // Ghi địa chỉ ra file để blockchain_api tự đọc (không phải sửa .env sau mỗi lần deploy)
-    const dir = path.join(__dirname, "..", "deployments");
+    const dir = process.env.HRC_DEPLOYMENT_DIR
+        ? path.resolve(process.env.HRC_DEPLOYMENT_DIR)
+        : path.join(__dirname, "..", "deployments");
     fs.mkdirSync(dir, { recursive: true });
 
     const info = {
@@ -43,7 +45,7 @@ async function main() {
         JSON.stringify(info, null, 2)
     );
 
-    console.log(`Saved: deployments/${networkName}.json`);
+    console.log(`Saved: ${path.join(dir, `${networkName}.json`)}`);
 
     if (networkName !== "hardhat" && networkName !== "localhost") {
         console.log("\nVerify on Etherscan:");

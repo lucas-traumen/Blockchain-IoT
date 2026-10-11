@@ -273,8 +273,35 @@ Không dùng `down -v` nếu cần giữ dữ liệu đã nhận.
 
 Đây là luồng chạy đầy đủ đã được kiểm tra cho demo local. Luồng này dùng
 Hardhat `chainId=31337`, Mosquitto, `iot_backend` với LSTM canonical và
-`blockchain_api`. Không cần ESP32 để chạy smoke test; simulator MQTT được dùng
-thay cho thiết bị thật.
+`blockchain_api`.
+
+### Cách chạy ngắn nhất
+
+Từ thư mục repo, chạy một lệnh:
+
+```bash
+./scripts/run_local_demo.sh
+```
+
+Script tự cài Node dependency nếu thiếu, tạo một Hardhat chain sạch, deploy hai
+contract, sinh token local, chạy blockchain API, rồi khởi động MQTT, IoT/AI và
+dashboard. Mở `http://127.0.0.1:8080/#rewards`; nhấn `Ctrl+C` để dừng. Mỗi lần
+chạy dùng deployment và dữ liệu riêng trong `.runtime/local-demo/`, nên địa chỉ
+contract của chain cũ không bị dùng nhầm cho chain mới.
+
+Kiểm tra riêng blockchain/API mà không cần Docker:
+
+```bash
+./scripts/run_local_demo.sh --smoke
+```
+
+Giữ blockchain/API chạy mà không khởi động Docker:
+
+```bash
+./scripts/run_local_demo.sh --blockchain-only
+```
+
+Các bước dưới đây chỉ dành cho trường hợp muốn chạy thủ công từng service.
 
 ### 0. Điều kiện máy
 
@@ -299,7 +326,8 @@ Cổng local mặc định:
 | MQTT từ host/ESP32 | `mqtt://<IP-LAN>:1885` |
 | IoT API | `http://127.0.0.1:8001` |
 
-Nếu một cổng đang bị chiếm, sửa `compose.env` hoặc biến `PORT` trước khi chạy.
+Nếu cổng `8545` hoặc `3000` đang bị chiếm, dừng tiến trình cũ trước khi chạy script.
+Các cổng Compose có thể đổi trong `compose.env`.
 ESP32 phải dùng IP LAN của máy chạy Docker; `localhost` trên ESP32 không trỏ
 về máy host.
 
@@ -327,9 +355,9 @@ cd smart_contracts
 npx hardhat node
 ```
 
-Hardhat in ra account và private key local. Ghi lại account đầu tiên và private
-key tương ứng; account này dùng làm signer của `blockchain_api` và beneficiary
-trong demo. Không dùng private key local trên testnet hoặc mainnet.
+Hardhat in ra account và private key local. Blockchain API tự suy ra signer
+account đầu tiên khi `HRC_BLOCKCHAIN_NETWORK=localhost`; testnet vẫn bắt buộc
+cấu hình `PRIVATE_KEY` riêng.
 
 Mở **terminal 2**:
 
@@ -357,8 +385,8 @@ ${EDITOR:-vi} blockchain_api/.env
 
 ```dotenv
 RPC_URL=http://127.0.0.1:8545
-NETWORK=localhost
-PRIVATE_KEY=<private-key-account-dau-tien-cua-hardhat>
+HRC_BLOCKCHAIN_NETWORK=localhost
+PRIVATE_KEY=
 PORT=3000
 
 # Để trống khi dùng deployment JSON local.
@@ -526,8 +554,8 @@ npm --prefix smart_contracts test
 docker compose --env-file compose.env config
 ```
 
-Release local đã kiểm tra: Python `444 passed, 12 skipped`, blockchain API
-`53 passed`, smart contracts `64 passing`. Đây là software/local evidence,
+Release local đã kiểm tra: Python `446 passed, 12 skipped`, blockchain API
+`98 passed`, smart contracts `73 passing`. Đây là software/local evidence,
 không thay thế hardware validation.
 
 ### 8. Dừng, restart và reset

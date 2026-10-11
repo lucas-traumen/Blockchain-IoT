@@ -733,3 +733,23 @@ the backend operator submits settlement from the recorded safety outcome.
 - Evidence remains ignored under `data/results/live-wallet-sessions-20261011/`;
   signed bytes are private to mode600 backend store/backups, never frontend or
   public evidence. No firmware/global OpenCode changes, commit or push for R11.
+
+
+## Clean local demo bootstrap and chain payload boundary (R12, 2026-10-11)
+
+- Run the complete local demo with `./scripts/run_local_demo.sh`; use `--smoke`
+  for a self-cleaning Hardhat/API check without Docker. Each run stores its own
+  manifests, event archive, demo sessions and logs under ignored
+  `.runtime/local-demo/`, so a new in-memory chain cannot reuse old addresses.
+- Local deployment JSON is generated evidence and is not tracked. The API reads
+  `HRC_SAFETY_DEPLOYMENT` and `HRC_REWARD_DEPLOYMENT`. Network selection uses
+  `HRC_BLOCKCHAIN_NETWORK`; generic `NETWORK` is intentionally ignored.
+- IoT `PREDICTED_WARNING` is sent to blockchain_api as `state=WARNING` with
+  `sourceEventType=PREDICTED_WARNING`. Null optional AI fields and a null
+  session ID are omitted at the boundary.
+- Dashboard reaches blockchain_api through `/api/chain` on its own Nginx origin;
+  IoT remains under `/api/iot`.
+- Verified locally: Python 446 passed/12 skipped, blockchain API 98 passed,
+  contracts 73 passing, clean real-chain smoke passed twice. Docker Compose was
+  not executable in the review environment; only YAML/static proxy wiring was
+  checked there.

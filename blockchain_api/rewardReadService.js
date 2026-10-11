@@ -7,6 +7,7 @@ const { createRpcProvider } = require("./rpcProvider");
 const { OUTCOMES, SETTLEMENT_STATUS, sessionKey, statusName } = require("./rewardPolicy");
 const { ApiError, identifier } = require("./eventPayload");
 const { readSessionTuple } = require("./rewardService");
+const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
 
 const DEFAULT_REWARD_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
 const DEFAULT_TOKEN_ABI_PATH = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCRewardToken.sol/HRCRewardToken.json");
@@ -22,6 +23,7 @@ function readJson(file) {
 
 function readConfig(env = process.env) {
     const deployment = readJson(env.HRC_REWARD_DEPLOYMENT || DEFAULT_REWARD_DEPLOYMENT) || {};
+    const network = configuredNetwork(env, deployment.network || "localhost");
     const tokenAddress = env.HRC_REWARD_TOKEN_ADDRESS || deployment.tokenAddress;
     const rewardsAddress = env.HRC_REWARD_ADDRESS || deployment.rewardsAddress;
     if (!ethers.isAddress(tokenAddress) || !ethers.isAddress(rewardsAddress)) {
@@ -38,8 +40,8 @@ function readConfig(env = process.env) {
     }
     return {
         rpcUrl: env.RPC_URL || "http://127.0.0.1:8545",
-        network: env.NETWORK || deployment.network || "localhost",
-        chainId: Number(deployment.chainId || (env.NETWORK === "sepolia" ? 11155111 : 31337)),
+        network,
+        chainId: Number(deployment.chainId || chainIdForNetwork(network)),
         tokenAddress,
         rewardsAddress,
         deploymentBlock,

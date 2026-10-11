@@ -6,8 +6,10 @@ const { ethers } = require("ethers");
 const { RewardService } = require("../blockchain_api/rewardService");
 
 const ROOT = path.resolve(__dirname, "..");
+const deploymentPath = process.env.HRC_REWARD_DEPLOYMENT ||
+    path.join(ROOT, "smart_contracts/deployments/reward-localhost.json");
 const deployment = JSON.parse(fs.readFileSync(
-    path.join(ROOT, "smart_contracts/deployments/reward-localhost.json"), "utf8"
+    deploymentPath, "utf8"
 ));
 const tokenArtifact = JSON.parse(fs.readFileSync(
     path.join(ROOT, "smart_contracts/artifacts/contracts/HRCRewardToken.sol/HRCRewardToken.json"), "utf8"

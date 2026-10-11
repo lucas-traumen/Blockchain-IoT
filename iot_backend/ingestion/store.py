@@ -828,17 +828,35 @@ class Store:
         assessment = event["assessment"]
         safety = assessment["safety"]
         prediction = assessment["prediction"]
-        state = event["event_type"]
-        risk = {"PREDICTED_WARNING": 2, "UNKNOWN": 2, "VIOLATION": 3}.get(state, 2)
+        source_event_type = event["event_type"]
+        # The HTTP blockchain contract uses WARNING as its canonical state.
+        # Keep the richer IoT event name as metadata instead of sending an
+        # unsupported state value across the service boundary.
+        state = "WARNING" if source_event_type == "PREDICTED_WARNING" else source_event_type
+        risk = {"WARNING": 2, "UNKNOWN": 2, "VIOLATION": 3}.get(state, 2)
         measured_at = assessment.get("measured_at") or assessment.get("computed_at")
         from iot_backend.util import parse_iso_utc
         timestamp = int(parse_iso_utc(measured_at).timestamp())
-        return {
+        ai_result = {
+            "state": state,
+            "sourceEventType": source_event_type,
+            "riskLevel": risk,
+        }
+        for target, source in (
+            ("confirmationStatus", event.get("confirmation_status")),
+            ("confirmationRule", event.get("confirmation_rule")),
+            ("evidenceCount", event.get("evidence_count")),
+            ("earlyWarning", prediction.get("early_warning")),
+            ("predictedViolationMs", prediction.get("predicted_violation_ms")),
+            ("model", prediction.get("model_version")),
+        ):
+            if source is not None:
+                ai_result[target] = source
+        payload = {
             "schemaVersion": "1.0",
             "eventId": event["event_id"],
             "deviceId": assessment["sample_ref"]["device_id"],
             "bootId": assessment["sample_ref"]["boot_id"],
-            "sessionId": event.get("session_id"),
             "sequence": assessment["sample_ref"]["sequence"],
             "timestamp": timestamp,
             "sensorData": {
@@ -847,17 +865,11 @@ class Store:
                 "safetyThreshold": safety.get("sp_m"),
                 "margin": safety.get("margin_m"),
             },
-            "aiResult": {
-                "state": state,
-                "riskLevel": risk,
-                "confirmationStatus": event.get("confirmation_status"),
-                "confirmationRule": event.get("confirmation_rule"),
-                "evidenceCount": event.get("evidence_count"),
-                "earlyWarning": prediction.get("early_warning"),
-                "predictedViolationMs": prediction.get("predicted_violation_ms"),
-                "model": prediction.get("model_version"),
-            },
+            "aiResult": ai_result,
         }
+        if event.get("session_id") is not None:
+            payload["sessionId"] = event["session_id"]
+        return payload
 
     def get_chain_outbox(self, event_id: str) -> sqlite3.Row | None:
         with self._lock:

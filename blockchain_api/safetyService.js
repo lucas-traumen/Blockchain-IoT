@@ -2,10 +2,12 @@ require("dotenv").config();
 
 const { ethers } = require("ethers");
 const { createRpcProvider } = require("./rpcProvider");
+const { operatorPrivateKey } = require("./operatorKey");
 
 const {
     CONTRACT_ADDRESS,
     RPC_URL,
+    NETWORK,
     DEPLOYMENT_BLOCK,
     ABI
 } = require("./contractConfig");
@@ -15,14 +17,7 @@ const {
 // CONFIGURATION
 // ======================================================
 
-const PRIVATE_KEY =
-    process.env.PRIVATE_KEY;
-
-if (!PRIVATE_KEY) {
-    throw new Error(
-        "PRIVATE_KEY is missing in .env"
-    );
-}
+const PRIVATE_KEY = operatorPrivateKey(process.env, NETWORK);
 
 
 // ======================================================
@@ -55,16 +50,14 @@ function getDurableService() {
         const path = require("node:path");
         const { EventStore } = require("./eventStore");
         const { EventService } = require("./eventService");
-        const { NETWORK } = require("./contractConfig");
-        const chainIds = { sepolia: 11155111, localhost: 31337, amoy: 80002 };
-        if (!chainIds[NETWORK]) throw new Error("Unsupported configured network");
+        const { chainIdForNetwork } = require("./networkConfig");
         if (NETWORK === "sepolia" && CONTRACT_ADDRESS.toLowerCase() !== "0xf6cd683a1e46357ae9a6e8e68d7d0094bfacd49c") {
             throw new Error("Sepolia deployment address does not match the existing contract");
         }
         const store = new EventStore(process.env.HRC_EVENT_STORE_PATH || path.join(__dirname, "data", "events"));
         process.once("exit", () => store.close());
         durableService = new EventService({ provider, wallet: baseWallet, contract, store,
-            chainId: chainIds[NETWORK], contractAddress: CONTRACT_ADDRESS });
+            chainId: chainIdForNetwork(NETWORK), contractAddress: CONTRACT_ADDRESS });
     }
     return durableService;
 }

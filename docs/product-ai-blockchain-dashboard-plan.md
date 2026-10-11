@@ -961,18 +961,19 @@ Không sửa payload_json/payload_hash sau lần PREPARED đầu tiên.
 | eventId | event_packages.event_id |
 | deviceId | trigger_ref.device_id |
 | bootId | trigger_ref.boot_id |
-| sessionId | event.session_id |
-| sequence | confirmed_ref.sequence |
+| sessionId | event.session_id; bỏ field nếu event không thuộc session |
+| sequence | trigger_ref.sequence |
 | timestamp | measured_at đổi sang Unix seconds |
 | sensorData.distance | assessment.distance_m |
 | sensorData.valid | assessment.safety.sensor_valid |
 | sensorData.threshold | assessment.safety.sp_m |
 | sensorData.margin | assessment.safety.margin_m |
 | aiResult.model | model_version |
-| aiResult.state | PREDICTED_WARNING, VIOLATION hoặc UNKNOWN |
+| aiResult.state | WARNING, VIOLATION hoặc UNKNOWN |
+| aiResult.sourceEventType | PREDICTED_WARNING, VIOLATION hoặc UNKNOWN |
 | aiResult.riskLevel | theo bảng risk |
-| aiResult.earlyWarning | prediction.early_warning |
-| aiResult.predictedViolationMs | predicted_violation_ms |
+| aiResult.earlyWarning | prediction.early_warning; bỏ field nếu chưa có giá trị |
+| aiResult.predictedViolationMs | predicted_violation_ms; bỏ field nếu chưa có giá trị |
 
 Payload canonical đầy đủ được băm ở blockchain_api. Backend lưu lại hash được
 API trả và kiểm tra nó ổn định khi retry.

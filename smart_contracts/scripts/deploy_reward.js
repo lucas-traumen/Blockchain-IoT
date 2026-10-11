@@ -79,7 +79,9 @@ async function main() {
     // Keep the requested localhost artifact deterministic. Other networks only
     // print addresses so a test run cannot overwrite deployment records.
     if (hre.network.name === "localhost") {
-        const deploymentsDir = path.join(__dirname, "..", "deployments");
+        const deploymentsDir = process.env.HRC_DEPLOYMENT_DIR
+            ? path.resolve(process.env.HRC_DEPLOYMENT_DIR)
+            : path.join(__dirname, "..", "deployments");
         fs.mkdirSync(deploymentsDir, { recursive: true });
 
         const info = {
@@ -106,7 +108,7 @@ async function main() {
 
         const output = path.join(deploymentsDir, "reward-localhost.json");
         fs.writeFileSync(output, JSON.stringify(info, null, 2));
-        console.log(`Saved: deployments/reward-localhost.json`);
+        console.log(`Saved: ${output}`);
     }
 }
 

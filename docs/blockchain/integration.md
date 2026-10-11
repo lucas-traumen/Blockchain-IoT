@@ -14,8 +14,10 @@ Set these environment variables in the **blockchain_api process**, before starti
 - `HRC_EVENT_STORE_PATH`: optional directory; default `blockchain_api/data/events`.
 - `HRC_CUSTOMER_STORE_PATH`: optional JSON file for application users, wallet
   bindings, app sessions and behavior; default `blockchain_api/data/customers.json`.
+- `HRC_BLOCKCHAIN_NETWORK`: `localhost`, `sepolia` or `amoy`; it deliberately
+  does not use the generic host variable `NETWORK`.
 - `HRC_APP_CHAIN_ID`: chain used by wallet challenge login. If omitted, it follows
-  `NETWORK` (`31337` localhost, `11155111` Sepolia, `80002` Amoy).
+  `HRC_BLOCKCHAIN_NETWORK` (`31337` localhost, `11155111` Sepolia, `80002` Amoy).
 - `HRC_APP_ADMIN_WALLETS`: comma-separated wallet addresses allowed to read the
   customer directory.
 - `HRC_APP_ORIGIN`: HTTP(S) origin included in the signed challenge text; default

@@ -27,4 +27,5 @@ npx hardhat run scripts/deploy.js --network localhost   # terminal 2
 1. Copy `.env.example` thành `.env`, điền `SEPOLIA_RPC_URL`, `DEPLOYER_PRIVATE_KEY` (ví test), `ETHERSCAN_API_KEY`.
 2. `npx hardhat run scripts/deploy.js --network sepolia`
 3. `npx hardhat verify --network sepolia <ADDRESS>`
-4. Blockchain API: đặt `NETWORK=sepolia` và `RPC_URL` trong `blockchain_api/.env`.
+4. Blockchain API: đặt `HRC_BLOCKCHAIN_NETWORK=sepolia`, `RPC_URL` và
+   `PRIVATE_KEY` trong `blockchain_api/.env`.

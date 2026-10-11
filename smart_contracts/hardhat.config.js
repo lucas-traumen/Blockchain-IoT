@@ -1,5 +1,6 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
+const { HARDHAT_MNEMONIC } = require("../demo_wallets");
 
 const {
     SEPOLIA_RPC_URL,
@@ -12,7 +13,14 @@ const accounts = DEPLOYER_PRIVATE_KEY ? [DEPLOYER_PRIVATE_KEY] : [];
 
 // Chỉ thêm testnet khi đã khai báo RPC trong .env (tránh lỗi cấu hình khi chạy local)
 const networks = {
-    localhost: { url: "http://127.0.0.1:8545", chainId: 31337 }
+    hardhat: {
+        chainId: 31337,
+        accounts: { mnemonic: process.env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC }
+    },
+    localhost: {
+        url: process.env.HRC_HARDHAT_RPC_URL || "http://127.0.0.1:8545",
+        chainId: 31337
+    }
 };
 
 if (SEPOLIA_RPC_URL) {

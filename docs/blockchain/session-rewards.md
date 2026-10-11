@@ -68,22 +68,17 @@ chỉ được settle một lần; retry cùng `sessionId` và cùng evidence l�
 Nếu đã xác nhận vi phạm thì lỗi cảm biến xuất hiện sau đó không xóa được vi
 phạm.
 
-## Địa chỉ local hiện tại
+## Địa chỉ local
 
-- `HRCSafetyLog`: `0x5FbDB2315678afecb367f032d93F642f64180aa3`
-- `HRCRewardToken`: `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`
-- `HRCSessionRewards`: `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0`
-- RPC: `http://127.0.0.1:8545`
-- API: `http://127.0.0.1:3000`
-
-Địa chỉ được ghi trong [reward-localhost.json](../../smart_contracts/deployments/reward-localhost.json)
-và [localhost.json](../../smart_contracts/deployments/localhost.json).
+Hardhat local là chain tạm thời nên không có địa chỉ contract cố định trong Git.
+`./scripts/run_local_demo.sh` deploy lại và ghi hai manifest của đúng lần chạy vào
+`.runtime/local-demo/latest/deployments/`. RPC dùng `http://127.0.0.1:8545` và
+API dùng `http://127.0.0.1:3000`.
 
 ## Kết quả triển khai
 
-Contract test có **64 passing**; blockchain API regression hiện có **52 passing**
-(deployment report ban đầu ghi 49). Smoke
-settlement đã kiểm tra:
+Contract và blockchain API regression đều đang pass; số lượng hiện tại được ghi
+trong README cùng lệnh kiểm tra. Smoke settlement đã kiểm tra:
 
 - session hợp lệ: `REWARDED`, user nhận 3 HRC;
 - session hợp lệ thứ hai trong cùng ngày: `REWARD_DAILY_LIMIT`;

@@ -1,50 +1,52 @@
 require("dotenv").config();
 
+const fs = require("node:fs");
 const path = require("path");
+const { ethers } = require("ethers");
+const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
 
 const RPC_URL =
     process.env.RPC_URL
     || "http://127.0.0.1:8545";
 
-// Mạng đang dùng: localhost (mặc định) hoặc sepolia / amoy
-const NETWORK =
-    process.env.NETWORK
-    || "localhost";
+// Use a project-specific name. Generic NETWORK is commonly injected by hosts
+// and previously made the API select an unrelated value such as a container
+// network name.
+const NETWORK = configuredNetwork(process.env);
+const DEPLOYMENT_PATH = path.resolve(
+    process.env.HRC_SAFETY_DEPLOYMENT
+    || path.join(__dirname, "../smart_contracts/deployments", `${NETWORK}.json`)
+);
 
 // Ưu tiên cấu hình do scripts/deploy.js ghi ra: smart_contracts/deployments/<network>.json
 // Nếu chưa có file đó thì dùng CONTRACT_ADDRESS trong .env.
 function readDeployment() {
-
     try {
-
-        const deployment =
-            require(
-                path.join(
-                    __dirname,
-                    "../smart_contracts/deployments",
-                    `${NETWORK}.json`
-                )
-            );
-
-        return deployment;
-
-    } catch (error) {
-
+        return JSON.parse(fs.readFileSync(DEPLOYMENT_PATH, "utf8"));
+    } catch {
         return undefined;
     }
 }
 
 const deployment = readDeployment();
 
-const CONTRACT_ADDRESS =
+if (deployment?.network && deployment.network !== NETWORK) {
+    throw new Error(`Safety deployment network ${deployment.network} does not match ${NETWORK}`);
+}
+if (deployment?.chainId && Number(deployment.chainId) !== chainIdForNetwork(NETWORK)) {
+    throw new Error(`Safety deployment chainId ${deployment.chainId} does not match ${NETWORK}`);
+}
+
+const configuredAddress =
     deployment?.address
     || process.env.CONTRACT_ADDRESS;
 
-if (!CONTRACT_ADDRESS) {
+if (!ethers.isAddress(configuredAddress || "")) {
     throw new Error(
-        "Contract address not found. Run scripts/deploy.js or set CONTRACT_ADDRESS in .env"
+        "Safety contract address is not configured. Run ./scripts/run_local_demo.sh or set HRC_SAFETY_DEPLOYMENT/CONTRACT_ADDRESS"
     );
 }
+const CONTRACT_ADDRESS = ethers.getAddress(configuredAddress);
 
 const artifactPath =
     path.join(
@@ -79,5 +81,6 @@ module.exports = {
     NETWORK,
     CONTRACT_ADDRESS,
     DEPLOYMENT_BLOCK,
+    DEPLOYMENT_PATH,
     ABI: contractArtifact.abi
 };

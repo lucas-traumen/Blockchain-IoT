@@ -98,7 +98,15 @@ test('demo signing fails closed on a network other than local chain 31337', asyn
 
 test('fixed user wallet mapping survives service recreation and exposes no private keys', t => {
     const f = fixture(t);
-    const options = { HRC_DEMO_SESSION_STORE_PATH: path.join(f.directory, 'fixed-sessions.json') };
+    const deploymentPath = path.join(f.directory, 'reward-localhost.json');
+    fs.writeFileSync(deploymentPath, JSON.stringify({
+        network: 'localhost', chainId: 31337,
+        tokenAddress: TOKEN, rewardsAddress: REWARDS
+    }));
+    const options = {
+        HRC_DEMO_SESSION_STORE_PATH: path.join(f.directory, 'fixed-sessions.json'),
+        HRC_REWARD_DEPLOYMENT: deploymentPath
+    };
     const first = DemoWalletService.fromEnv(options), second = DemoWalletService.fromEnv(options);
     assert.deepEqual(first.listAccounts(), second.listAccounts());
     assert.deepEqual(first.listAccounts().map(row => row.userId), ['admin', 'user_1', 'user_2']);

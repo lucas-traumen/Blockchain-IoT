@@ -9,7 +9,11 @@ function serviceOrigin(port) {
     }
     return "http://127.0.0.1:" + port;
 }
-const API_URL = window.HRC_CHAIN_API_URL || serviceOrigin(3000);
+const API_URL = window.HRC_CHAIN_API_URL || (
+    window.location?.protocol === "http:" || window.location?.protocol === "https:"
+        ? "/api/chain"
+        : serviceOrigin(3000)
+);
 const IOT_API_URL = window.HRC_IOT_API_URL || (
     window.location?.protocol === "http:" || window.location?.protocol === "https:"
         ? "/api/iot"

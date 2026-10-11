@@ -13,6 +13,8 @@ const {
 } = require("./rewardPolicy");
 const { createRpcProvider } = require("./rpcProvider");
 const { withSignerWrite } = require("./signerQueue");
+const { configuredNetwork } = require("./networkConfig");
+const { operatorPrivateKey } = require("./operatorKey");
 
 const DEFAULT_REWARD_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
 const REWARD_ABI_PATH = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCSessionRewards.sol/HRCSessionRewards.json");
@@ -26,16 +28,14 @@ function rewardConfig(env = process.env) {
     const deployment = readJson(env.HRC_REWARD_DEPLOYMENT || DEFAULT_REWARD_DEPLOYMENT) || {};
     const address = env.HRC_REWARD_ADDRESS || deployment.rewardsAddress;
     const rpcUrl = env.RPC_URL || "http://127.0.0.1:8545";
-    const privateKey = env.PRIVATE_KEY;
+    const network = configuredNetwork(env, deployment.network || "localhost");
+    const privateKey = operatorPrivateKey(env, network);
     if (!address || !ethers.isAddress(address)) {
         throw new ApiError(503, "REWARD_NOT_CONFIGURED", "HRC reward contract address is not configured");
     }
-    if (!privateKey) {
-        throw new ApiError(503, "REWARD_NOT_CONFIGURED", "PRIVATE_KEY is missing for reward settlement");
-    }
     const artifact = readJson(env.HRC_REWARD_ABI || REWARD_ABI_PATH);
     if (!artifact?.abi) throw new ApiError(503, "REWARD_NOT_CONFIGURED", "HRC reward contract ABI is unavailable");
-    return { address, rpcUrl, privateKey, abi: artifact.abi, deployment };
+    return { address, rpcUrl, privateKey, abi: artifact.abi, deployment, network };
 }
 
 function readSessionTuple(tuple) {

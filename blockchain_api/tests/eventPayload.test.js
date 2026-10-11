@@ -40,3 +40,26 @@ test("UNKNOWN and invalid sensor must not silently become safe", () => {
     assert.equal(preparePayload(payload({ sensorData: { distance: null, valid: false }, aiResult: { riskLevel: 3, state: "UNKNOWN" } })).riskLevel, 3);
     assert.throws(() => preparePayload(payload({ aiResult: { riskLevel: 0, state: "VIOLATION" } })), /conflicts/);
 });
+test("accepts canonical IoT warning metadata and omitted unavailable fields", () => {
+    const warning = preparePayload(payload({
+        sessionId: undefined,
+        bootId: "boot-1",
+        aiResult: {
+            state: "WARNING",
+            sourceEventType: "PREDICTED_WARNING",
+            riskLevel: 2,
+            earlyWarning: true
+        }
+    }));
+    assert.equal(warning.payload.aiResult.state, "WARNING");
+    assert.equal(warning.payload.aiResult.sourceEventType, "PREDICTED_WARNING");
+    assert.equal(warning.payload.sessionId, null);
+
+    const unknown = preparePayload(payload({
+        sessionId: undefined,
+        bootId: "boot-1",
+        sensorData: { distance: null, valid: false, safetyThreshold: 0.04 },
+        aiResult: { state: "UNKNOWN", sourceEventType: "UNKNOWN", riskLevel: 2 }
+    }));
+    assert.equal(Object.hasOwn(unknown.payload.aiResult, "earlyWarning"), false);
+});

@@ -1332,3 +1332,28 @@ README/integration docs mô tả luồng chooser và cách chạy verifier.
   có snapshot thì cần quyết định rõ về chain demo mới. Không làm mất lịch sử
   cũ hay biến một chain test thành deployment gốc. Checkpoint OpenCode không
   khả dụng trong Codex; file checkpoint lịch sử giữ nguyên, không tự tạo done.
+
+
+## R12 — Deterministic local bootstrap and IoT/chain boundary fix — 2026-10-11
+
+**Implementation and local chain smoke complete. Full Docker runtime remains to
+be exercised on a machine with Docker Compose.**
+
+- `scripts/run_local_demo.sh` now starts a fresh Hardhat chain, deploys safety
+  and reward contracts into a per-run ignored directory, configures isolated
+  stores, starts blockchain_api and optionally starts the Compose stack. The
+  `--smoke` mode submits and confirms a real WARNING transaction, reads reward
+  configuration and reads the seeded `user_1` wallet before clean shutdown.
+- Local deployment manifests are generated runtime state. The stale tracked
+  reward manifest was removed; deployment scripts accept `HRC_DEPLOYMENT_DIR`.
+- Blockchain configuration uses `HRC_BLOCKCHAIN_NETWORK`; unrelated host
+  `NETWORK` variables cannot change the selected chain. Local account 0 is
+  derived automatically, while non-local networks still require `PRIVATE_KEY`.
+- IoT outbox maps `PREDICTED_WARNING` to canonical chain state `WARNING`, keeps
+  `sourceEventType`, omits absent optional values and omits a null session ID.
+- Dashboard uses same-origin Nginx proxies for both IoT and blockchain APIs.
+- Verification: Python **446 passed, 12 skipped**; blockchain API **98 passed**;
+  smart contracts **73 passing**; two clean local smoke runs passed, including
+  one with `NETWORK=caas_ingress_only`. Compose YAML, JavaScript/Python syntax
+  and `git diff --check` passed. Docker CLI was unavailable in this executor,
+  so the full container startup was not run here.

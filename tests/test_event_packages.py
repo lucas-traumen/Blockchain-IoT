@@ -52,6 +52,12 @@ def test_two_of_three_first_assessment_and_full_raw_package(tmp_path):
         assert e['trigger_ref']['sequence']==21
         assert e['confirmed_ref']['sequence']==23
         assert e['assessment']['sample_ref']['sequence']==21
+        outbox = store.get_chain_outbox(e['event_id'])
+        chain_payload = json.loads(outbox['payload_json'])
+        assert chain_payload['aiResult']['state'] == 'WARNING'
+        assert chain_payload['aiResult']['sourceEventType'] == 'PREDICTED_WARNING'
+        assert chain_payload['aiResult']['earlyWarning'] is True
+        assert 'sessionId' not in chain_payload
         package=store.event_package(e['event_id'])
         assert package['package_status']=='ready'
         assert package['coverage']['complete'] is True
@@ -65,6 +71,30 @@ def test_two_of_three_first_assessment_and_full_raw_package(tmp_path):
         for seq in range(1,33):
             assert ingest(s,seq)['action']=='duplicate'
         assert store.list_events(PROCESSOR_VERSION)==events
+
+
+def test_chain_payload_omits_unknown_optional_values():
+    event = {
+        'event_id': 'evt-unknown-1',
+        'event_type': 'UNKNOWN',
+        'session_id': None,
+        'assessment': {
+            'sample_ref': {'device_id': 'esp32_sim', 'boot_id': 'boot-1', 'sequence': 7},
+            'measured_at': '2026-10-11T08:00:00Z',
+            'distance_m': None,
+            'safety': {'sensor_valid': False, 'sp_m': 0.04, 'margin_m': None},
+            'prediction': {
+                'early_warning': None,
+                'predicted_violation_ms': None,
+                'model_version': None,
+            },
+        },
+    }
+    payload = Store._chain_payload(event)
+    assert payload['aiResult'] == {
+        'state': 'UNKNOWN', 'sourceEventType': 'UNKNOWN', 'riskLevel': 2
+    }
+    assert 'sessionId' not in payload
 
 
 def test_isolated_warning_no_event_rearm_after_three_clear(tmp_path):
