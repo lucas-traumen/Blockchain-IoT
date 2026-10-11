@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 data/*
 !data/samples/
+release/
 ai_model/artifacts/
 exports/
 firmware/esp32/sdkconfig

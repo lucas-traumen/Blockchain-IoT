@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import yaml
 
 from iot_backend.inference.predictor import SafetyPredictor, build_predictor
 from iot_backend.ingestion.mqtt_listener import MqttListener
@@ -173,7 +174,15 @@ def create_app(settings: Settings) -> FastAPI:
         manifest = getattr(predictor, "_manifest", None) or {}
         artifact_path = str(settings.model_artifact_dir)
         model_hash = manifest.get("model_file_sha256")
-        training_data = "synthetic-only" if "synthetic" in artifact_path or "benchmark" in artifact_path else "declared-by-artifact"
+        training_data = "unknown"
+        simulation_mode = False
+        try:
+            config = yaml.safe_load(Path(settings.model_config_path).read_text(encoding="utf-8"))
+            if isinstance(config, dict):
+                training_data = str(config.get("training_data", "unknown"))
+                simulation_mode = bool(config.get("simulation_mode", False))
+        except (OSError, TypeError, ValueError, yaml.YAMLError):
+            logger.warning("Không đọc được model config provenance: %s", settings.model_config_path)
         metrics = {}
         metrics_path = Path(artifact_path) / "metrics.json"
         if metrics_path.exists():
@@ -194,20 +203,20 @@ def create_app(settings: Settings) -> FastAPI:
             "output_shape": manifest.get("output_shape"),
             "horizons_ms": manifest.get("horizons_ms", [100, 200, 300, 400, 500]),
             "training_data": training_data,
-            "simulation_mode": training_data == "synthetic-only",
+            "simulation_mode": simulation_mode,
             "threshold_verified_on_hardware": False,
             "artifact_path": artifact_path,
             "load_error": predictor.load_error,
             "metrics": metrics,
             "promotion_status": manifest.get(
                 "promotion_status",
-                "SYNTHETIC_VALIDATED" if training_data == "synthetic-only" else "ACTIVE",
+                "SYNTHETIC_VALIDATED" if simulation_mode else "ACTIVE",
             ),
             "limitations": (
                 [
                     "synthetic-only training and evaluation",
                     "threshold is a mathematical benchmark, not hardware calibration",
-                ] if training_data == "synthetic-only" else []
+                ] if simulation_mode else []
             ),
         }
 

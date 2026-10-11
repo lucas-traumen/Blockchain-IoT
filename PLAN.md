@@ -7,7 +7,7 @@ không xóa RF ngay mà chuyển dần sang LSTM theo các mốc nhỏ, có roll
 TV1–TV2 (Smart Contract, canonicalize, hash, dashboard và bộ gom sự kiện
 chính thức) nằm ngoài phạm vi; TV3/TV4 chỉ bàn giao assessment/event package.
 
-**Trạng thái kế hoạch: M1–M21 đã hoàn tất ở mức software/demo local. Release AI canonical hiện là `lstm-v1`; artifact/report cũ theo ngày đã được dọn khỏi runtime. M4 firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; MQTT/iot_backend Docker, Hardhat local, blockchain API và dashboard đang healthy. Hardware flash, đo/hiệu chuẩn thật, dữ liệu thật bổ sung và soak trên bo vẫn là các gate nghiệm thu phần cứng riêng. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
+**Trạng thái kế hoạch: M1–M21 và các gate software/local của V2 đã hoàn tất. Release AI canonical runtime là `lstm-v1`; artifact/report cũ theo ngày đã được dọn khỏi runtime. Synthetic V2 đầy đủ, audit/hash/split, candidate evaluation 3 seed, local product E2E, chain-outage retry, blockchain local settlement và release bundle đã có evidence. Candidate `lstm-v2-synthetic` bị từ chối promotion vì constant-velocity thắng regression và false-warning rate của LSTM cao; runtime tiếp tục dùng `lstm-v1`. M4 firmware build PASS ESP-IDF 6.0.1 cho ESP32 và ESP32-S3; hardware flash, đo/hiệu chuẩn thật, dữ liệu thật bổ sung, soak trên bo và public/testnet deployment vẫn là gate mở. Phiên này triển khai/review/test trực tiếp, không dùng subagent.**
 
 ## 1. Kiến trúc
 
@@ -973,11 +973,12 @@ Tiêu chí: start giữ 2 HRC trước session; clear đủ coverage trả stake
 
 **Trạng thái: triển khai trực tiếp, software verification pass; các gate model/browser/hardware còn mở.**
 
-- `M22/M23`: đã thêm profile `square-bench-v2`, generator deterministic, telemetry/ground-truth tách riêng, split theo session, hash manifest và kiểm tra seed không trùng giữa split. Chưa claim đủ release 1.200 forecast + 150 fault nếu chưa chạy release đầy đủ.
+- `M22/M23`: **done (software)**. Đã sinh release đầy đủ 1.200 forecast + 150 fault session, 270.000 samples, audit/hash/split pass; telemetry runtime và ground truth tách riêng. Evidence: `data/results/square-bench-v2/audit.json`, prepared manifest và `scripts/audit_synthetic_v2.py`.
 - `M25/M26`: runtime model metadata, edge prediction schema/store/parity, source provenance, CORS allowlist, SSE/polling live snapshot và violation confirmation 2-of-3. `OBSERVED` không tạo chain outbox; `CONFIRMED` mới đủ điều kiện reward/chain.
 - `M27/M28`: chain event outbox/bridge retry cùng payload, xử lý `202 pending`, dead-letter cho 4xx, public deployment config và reward policy dùng confirmed violation.
-- `M29`: dashboard đã nối `/api/config`, `/live/latest`, `/live/history`, `/system/health`, SSE reconnect/polling fallback, SVG actual/threshold/forecast chart, source/model/provenance/stale state và dynamic wallet config. Chrome headless browser smoke/responsive screenshot pass ở 1440x1000 và 390x844; full scenario E2E vẫn mở nên chưa đánh dấu complete.
-- `M24/M30`: chưa đánh dấu hoàn tất. Cần artifact metric synthetic V2 (episode-level recall/precision/F1/lead time), model promotion evidence, browser E2E và demo chain outage recovery.
+- `M24`: **done (evaluation decision, không promote)**. Candidate `lstm-v2-synthetic` đã train/evaluate trên frozen test 33.480 windows, 3 seed; xuất all-horizon regression, baseline, episode precision/recall/F1/lead time và scenario breakdown. Kết luận promotion `REJECTED_SYNTHETIC_GATE`; giữ active `lstm-v1`.
+- `M29`: **done (software/browser smoke)**. Dashboard đã nối `/api/config`, `/live/latest`, `/live/history`, `/system/health`, SSE reconnect/polling fallback, SVG actual/threshold/forecast chart, source/model/provenance/stale state và dynamic wallet config. Chrome headless browser smoke/responsive screenshot pass ở 1440x1000 và 390x844.
+- `M30`: **done (local software evidence)**. `tests/test_product_e2e.py` bao phủ session → telemetry → confirmed event → chain outage/retry cùng payload → reward retry cùng evidence → duplicate readback. Release bundle checksums nằm dưới `release/square-bench-v2-20261011/` (ignored). Public/testnet, hardware và production gates vẫn mở.
 - Live performance sau index migration trên database hơn 1,1 triệu raw rows: `/live/latest` và `/system/health` p50/p95 khoảng 1–2 ms; `/live/history?limit=600` khoảng 23/56 ms. Compose source label hiện tường minh qua `HRC_SOURCE_MODE`, demo mặc định là `simulator` và vẫn hiển thị `threshold_verified_on_hardware=false`.
 
 Evidence ngày 2026-10-10:
@@ -989,6 +990,85 @@ Evidence ngày 2026-10-10:
 - Browser smoke: Chrome headless rendered live dashboard with actual distance, Sp and five forecasts; desktop/mobile screenshots verified. Empty-chart overlay hidden state regression fixed.
 
 Không commit `.opencode/state/`; không đưa private key/bearer token vào dashboard.
+
+## R5 — Hoàn tất V2 software/local gates và cập nhật release plan — 2026-10-11
+
+**Trạng thái: software/local evidence PASS; model promotion và hardware/public-chain gates được quyết định rõ, không giả lập.**
+
+### M22/M23 — Release dataset V2
+
+- Generator: `scripts.synthetic_v2` với seed `20261010`, đúng 1.200 forecast và
+  150 fault sessions, mỗi session 20 giây ở 10 Hz.
+- Dataset hash: `56fd67c14a155361f37f7e90f5e21b3341e7fc8463d193c4b57043818440c87c`.
+- Telemetry hash: `de0bfdf4f258811b2b70241948de8a532c25bc2016ca25fac357ade57837c069`.
+- Audit `data/results/square-bench-v2/audit.json`: **PASS**; session/seed disjoint,
+  ground truth không lọt vào `telemetry.jsonl`, hash bytes khớp manifest.
+- Derived views: `data/synthetic/square-bench-v2-prepared/` gồm
+  `training_dataset.jsonl` 240.000 samples và `fault_dataset.jsonl` 30.000
+  samples; fault sessions không đi vào train.
+
+### M24 — Candidate AI V2
+
+- Config mới: `configs/model-synthetic-v2.yaml`; artifact candidate:
+  `ai_model/artifacts/lstm-v2-synthetic/`.
+- Frozen split: 840/180/180 sessions, 156.240/33.480/33.480 windows.
+- Ba seed `20261010/20261011/20261012` giữ cùng test split; report all-horizon
+  ở `data/results/square-bench-v2/evaluation-*.json`, stability summary ở
+  `data/results/square-bench-v2/stability-summary.json`.
+- Quyết định: **REJECTED_SYNTHETIC_GATE**. Constant-velocity có MAE/RMSE thấp
+  hơn trên frozen test; LSTM có recall tốt hơn ở horizon dài nhưng false-warning
+  rate cao. Không ghi đè `lstm-v1`, không gọi candidate là production-safe.
+
+### M30 — E2E, outage và release bundle
+
+- `tests/test_product_e2e.py`: **PASS**; local safety vẫn lưu raw/assessment/event
+  trong khi chain/reward outage, retry dùng payload/evidence bất biến và settle
+  duplicate không tạo thanh toán thứ hai.
+- Bundle: `release/square-bench-v2-20261011/`, có release manifest, checksums,
+  dataset/model/evaluation/deployment evidence và runbooks. Bundle không chứa
+  private key, token hoặc toàn bộ dataset 270.000 dòng.
+- Local Docker MQTT/iot_backend vẫn healthy và runtime active identity giữ
+  `model_version=lstm-v1`, `threshold_verified_on_hardware=false`; lần triển khai
+  cuối bật cả reward bridge và chain bridge trên Hardhat local qua
+  `docker compose --env-file compose.env` với token chỉ truyền qua environment.
+
+### Gates còn mở
+
+- ESP32 flash, HC-SR04 measurement, calibration, radio/reconnect và soak thật.
+- Public/testnet deployment: chưa claim vì phiên này chưa có RPC/funded signer/
+  confirmed receipts cho network công khai.
+- Production safety certification, secure boot/flash encryption và HIL acceptance.
+
+## R6 — Chốt triển khai local và cập nhật evidence — 2026-10-11
+
+**Trạng thái: local deployment PASS; không còn việc software/local nào đang treo trong plan.**
+
+- Runtime cuối cùng: `blockchain-hrc:ai` có TensorFlow `2.20.0`, Keras
+  `3.15.1`; `/health` trả `model_available=true`, MQTT healthy, reward bridge
+  và chain bridge `configured=true/running=true`.
+- `/models/active` xác nhận `lstm-v1`, input `[10, 2]`, output `[5]`, đúng model
+  SHA-256 `94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52`,
+  `training_data=synthetic-only`, `simulation_mode=true` và
+  `threshold_verified_on_hardware=false`.
+- Blockchain local xác nhận Hardhat `chainId=31337`, safety/reward deployment
+  cùng manifest, reward policy và API config cùng địa chỉ. Reward smoke đã có
+  `REWARDED`, daily limit, `PENALTY`, `NO_REWARD` và duplicate retry idempotent;
+  HTTP session settlement/readback có evidence trong bundle.
+- Kiểm tra cuối: host `444 passed, 12 skipped, 2 warnings`; blockchain API
+  `53 passed`; smart contracts `64 passing`; synthetic V2 audit `PASS`;
+  `docker compose config` `PASS`; release bundle checksum `25/25` `OK`.
+- `scripts/build_release_bundle.py` đã bổ sung evidence reward/API settlement
+  local và runbook triển khai phân biệt local Hardhat với public/testnet.
+- Release bundle mới nhất: `release/square-bench-v2-20261011/`, 24 file evidence
+  và `checksums.sha256`; bundle không chứa private key, bearer token hay toàn bộ
+  dataset generated.
+
+### Việc không thể đánh dấu done từ workspace này
+
+- Flash/chạy firmware ESP32, đo HC-SR04, calibration, Wi-Fi/MQTT reconnect và
+  soak/HIL trên bo thật.
+- Public/testnet deployment có RPC, funded signer, confirmations và receipts.
+- Production safety certification, secure boot/flash encryption và compliance.
 
 ## R4 — Dọn artifact cũ, chốt release AI canonical và retry triển khai — 2026-10-11
 

@@ -1,20 +1,22 @@
 # Kế hoạch triển khai hoàn chỉnh — AI, Edge AI, Blockchain và Dashboard
 
-> Trạng thái: **PROPOSED — tài liệu thiết kế, chưa cho phép tự động triển khai source**
+> Trạng thái: **ĐÃ TRIỂN KHAI SOFTWARE/LOCAL — hardware, public/testnet và production gates còn mở**
 >
-> Ngày chốt baseline: **2026-10-10**
+> Ngày chốt baseline: **2026-10-11**
 >
 > Baseline repository: `lucas-traumen/Blockchain-IoT`
 >
-> Baseline commit: `42f1776687d5b44006250d9fb025c80ebb2df0d4`
+> Baseline commit trước cập nhật V2: `33445d5` (`chore: consolidate canonical lstm release and deploy`)
 >
 > Phạm vi AI: **synthetic-only**; không bắt buộc thu dữ liệu cảm biến thật trong phiên bản này.
 >
 > Tên sản phẩm làm việc: **HRC Safe-to-Earn** — hoàn thành nhiệm vụ robot an toàn để nhận phần thưởng HRC.
 
-Tài liệu này là kế hoạch hợp nhất để đưa repository hiện tại từ một bản demo kỹ
-thuật thành một demo sản phẩm có thể giải thích, vận hành, kiểm thử và đánh giá
-được từ đầu đến cuối. Tài liệu bao phủ năm phần liên kết chặt với nhau:
+Tài liệu này là kế hoạch hợp nhất và execution record để đưa repository hiện tại
+từ một bản demo kỹ thuật thành một demo sản phẩm có thể giải thích, vận hành,
+kiểm thử và đánh giá được từ đầu đến cuối. Các gate software/local đã được thực
+thi; phần còn mở được ghi cụ thể thay vì suy diễn là đã hoàn thành. Tài liệu bao
+phủ năm phần liên kết chặt với nhau:
 
 1. sinh dữ liệu mô phỏng, huấn luyện và báo cáo đánh giá AI;
 2. triển khai inference tại backend và Edge AI trên ESP32;
@@ -100,17 +102,17 @@ Ví dụ trải nghiệm:
 
 | Khối | Đã có trong repository | Chưa đủ để gọi là hoàn chỉnh |
 |---|---|---|
-| Synthetic data | `scripts/synthetic_v2.py`, cấu hình `square-bench-v2`, 1.200 forecast session + 150 fault session, seed/split/hash | Chưa có release dataset V2 và report cuối được khóa, ký hash và công bố |
-| AI backend | Keras/TensorFlow LSTM, input `10×2`, output 5 horizon; persistence và constant-velocity baseline; event metrics | Chưa có candidate V2 được train/evaluate/promote theo gate thống nhất |
+| Synthetic data | `scripts/synthetic_v2.py`, cấu hình `square-bench-v2`, 1.200 forecast session + 150 fault session, seed/split/hash, audit/prepared views | Release V2 software đã khóa hash; dataset lớn nằm ngoài Git và được tham chiếu trong ignored release bundle |
+| AI backend | Keras/TensorFlow LSTM, input `10×2`, output 5 horizon; persistence và constant-velocity baseline; event metrics; 3-seed V2 report | Candidate V2 đã evaluate nhưng bị `REJECTED_SYNTHETIC_GATE`; `lstm-v1` vẫn active |
 | Safety | CLEAR/VIOLATION/UNKNOWN; cảnh báo dự báo; xác nhận vi phạm 2/3 valid sample | Cần chuẩn hóa sản phẩm thành CLEAR/WARNING/VIOLATION/UNKNOWN và log transition rõ |
 | Edge AI | Có LSTM float32 viết tay bằng C và weight nhúng trong firmware | Artifact nhúng đang mang identity cũ; chưa INT8/TFLite Micro, chưa benchmark thiết bị, chưa publish edge prediction |
 | Edge contract | Có `edge_prediction_v1.schema.json` và bảng `edge_predictions` | Firmware hiện chủ yếu log forecast; chưa có đường MQTT → ingest → parity report hoàn chỉnh |
-| Event/chain bridge | Có event package, durable `chain_event_outbox`, retry/dead-letter, endpoint trạng thái | Cần E2E outage recovery và đối soát hash/receipt ở release bundle |
+| Event/chain bridge | Có event package, durable `chain_event_outbox`, retry/dead-letter, endpoint trạng thái, local E2E outage recovery | Public-chain/reorg evidence ngoài local Hardhat vẫn mở |
 | Blockchain safety | `HRCSafetyLog`, EIP-712 cho thiết bị đăng ký, DANGER tạo logical lock | Logical lock chưa gắn với interlock vật lý; cần nêu rõ hai cơ chế |
 | Token/reward | ERC-20 fixed supply và `HRCSessionRewards`; stake 2, reward 3, penalty 2 HRC | Chính sách hiện tại không phù hợp mức cộng/trừ nhỏ; chưa có task completion và policy snapshot mỗi session |
 | Backend reward | Kết quả deterministic, confirmed violation ưu tiên, fault/incomplete không bị phạt | Minimum 30 s/20 mẫu quá yếu ở 10 Hz; chưa kiểm tra task/cycle/evidence |
 | Dashboard live | REST/SSE, biểu đồ actual/Sp/5 forecast, source labels, chain status, responsive smoke | Vẫn là dashboard demo kỹ thuật; chưa có onboarding, task marketplace, role/permission và AI report đầy đủ |
-| Vận hành | Docker cho MQTT/backend, local Hardhat/API, test suites | Chưa có một release manifest và một kịch bản dựng toàn stack có health tổng hợp |
+| Vận hành | Docker cho MQTT/backend, local Hardhat/API, test suites, release manifest/checksums/runbooks | Hardware/public deployment và clean-machine rehearsal đầy đủ còn mở |
 
 ### 3.1 Mâu thuẫn baseline phải xử lý đầu tiên
 
@@ -2124,3 +2126,57 @@ Kết quả cuối cùng phải khiến một người mới đọc dashboard hi
 2. Hệ thống đang an toàn hay cảnh báo vì lý do nào?
 3. Tôi được thưởng hoặc bị trừ bao nhiêu và theo quy tắc nào?
 4. Bằng chứng nào chứng minh kết quả đó, cả off-chain và on-chain?
+
+## 28. Execution update — 2026-10-11
+
+Các gate software/local trong kế hoạch đã được thực thi và ghi evidence:
+
+- Synthetic V2 đầy đủ: 1.200 forecast sessions + 150 fault sessions, 270.000
+  samples, split theo session/seed, hash và ground-truth separation audit pass.
+- AI candidate V2: train/evaluate trên frozen test split với ba seed; report
+  all-horizon có regression, persistence/constant-velocity baseline, episode
+  precision/recall/F1/lead-time và scenario breakdown. Candidate bị
+  `REJECTED_SYNTHETIC_GATE` vì không thắng baseline regression và false-warning
+  rate cao. Active runtime giữ `lstm-v1`.
+- Local E2E: session, telemetry, observed/confirmed violation, durable event
+  outbox, chain outage retry bằng payload bất biến, reward retry bằng evidence
+  bất biến, idempotent readback.
+- Release bundle: `release/square-bench-v2-20261011/` có manifest, checksums,
+  deployment metadata, model/data/evaluation evidence và runbooks. Bundle là
+  local ignored artifact, không chứa secret và không nhúng toàn bộ dataset.
+
+Chưa được đánh dấu hoàn tất và không được suy diễn từ các test phần mềm:
+
+- flash/chạy ESP32, đo HC-SR04, calibration, reconnect/soak và HIL;
+- deploy public/testnet với RPC, funded signer, contract addresses và receipts;
+- production safety certification, secure boot/flash encryption và compliance.
+
+## 29. Final local deployment update — 2026-10-11
+
+Các phần software/local của kế hoạch đã được chốt bằng runtime và evidence mới:
+
+- Docker runtime AI hoạt động với TensorFlow `2.20.0` và Keras `3.15.1`;
+  `/health` báo `model_available=true`, MQTT healthy, reward bridge và chain
+  bridge đều `configured=true/running=true`.
+- `/models/active` giữ đúng `lstm-v1`, model hash
+  `94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52`, input
+  `10×2`, output `5`, `training_data=synthetic-only`,
+  `simulation_mode=true`, `threshold_verified_on_hardware=false`.
+- Blockchain local đã hoàn chỉnh ở mức demo: Hardhat `31337`, deployment
+  manifests, contract/API tests, reward policy, session settlement, duplicate
+  retry và readback đều có evidence. Local Hardhat không được gọi là public chain.
+- Release bundle `release/square-bench-v2-20261011/` đã rebuild, bổ sung reward
+  smoke/API settlement/deployment report local, runbook và kiểm tra `25/25`
+  checksum.
+- Final regression: host `444 passed, 12 skipped, 2 warnings`; blockchain API
+  `53 passed`; smart contracts `64 passing`; synthetic V2 audit `PASS`; Compose
+  config `PASS`.
+
+Các gate còn mở và cần tác động ngoài workspace:
+
+1. flash/chạy ESP32, đo HC-SR04, calibration, Wi-Fi/MQTT reconnect, soak/HIL;
+2. public/testnet deployment với RPC, funded signer, confirmations và receipts;
+3. production safety certification, secure boot/flash encryption và compliance.
+
+Vì vậy plan đã hoàn chỉnh ở phạm vi software/local và blockchain local; không
+đánh dấu hoàn tất giả cho ba nhóm gate phần cứng, public-chain và production.

@@ -572,3 +572,51 @@ sự kiện có API riêng; IoT không giữ private key và không tự ký gia
 - Regression cuối: host `441 passed/12 skipped`, Docker `380 passed/73 skipped`,
   targeted firmware/runtime `11 passed/1 skipped`; synthetic verifier trong
   image mới PASS. `docker compose config` và `git diff --check` PASS.
+
+## Synthetic V2 release and promotion decision — 2026-10-11
+
+- Full deterministic release is `data/synthetic/square-bench-v2/`, seed
+  `20261010`, with 1,200 forecast sessions + 150 fault sessions, 270,000
+  samples. Dataset SHA-256 is
+  `56fd67c14a155361f37f7e90f5e21b3341e7fc8463d193c4b57043818440c87c`;
+  telemetry SHA-256 is
+  `de0bfdf4f258811b2b70241948de8a532c25bc2016ca25fac357ade57837c069`;
+  ground-truth SHA-256 is
+  `e3af08bc6e50941f338d787ac71771e7e60c04f05eed74805aa6b7b5863cf783`.
+- `scripts.prepare_synthetic_v2` creates runtime-shaped forecast/fault views;
+  it excludes `distance_true_m`, future targets, crossing labels, seed and
+  split from runtime rows. Fault sessions never enter model training.
+- Candidate config is `configs/model-synthetic-v2.yaml`; candidate artifact is
+  `ai_model/artifacts/lstm-v2-synthetic/`. Three seeds use the same frozen
+  840/180/180 session split and 156,240/33,480/33,480 windows. The candidate
+  status is `REJECTED_SYNTHETIC_GATE`: constant-velocity wins regression and
+  the LSTM false-warning rate is too high. Do not replace `lstm-v1` based on
+  this release.
+- `tests/test_product_e2e.py` is the local product gate for session → telemetry
+  → confirmed event → chain retry → reward retry → duplicate readback. The
+  safety/event data remains available while asynchronous chain/reward bridges
+  are unavailable; retries reuse immutable payload/evidence.
+- Release evidence bundle is `release/square-bench-v2-20261011/` (ignored).
+  It contains redacted/local manifests, checksums, evaluation evidence and
+  runbooks, but no private keys, tokens or full generated dataset.
+- The above is software/local evidence only. Hardware flash/measurement/soak,
+  public/testnet deployment with funded signer and receipts, and production
+  safety certification remain open gates.
+
+## Final local deployment verification — 2026-10-11
+
+- Runtime cuối cùng chạy image AI có TensorFlow 2.20.0/Keras 3.15.1. `/health`
+  xác nhận `model_available=true`, MQTT healthy, reward bridge và chain bridge
+  đều configured/running khi dùng `compose.env` cùng token truyền qua environment.
+- `/models/active` xác nhận active model `lstm-v1`, model SHA-256
+  `94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52`, input
+  `(10,2)`, output `(5,)`, `training_data=synthetic-only`,
+  `simulation_mode=true`, `threshold_verified_on_hardware=false`.
+- Hardhat local `31337`, blockchain API `3000`, MQTT/API Docker `1885/8001` cùng
+  chạy. Reward/API evidence đã được đưa vào release bundle; public/testnet không
+  được suy diễn từ local receipts.
+- Final verification: host `444 passed/12 skipped`, blockchain API `53 passed`,
+  smart contracts `64 passing`, synthetic audit PASS, compose config PASS,
+  release checksums `25/25 OK`.
+- Không commit token/private key, `.opencode/state/` hoặc dataset/artifact lớn.
+  Hardware, public/testnet và production certification vẫn là open gates.
