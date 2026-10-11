@@ -620,3 +620,116 @@ sự kiện có API riêng; IoT không giữ private key và không tự ký gia
   release checksums `25/25 OK`.
 - Không commit token/private key, `.opencode/state/` hoặc dataset/artifact lớn.
   Hardware, public/testnet và production certification vẫn là open gates.
+
+## Application wallet identity and customer behavior (R9, 2026-10-11)
+
+Application login is separate from blockchain ingest/admin bearer tokens. The
+browser signs an EIP-191 challenge with MetaMask; the API stores only a hash of
+the app session token and persists wallet/user bindings plus off-chain behavior in
+`HRC_CUSTOMER_STORE_PATH`. Customer directory access comes from the explicit
+`HRC_APP_ADMIN_WALLETS` allowlist; an owner wallet is not automatically an app
+admin unless configured.
+
+Behavior events are idempotent per user and key. Dashboard identity changes must
+invalidate in-flight login work and pending behavior must carry the wallet identity
+that produced it, so it cannot be attributed to a later wallet. The customer store
+uses an atomic snapshot and PID lock with stale-lock recovery. Safety evidence and
+reward settlement remain in their existing stores and authorization paths.
+
+
+## R9 local deployment evidence (2026-10-11)
+
+The wallet/customer implementation passed 58 blockchain API tests and the
+unchanged smart contract suite passed 64 tests. Local runtime is currently
+available on dashboard `8080`, blockchain API `3000`, and Hardhat chain `31337`
+through RPC `8545`; safety and reward deployment manifests match the running
+contracts. The application store was cleaned after smoke testing, so no synthetic
+customer record is presented as real user data. MetaMask signing still requires a
+real browser extension interaction.
+
+## Demo wallet UX decision (R10, 2026-10-11)
+
+The dashboard keeps account selection out of the topbar form. A compact `DEMO
+ACCOUNT` trigger opens a small account picker modal for the fixed `admin`,
+`user_1`, and `user_2` identities. The wallet workspace appears at the top of Dashboard and in Reports, where a
+selected demo user sees wallet address, HRC balance, allowance, approval, session
+start, transaction/event receipts, and session history. Navigation remains
+Dashboard, Live Monitoring, Safety Events, Reports; admin views reports only.
+
+The reward policy is shown beside the user actions: a session locks 2 HRC; a
+valid outcome returns 2 HRC and pays 3 HRC when the daily policy allows it; a
+confirmed violation forfeits the 2 HRC stake; sensor fault or incomplete
+returns the stake without reward. Users submit approval and session start only;
+the backend operator submits settlement from the recorded safety outcome.
+
+
+## R10 verification and recovery behavior (2026-10-11)
+
+- Frontend keeps the selected demo account authoritative during refresh, ignores
+  stale account responses, clears expired logins, and disables duplicate writes.
+  Pending start references are stored per user before submission and survive
+  reload; retry reads the same contract session even after allowance is consumed.
+  Post-write refresh waits for any old read and then requests fresh wallet state.
+- Demo API serializes writes per user and rejects signing off local chain 31337.
+  Stable Hardhat wallet derivation and the durable reference store preserve
+  account/session mapping across service recreation. App login tokens are in
+  memory and must be renewed after API restart.
+- Wallet history is read from ERC-20 Approval and reward contract events, filtered
+  to the selected wallet, grouped by hash and scanned in bounded block chunks.
+  Settlement remains operator-only; users cannot submit outcome or payout amounts.
+- Final suites: blockchain API 71 passed, smart contracts 64 passing. Permanent
+  browser verifier `scripts/verify_demo_wallet_ui.mjs` checks actual input/clicks,
+  account isolation, read-only admin, refresh, Reports and desktop/mobile. Default
+  mode asserts it sent no approval/start requests. The transaction mode already
+  verified Approval, exact stake, all fixed-policy outcomes, daily cap, retries,
+  event history and automatic result refresh on the running Hardhat chain.
+- Browser/receipt evidence is `data/results/demo-wallet-ui-20261011/`. Outcome
+  evidence in `settlement-1..5.json` is explicitly simulated and session-bound;
+  it does not establish physical robot integration. Dashboard-created session
+  IDs still need matching safety/simulation evidence submitted by the operator.
+  Preserve existing chain history; do not reset or silently settle active sessions.
+
+
+## Account-bound sensor sessions and complete runtime build (R11, 2026-10-11)
+
+- Local dashboard account picker contains only `admin`, `user_1`, `user_2`.
+  Admin reads both users; Approve/Start/End require the customer role and session
+  ownership. Default `HRC_APP_AUTH_MODE=demo` also rejects legacy arbitrary wallet
+  registration before creating customer data; legacy EIP-191 requires explicit
+  mode `wallet`. Two Hardhat wallet derivations stay fixed after API restart.
+- Node coordinates one physical device: reserve session, open sensor using the
+  same ID, stake 2 HRC, End the sensor, read its outcome, freeze evidence and
+  timestamp, then operator settlement. User input contains references only.
+  Contract determines refund/reward/penalty/daily cap. Device readiness cache is
+  invalidated after lifecycle writes so End does not leave a stale busy device.
+- Store persists workflow, immutable evidence and signed stake/settlement bytes
+  before broadcast. Signer writes across safety/reward services are serialized;
+  recovery reuses the same signature, nonce and hash. Background scans coalesce.
+  Unlinked historical stakes use INCOMPLETE with explicit recovery provenance.
+  Pending references and account generation checks prevent duplicate or stale
+  browser actions. The visible ledger reads Approval/Transfer/reward events.
+- Outcome API must not call global history catch-up: on the runtime database
+  that replays about 1.4 million records and times out. `catch_up_session` only
+  computes missing rows within the device/boot/sequence boundary under compute
+  lock and rechecks processed status. Global startup recovery remains separate.
+- User explicitly requires a complete normal Dockerfile build, including AI
+  dependencies. Runtime base remains `python:3.12-slim-bookworm`; dependency
+  stages precede source copies. Optional pip wheel-cache build arguments do not
+  skip requirements or replace the base with an existing running image. Full
+  build/deployment image is `0710e46941e8`; pip check/model/hash/source/volume
+  verification passed. IoT/MQTT/dashboard are healthy with canonical `lstm-v1`.
+- Final verification: API 93 passed, contracts 73 passing, IoT tests inside full
+  image 61 passed. Native browser verification with actual ESP32 and disposable
+  in-process Hardhat passed Start/End, refunds, ledger, account roles, mobile,
+  reload and resume of the same settled session. The measured session had
+  sequence gaps: INCOMPLETE, 20→18→20 HRC, 2 returned and no reward. Simulated
+  policy integration tests are distinct from this actual sensor evidence.
+- Current original localhost RPC 8545 is unavailable. Its manifests/store are
+  preserved and the original valid sensor session remains SETTLEMENT_PENDING;
+  the isolated verifier does not settle it. API checks saved deployment and
+  confirmed receipt anchors and refuses an empty replacement chain. Restoring
+  the original RPC/state is required to continue that history. API persistence
+  and Docker SQLite volume persistence do not persist Hardhat's in-memory chain.
+- Evidence remains ignored under `data/results/live-wallet-sessions-20261011/`;
+  signed bytes are private to mode600 backend store/backups, never frontend or
+  public evidence. No firmware/global OpenCode changes, commit or push for R11.

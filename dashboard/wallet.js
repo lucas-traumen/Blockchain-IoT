@@ -12,7 +12,7 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         "function getSafetyEvent(string) view returns (string eventId,string deviceId,uint256 timestamp,bytes32 dataHash,uint8 riskLevel,uint256 recordedAt)",
         "function triggerEmergencyStop(string,string)"
     ]);
-    const state = { account: null, owner: null, isOwner: false, connecting: false, message: "Connect MetaMask to verify owner access." };
+    const state = { account: null, owner: null, chainId: null, networkMatches: false, isOwner: false, connecting: false, message: "Connect MetaMask to verify owner access." };
     let generation = 0;
     const notify = () => changed(state);
     async function read(name, args = []) {
@@ -22,8 +22,9 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
     }
     async function refresh() {
         const version = ++generation;
-        state.isOwner = false;
-        state.owner = null;
+        Object.assign(state, {
+            account: null, owner: null, chainId: null, networkMatches: false, isOwner: false
+        });
         notify();
         try {
             const accounts = await ethereum.request({ method: "eth_accounts" });
@@ -31,8 +32,13 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
             state.account = accounts[0] || null;
             const network = await ethereum.request({ method: "eth_chainId" });
             if (version !== generation) return;
-            if (!state.account) state.message = "Wallet disconnected. Connect MetaMask.";
-            else if (network.toLowerCase() !== chain()) state.message = "Wrong network. Click Connect Wallet to switch to the configured network.";
+            state.chainId = Number.parseInt(network, 16);
+            state.networkMatches = network.toLowerCase() === chain();
+            if (!state.account) {
+                state.chainId = null;
+                state.networkMatches = false;
+                state.message = "Wallet disconnected. Connect MetaMask.";
+            } else if (!state.networkMatches) state.message = "Wrong network. Click Connect Wallet to switch to the configured network.";
             else {
                 const owner = await read("owner");
                 if (version !== generation) return;
@@ -67,6 +73,10 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
                 : error.code === 4902 ? "Add the configured network to MetaMask, then reconnect."
                 : error.message;
         } finally { state.connecting = false; notify(); }
+    }
+    async function signMessage(message) {
+        if (!ethereum || !state.account) throw new Error("Connect a wallet before signing the application login message.");
+        return ethereum.request({ method: "personal_sign", params: [message, state.account] });
     }
     async function control(deviceId, eventId, submitted = () => {}) {
         const locking = eventId !== null;
@@ -112,11 +122,11 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         ethereum.on("chainChanged", () => { void refresh(); });
         ethereum.on("disconnect", () => {
             generation++;
-            Object.assign(state, { isOwner: false, account: null, owner: null, message: "Wallet disconnected." });
+            Object.assign(state, { isOwner: false, account: null, owner: null, chainId: null, networkMatches: false, message: "Wallet disconnected." });
             notify();
         });
     }
-    return { get isOwner() { return state.isOwner; }, state, connect, refresh,
+    return { get isOwner() { return state.isOwner; }, state, connect, refresh, signMessage,
         unlock: (deviceId, submitted) => control(deviceId, null, submitted),
         lock: (deviceId, eventId, submitted) => {
             if (typeof eventId !== "string" || !eventId) throw new Error("Lock reference event is required");

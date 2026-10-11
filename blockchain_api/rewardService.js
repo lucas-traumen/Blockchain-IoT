@@ -12,6 +12,7 @@ const {
     statusName
 } = require("./rewardPolicy");
 const { createRpcProvider } = require("./rpcProvider");
+const { withSignerWrite } = require("./signerQueue");
 
 const DEFAULT_REWARD_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
 const REWARD_ABI_PATH = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCSessionRewards.sol/HRCSessionRewards.json");
@@ -59,22 +60,27 @@ function amountToCoins(value) {
 }
 
 class RewardService {
-    constructor({ provider, wallet, contract, waitConfirmations = 1 } = {}) {
+    constructor({ provider, wallet, contract, transactionSender = null, waitConfirmations = 1 } = {}) {
         this.provider = provider;
         this.wallet = wallet;
         this.contract = contract;
+        this.transactionSender = transactionSender;
         this.waitConfirmations = waitConfirmations;
     }
 
     static fromEnv(env = process.env) {
         const config = rewardConfig(env);
-        const provider = createRpcProvider(config.rpcUrl);
+        const provider = createRpcProvider(config.rpcUrl, { cacheTimeout: -1 });
         const wallet = new ethers.Wallet(config.privateKey, provider);
         const contract = new ethers.Contract(config.address, config.abi, wallet);
         return new RewardService({ provider, wallet, contract });
     }
 
     async startSession(input) {
+        return withSignerWrite(await this.wallet.getAddress(), () => this._startSession(input));
+    }
+
+    async _startSession(input) {
         if (!input || typeof input !== "object" || Array.isArray(input)) {
             throw new ApiError(400, "INVALID_PAYLOAD", "payload must be an object");
         }
@@ -108,15 +114,19 @@ class RewardService {
         }
     }
 
-    async processSessionOutcome(input) {
+    async processSessionOutcome(input, options = {}) {
+        return withSignerWrite(await this.wallet.getAddress(), () => this._processSessionOutcome(input, options));
+    }
+
+    async _processSessionOutcome(input, options) {
         if (!input || typeof input !== "object" || Array.isArray(input)) {
             throw new ApiError(400, "INVALID_PAYLOAD", "payload must be an object");
         }
         let sessionId;
         try { sessionId = identifier(input.sessionId, "sessionId"); }
         catch (error) { throw new ApiError(400, "INVALID_PAYLOAD", error.message); }
-        const beneficiary = input.beneficiary;
-        if (!ethers.isAddress(beneficiary) || beneficiary === ethers.ZeroAddress) {
+        let beneficiary = input.beneficiary;
+        if (beneficiary !== undefined && (!ethers.isAddress(beneficiary) || beneficiary === ethers.ZeroAddress)) {
             throw new ApiError(400, "INVALID_PAYLOAD", "beneficiary must be a non-zero address");
         }
         let outcome;
@@ -134,6 +144,7 @@ class RewardService {
         const key = sessionKey(sessionId);
         const existing = readSessionTuple(await this.contract.getSession(key));
         if (!existing.started) throw new ApiError(409, "SESSION_NOT_STARTED", "Session stake was not started on-chain");
+        beneficiary ||= existing.beneficiary;
         if (existing.beneficiary.toLowerCase() !== beneficiary.toLowerCase()) {
             throw new ApiError(409, "BENEFICIARY_MISMATCH", "Session beneficiary does not match the requested wallet");
         }
@@ -141,13 +152,21 @@ class RewardService {
             if (existing.outcome !== outcome.code || existing.evidenceHash.toLowerCase() !== evidence.toLowerCase()) {
                 throw new ApiError(409, "SETTLEMENT_CONFLICT", "Session was already settled with different outcome/evidence");
             }
-            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, existing, duplicate: true });
+            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp: Number(existing.outcomeTimestamp), existing, duplicate: true });
         }
 
         let transaction;
         try {
-            transaction = await this.contract.submitSessionOutcome(key, beneficiary, outcome.code, evidence, timestamp);
-            const receipt = await transaction.wait(this.waitConfirmations);
+            let receipt;
+            const writer = options.transactionSender || this.transactionSender;
+            if (writer) {
+                transaction = await writer.send('settlement:' + sessionId, this.wallet, this.contract, 'submitSessionOutcome', [key, beneficiary, outcome.code, evidence, timestamp]);
+                if (transaction.pending) return { success: true, httpStatus: 202, pending: true, sessionId, transactionHash: transaction.hash, outcome: outcome.name };
+                receipt = transaction.receipt;
+            } else {
+                transaction = await this.contract.submitSessionOutcome(key, beneficiary, outcome.code, evidence, timestamp);
+                receipt = await transaction.wait(this.waitConfirmations);
+            }
             const after = readSessionTuple(await this.contract.getSession(key));
             return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, existing: after, transaction, receipt, duplicate: false });
         } catch (error) {

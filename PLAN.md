@@ -1168,3 +1168,167 @@ Triển khai retry cần rebuild image để không dùng source/image cũ, recr
   portable mà không cần bind mount model từ host.
 - Đã tái kiểm tra trường hợp thực tế: backend có telemetry/model nhưng browser
   ở `http://192.168.2.34:8080` không nhận được dữ liệu vì thiếu CORS origin.
+
+## R9 — Wallet application identity, behavior tracking, and customer visibility — 2026-10-11
+
+**Trạng thái: software và local deployment PASS; MetaMask extension signing thật vẫn cần kiểm tra trên trình duyệt người dùng.**
+
+Mục tiêu của milestone này là nối wallet MetaMask với một application user riêng,
+gửi behavior telemetry có idempotency và retry, rồi hiển thị User Portal cùng
+Customer Directory có phân quyền. Blockchain ingest/admin bearer tokens vẫn tách
+khỏi app session của người dùng.
+
+Phạm vi hoàn tất:
+
+- EIP-191 challenge/login theo chain, session app hash-only và wallet/user binding.
+- Behavior queue phía dashboard không mất event khi API tạm lỗi, không gán event
+  của ví cũ cho ví mới; backend chống duplicate và payload conflict.
+- Customer store atomic, có stale-lock recovery sau process crash.
+- `/api/me`, `/api/behavior`, `/api/me/behavior`, `/api/customers` và customer
+  activity routes; User Portal/Customer Directory trên dashboard.
+- Reward read path ưu tiên wallet application hiện tại để customer thấy đúng dữ liệu.
+
+Tiêu chí kiểm tra: toàn bộ test `blockchain_api`, test persistence/reopen và
+idempotency/identity isolation, `node --check` frontend/backend, `git diff --check`,
+và smoke test HTTP wallet challenge → login → behavior → user/customer reads.
+Deployment local chỉ được báo PASS khi API khởi động được với cấu hình rõ ràng;
+public/testnet deployment và MetaMask extension signing thật vẫn là giới hạn môi
+trường.
+
+
+### R9 evidence chốt
+
+- `npm --prefix blockchain_api test`: **58 passed, 0 failed**; gồm HTTP wallet
+  challenge/login thật bằng ethers, concurrent challenge, idempotency conflict,
+  session logout, inactive account, reopen và stale-lock recovery.
+- `npm --prefix smart_contracts test`: **64 passing**.
+- `node --check` cho customer store/service/API và dashboard app/wallet: PASS;
+  `git diff --check`: PASS.
+- Local HTTP smoke: challenge `200` → wallet login `200` → behavior `200` →
+  `/api/me` đúng user → `/api/me/behavior` count tăng → admin `/api/customers`
+  trả directory. Record ví ngẫu nhiên dùng cho smoke đã được dọn; store runtime
+  hiện là snapshot rỗng và API đang giữ lock độc quyền.
+- Local deployment đang chạy: dashboard `8080`, blockchain API `3000`, Hardhat
+  JSON-RPC `8545`, chain `31337`; `/api/config`, `/api/events` và reward config
+  đều trả `success=true`. Safety contract và reward contracts đã deploy lại từ
+  scripts local.
+- Chrome CDP smoke tại `http://127.0.0.1:8080/#user`: User Portal visible, activity
+  table render, không có lỗi JavaScript; chưa mô phỏng được MetaMask extension ký
+  message trong headless browser.
+
+## R10 — Compact demo account picker and user reward transaction UX — 2026-10-11
+
+**Trạng thái: hoàn thành implementation và kiểm chứng desktop/mobile/local chain.**
+
+- Header chỉ còn nút `DEMO ACCOUNT`; modal nhỏ chọn `admin`, `user_1`, `user_2`,
+  có Open, Cancel, close/overlay/Escape và quản lý focus. Open bị khóa cho tới
+  khi chọn account; lỗi đăng nhập hiển thị ngay trong modal.
+- `My Wallet / My Sessions` nằm ngay đầu Dashboard và xuất hiện trong Reports:
+  wallet address, HRC balance, allowance, Approve 2 HRC, Start Session, receipt
+  hash/block/event và kết quả settlement. Không thêm tab wallet/customer.
+- Policy cạnh nút giao dịch: khóa 2 HRC; valid hoàn 2 + thưởng tối đa 3 HRC/ví/ngày
+  UTC khi pool đủ; violation thu stake 2 HRC; fault/incomplete hoàn stake không
+  thưởng. Chỉ operator gửi outcome/evidence; contract tính payout.
+- My Sessions và Transaction history đọc state/event thật; Approval được lọc theo
+  owner/spender, reward events theo beneficiary. Admin chỉ có báo cáo tổng hợp
+  và chi tiết hai user, không có nút giao dịch.
+- Ngăn double submit, serialize writes mỗi user, giữ pending reference qua reload
+  để retry cùng session cả khi allowance đã tiêu. Refresh sau write chờ read cũ
+  rồi đọc mới; response account cũ không ghi đè account hiện tại. Login hết hạn
+  xóa dữ liệu cũ và yêu cầu chọn lại. UI poll settlement mỗi 5 giây.
+- Mapping ví cố định sau restart API, private key giữ backend và signer chỉ cho
+  chain `31337`. Giữ chain/deployment hiện có, không reset hoặc xóa session cũ.
+- Session từ Dashboard cần operator gắn với safety/simulation evidence đúng ID;
+  chưa xác minh tự gán user session vào luồng robot vật lý.
+
+Kiểm tra cuối: blockchain API **71 passed** (gồm 7 dashboard regression và 4 demo
+wallet service tests); smart contracts **64 passing**; JavaScript syntax, HTML
+unique IDs/account form/bốn nav, `git diff --check` PASS. Chrome kiểm tra chọn
+account bằng input thật, Open, refresh, user isolation, admin read-only, Reports,
+desktop 1440×1000 và mobile 390×844; không JS exception hoặc overflow.
+
+`scripts/verify_demo_wallet_ui.mjs` mặc định không gửi giao dịch ví.
+Luồng `--transact` đã PASS trên Hardhat: Approval, stake đúng 2, retry không stake
+thêm, user bị từ chối outcome, reward 3 và daily limit, penalty 2, fault/incomplete
+refund, settlement retry, receipt/event/history/balance và tự cập nhật UI. Outcome
+được mô phỏng có nhãn và gắn từng session mới; không phải kiểm chứng robot thật.
+Evidence và screenshots: `data/results/demo-wallet-ui-20261011/`, gồm
+`browser-result.json`, `browser-transactions-result.json`, `settlement-1..5.json`.
+README/integration docs mô tả luồng chooser và cách chạy verifier.
+
+
+## R11 — User sensor sessions, settlement and wallet ledger — 2026-10-11
+
+**Implementation, full Docker build/deployment và kiểm chứng chain test + ESP32 PASS. Gate settlement trên RPC gốc còn mở vì node 8545 đã dừng; không đánh dấu toàn bộ runtime DoD hoàn tất.**
+
+- R11:coder — sửa account picker chỉ có admin/user_1/user_2; thêm locked balance,
+  End Session và ledger mở sẵn, phân biệt approve/stake/refund/reward/penalty.
+- Backend demo điều phối Start → IoT session cùng ID → stake → End → outcome từ
+  mẫu thật → operator settlement; lưu tiến trình/evidence/signed transactions,
+  serialize thiết bị/signer, phục hồi retry và restart không stake lần hai.
+- Chỉ chủ phiên được End; admin read-only; frontend không gửi outcome/payout.
+- Khôi phục các stake cũ không có phiên IoT bằng INCOMPLETE, evidence rõ lý do,
+  hoàn stake và giữ toàn bộ lịch sử; không reset/redeploy chain đang chạy.
+- Phạm vi: blockchain_api demo/store/transaction/IoT client/routes và tests,
+  dashboard HTML/JS/CSS, verifier/browser và integration tests/contracts,
+  IoT outcome/ingestion/store và API regression cho lỗi replay toàn bộ lịch sử;
+  Dockerfile chuẩn: build đầy đủ image AI/runtime theo yêu cầu mới của người dùng;
+  README/integration docs/PLAN/PROJECT_MEMORY. Không sửa firmware/global config.
+- DoD: API/contract/IoT regression PASS; browser account/log/mobile PASS; live
+  ESP32 Start/End cùng ID, outcome khớp mẫu thật, receipt/balance/ledger đúng.
+  Các kịch bản tự động chạy môi trường test riêng, không lấp dữ liệu robot giả.
+
+
+### R11 — Evidence cuối và giới hạn runtime
+
+- `R11:coder` đã triển khai và tự review diff trong Codex: picker ba account,
+  wallet/locked balance/End/ledger; lifecycle sensor, signed transaction durable,
+  operator-only outcome, retry/restart; mặc định `HRC_APP_AUTH_MODE=demo` khóa
+  đăng ký ví EIP-191 trước khi tạo customer. API restart giữ đúng hai địa chỉ ví.
+- Đã sửa outcome timeout do replay toàn bộ khoảng 1,4 triệu raw rows: chỉ catch-up
+  các row còn pending trong boundary của phiên. Regression RED→GREEN; outcome
+  phiên cũ 329 mẫu trả valid trong 12 ms trên image đầy đủ.
+- Đã sửa cached sensor busy sau End và message cũ sau reload/RPC recovery;
+  regression RED→GREEN. Browser verifier bật CDP Page trước khi inject API URL
+  và kiểm tra browser/receipt reader dùng cùng API; chờ paint trước screenshot.
+- Người dùng yêu cầu build đầy đủ: Dockerfile chuẩn từ `python:3.12-slim-bookworm`,
+  cài toàn bộ requirements/AI dependencies, rồi COPY source/model canonical.
+  Tách layer dependency để cache source-independent; có build args tùy chọn cho
+  wheel cache. Gói TF 2.20.0 620,7 MB cache trên host đã đối chiếu SHA-256 PyPI
+  `25265b0bc527e0d54b1e9cc60c44a24f44a809fe27666b905f0466471f9c52ec`.
+  Đây là package cache cho full install, không dùng runtime image cũ làm FROM.
+- Full Compose build/deploy PASS, image
+  `sha256:0710e46941e8f04bf4cc42f6ecc9f2c1c0fb0762832f224a940340bdebfed5cc`.
+  MQTT/IoT/dashboard healthy; pip check PASS; TF 2.20.0/Keras 3.15.1; model
+  `lstm-v1` đúng hash; source ESP32; source files trong image khớp host; volume
+  `blockchain-hrc_backend_data` và phiên sensor cũ được giữ nguyên.
+- Test cuối: `npm test --prefix blockchain_api` **93 passed**;
+  `npm test --prefix smart_contracts` **73 passing**. Trong image đầy đủ,
+  `tests/test_sessions.py test_rewards_policy.py test_reward_bridge.py test_api.py
+  test_ingestion.py test_product_e2e.py` **61 passed**, một warning deprecation
+  Starlette/httpx có sẵn; compose config, syntax và diff check PASS.
+- `smart_contracts/scripts/verify_live_wallet.js --network hardhat` PASS:
+  contract test thật trong process riêng + API ESP32 thật + click Chromium
+  desktop/mobile. Phiên `demo-user_2-live-71d41107-3f13-4578-8985-93713dbb7ddd`
+  có 179 mẫu/41,303 giây, outcome INCOMPLETE/sequence_gap; số dư 20→18→20,
+  hoàn 2 HRC, reward/penalty 0, settlement block 10/hash
+  `0x2a2ecf55960fbd3de1c56d5ba1b55bc56588baa76bc00bc3a6a86198780f7cc3`.
+  Browser tiếp tục lại chính phiên đã settled: không stake/settle thêm, số dư
+  giữ nguyên. Không gán outcome giả để có reward. Policy valid/violation/fault/
+  daily cap được test bằng sensor fixtures ghi rõ simulated trên chain riêng.
+- Evidence tại `data/results/live-wallet-sessions-20261011/`: logs test,
+  `api-restart-verification.json`, `image-deployment-final.json`,
+  `isolated-chain/{live-sensor-settlement,verification-state}.json`, screenshot,
+  `isolated-chain/resume/`. Không lưu token/private key/raw signed bytes trong
+  evidence công khai. Store/backup riêng mode600 vẫn ignored.
+- RPC gốc `127.0.0.1:8545` hiện không listen; chưa tìm thấy snapshot chain để
+  restore. Giữ manifest và store gốc; API trả `LOCAL_CHAIN_UNAVAILABLE`, khóa
+  writes, không tự reset/redeploy. Phiên gốc
+  `demo-user_2-live-2fa2a61a-c366-40b1-9ed2-70a9c449c1a5` vẫn
+  SETTLEMENT_PENDING với valid evidence 329 mẫu/33,334 giây. Kiểm chứng isolated
+  không hoàn thành settlement của phiên đó. Recovery cũ đã có 13 receipt hoàn
+  26 HRC trước khi RPC mất; không coi đây là số dư live sau khi node dừng.
+- Next: khôi phục state/node gốc để worker settlement cùng evidence; nếu không
+  có snapshot thì cần quyết định rõ về chain demo mới. Không làm mất lịch sử
+  cũ hay biến một chain test thành deployment gốc. Checkpoint OpenCode không
+  khả dụng trong Codex; file checkpoint lịch sử giữ nguyên, không tự tạo done.

@@ -1,6 +1,7 @@
 const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
+const { DEMO_WALLETS, HARDHAT_MNEMONIC } = require("../../demo_wallets");
 
 async function main() {
     const [deployer, defaultPenaltyTreasury] = await hre.ethers.getSigners();
@@ -38,6 +39,26 @@ async function main() {
     await (await token.approve(await rewards.getAddress(), rewardPoolAmount)).wait();
     await (await rewards.fundRewardPool(rewardPoolAmount)).wait();
 
+    // Fund exactly the two local demo users. Their addresses are derived from
+    // Hardhat's deterministic mnemonic and are exposed as public identities;
+    // their private keys remain backend-only.
+    const demoInitialBalance = hre.ethers.parseUnits(
+        process.env.HRC_DEMO_INITIAL_BALANCE || "20",
+        tokenDecimals
+    );
+    const demoWallets = DEMO_WALLETS.map(spec => ({
+        ...spec,
+        address: hre.ethers.HDNodeWallet.fromPhrase(
+            process.env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC,
+            undefined,
+            `m/44'/60'/0'/0/${spec.derivationIndex}`
+        ).address
+    }));
+    for (const demo of demoWallets) {
+        await (await token.transfer(demo.address, demoInitialBalance)).wait();
+        console.log(`Seeded ${demo.userId}: ${demo.address}`);
+    }
+
     const [network, tokenAddress, rewardsAddress] = await Promise.all([
         hre.ethers.provider.getNetwork(),
         token.getAddress(),
@@ -71,6 +92,11 @@ async function main() {
             owner: deployer.address,
             totalSupply: totalSupply.toString(),
             rewardPoolBalance: rewardPoolAmount.toString(),
+            demoWallets: demoWallets.map(demo => ({
+                userId: demo.userId,
+                address: demo.address,
+                initialBalance: demoInitialBalance.toString()
+            })),
             deployTxHashes: {
                 token: token.deploymentTransaction()?.hash || null,
                 rewards: rewards.deploymentTransaction()?.hash || null

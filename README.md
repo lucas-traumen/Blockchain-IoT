@@ -59,8 +59,8 @@ Blockchain-IoT/
   hiện tại còn `CLEAR`.
 - Blockchain: payload canonicalize/hash ngoài chain; hash và metadata sự kiện
   được ghi lên contract.
-- Dashboard: đọc trạng thái contract và cho owner thao tác Lock/Unlock qua
-  MetaMask.
+- Dashboard: chọn demo account, giao dịch stake/session bằng ví local và xem
+  safety/report; admin đọc báo cáo, operator backend xử lý safety/settlement.
 - Dữ liệu synthetic luôn phải được đánh dấu riêng, không coi là phép đo thật.
 
 Đơn vị nội bộ SI (m, s, m/s), telemetry dùng mm/µs. Khóa mẫu là
@@ -370,6 +370,14 @@ HRC_INGEST_API_TOKEN=<token-ingest-it-nhat-32-ky-tu>
 HRC_ADMIN_API_TOKEN=<token-admin-khac-ingest>
 HRC_DASHBOARD_BENEFICIARY=<dia-chi-account-dau-tien-cua-hardhat>
 HRC_CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
+
+# App login/customer activity (MetaMask signs a short challenge; no private key leaves MetaMask)
+HRC_CUSTOMER_STORE_PATH=./data/customers.json
+HRC_APP_CHAIN_ID=31337
+HRC_AUTH_CHALLENGE_TTL_S=300
+HRC_APP_SESSION_TTL_S=86400
+HRC_APP_ADMIN_WALLETS=<comma-separated-admin-wallets>
+HRC_APP_ORIGIN=http://localhost:8080
 ```
 
 Tạo hai token khác nhau, không dùng token ghi trong tài liệu:
@@ -571,20 +579,10 @@ private key hoặc địa chỉ contract local cho mạng công khai.
 
 ## Blockchain API và dashboard
 
-Demo hiện đã có cầu nối session giữa IoT và blockchain. Khi bật
-`HRC_REWARD_AUTO_START=true` và `HRC_REWARD_AUTO_SETTLE=true`, iot_backend sẽ:
-
-1. gọi `POST /api/session-start` để giữ 2 HRC trước session;
-2. tính outcome từ raw/processed samples khi session đóng;
-3. tạo `evidenceHash` ổn định và gọi `POST /api/session-outcome`;
-4. lưu trạng thái `PENDING`/`ERROR`/`SETTLED` trong SQLite để retry không đổi
-   bằng chứng hoặc thanh toán trùng.
-
-Blockchain API là thành phần duy nhất giữ private key và ký giao dịch. Dashboard
-đọc read-only từ API, hiển thị balance, reward pool, outcome, evidence hash,
-transaction hash và block trên Hardhat Local chain `31337`; không đưa private key
-hay bearer token vào trình duyệt. Đây là deployment local phục vụ demo, không phải
-Sepolia hoặc production.
+Dashboard dùng đúng ba tài khoản demo: `admin`, `user_1`, `user_2`. Backend giữ
+private key của operator và hai ví Hardhat demo; trình duyệt chỉ giữ app session.
+Contract `HRCSessionRewards` là nguồn sự thật cho stake, reward, penalty và giới
+hạn thưởng trên Hardhat local `31337`.
 
 Chạy kiểm thử từ repo root:
 
@@ -600,18 +598,90 @@ Compile ABI trước khi khởi động API:
 ```bash
 (cd smart_contracts && npx hardhat compile)
 (cd blockchain_api && node server.js)
-python3 -m http.server 8080 --bind 127.0.0.1 --directory dashboard
 ```
 
-Với deployment local hiện tại, Hardhat node và contract phải đang chạy trước API.
-Mở dashboard tại `http://127.0.0.1:8080/#rewards`. Các endpoint read-only chính là
-`/api/rewards/config`, `/api/rewards/summary`, `/api/rewards/sessions` và
-`/api/rewards/transactions`; hai endpoint ghi session yêu cầu ingest bearer token.
+Compose phục vụ Dashboard tại `http://127.0.0.1:8080/`; blockchain API dùng cổng
+3000, Hardhat RPC dùng 8545 và IoT API dùng 8001. Trong môi trường phát triển không
+chạy service Dashboard, dùng `python3 -m http.server 8080 --bind 127.0.0.1
+--directory dashboard`. Hardhat node và contract phải tồn tại trước khi giao dịch.
 
-API cần RPC, khóa ký và token được cấu hình trong môi trường process hoặc
-`blockchain_api/.env`. Xem [cấu hình API](docs/blockchain/integration.md) và
-[hướng dẫn contract](docs/blockchain/contracts.md). API blockchain dùng cổng
-3000; dashboard dùng 8080; IoT API Docker dùng 8001.
+1. Bấm **DEMO ACCOUNT** để mở cửa sổ nhỏ. Danh sách chỉ có `admin`, `user_1`,
+   `user_2`; mặc định là account hiện tại hoặc `admin`. Bấm **Open account** để
+   mở tài khoản. Lỗi đọc RPC hiện trong màn hình ví sau khi đăng nhập thành công.
+2. Chọn user để xem **My Wallet / My Sessions** trong Dashboard hoặc Reports:
+   địa chỉ, **Available balance**, **Locked stake**, allowance và policy.
+3. Bấm **Approve 2 HRC** khi allowance chưa đủ. Approve tạo transaction token
+   thật nhưng không trừ HRC. **Start Session** mở phiên ESP32 cùng ID, rồi stake
+   đúng 2 HRC: available giảm 2, locked tăng 2, phát `SessionStarted`.
+4. Giữ phiên ít nhất 30 giây và 20 mẫu để đủ điều kiện thời lượng/số mẫu. Bấm
+   **End Session** để đóng phiên và settlement. Backend xử lý các raw sample còn
+   chờ trong đúng ranh giới phiên, đánh giá safety và đóng băng outcome/evidence;
+   operator ký settlement. User không gửi outcome, beneficiary hay payout.
+5. Xem kết quả ngay trong **Recent wallet activity** và **My Sessions**, hoặc mở
+   **Transaction history** để xem hash, block và event. Ledger tách stake, hoàn
+   stake, reward và penalty; penalty lấy từ stake đã khóa, không trừ ví lần hai.
+
+Policy: valid hoàn 2 HRC và thưởng tối đa 3 HRC mỗi ví/ngày UTC nếu pool đủ;
+violation thu 2 HRC stake; sensor fault/incomplete hoàn stake, không thưởng.
+Phiên valid thứ hai trong cùng ngày có thể chỉ cộng lại 2 HRC stake và hiện
+**Daily limit**. Thời lượng/số mẫu đủ chưa bảo đảm valid: fault, boot change,
+sequence gap và vi phạm vẫn được đánh giá từ dữ liệu thật.
+
+API cấu hình `HRC_IOT_API_URL=http://127.0.0.1:8001` và
+`HRC_DEMO_DEVICE_ID=esp32_01`. IoT dùng `HRC_SOURCE_MODE=esp32`, có MQTT và
+telemetry mới không quá 5 giây. Đặt `HRC_REWARD_AUTO_START=false` và
+`HRC_REWARD_AUTO_SETTLE=false`: Node điều phối phiên gắn từng user. Cầu nối IoT
+cũ với beneficiary cố định vẫn có thể dùng riêng cho session CLI, theo
+[hướng dẫn integration](docs/blockchain/integration.md).
+
+Admin chỉ xem tổng hợp và chi tiết hai user; không có nút approve/start/end.
+Mapping hai ví cố định sau restart API; deployment mới cấp mỗi user 20 HRC test.
+App login hết hạn khi restart API, nên chọn lại tài khoản. Navigation giữ
+Dashboard, Live Monitoring, Safety Events, Reports. Luồng demo không cần MetaMask
+hoặc tiền thật; wallet lạ không thể trở thành một demo user. Chế độ mặc định
+`HRC_APP_AUTH_MODE=demo` khóa cả đường đăng ký ví EIP-191 cũ; ứng dụng legacy chỉ
+mở đường đó khi operator đặt rõ mode `wallet`.
+
+Tiến trình phiên và signed transaction stake/settlement lưu trong
+`blockchain_api/data/demo-sessions.json`. Retry Start/End và worker phục hồi mỗi
+5 giây dùng cùng ID, evidence và signed bytes, kể cả sau restart. Các stake cũ
+không có phiên IoT được hoàn qua `INCOMPLETE` với lý do `missing_iot_session`;
+không giả tạo reward hay phép đo ESP32. Giữ nguyên store, mnemonic, deployment và
+node đang chạy. Hardhat mặc định giữ state trong RAM: restart node khác với
+restart API và có thể mất lịch sử. API phát hiện thiếu deployment/receipt, khóa
+giao dịch thay vì tự tạo một phiên mới trên chain rỗng.
+
+Kiểm tra browser với Dashboard/API/Hardhat đang chạy:
+
+```bash
+node scripts/verify_demo_wallet_ui.mjs
+# Một phiên ESP32 thật, tối thiểu 31 giây; outcome do backend tính.
+node scripts/verify_demo_wallet_ui.mjs --transact
+```
+
+Lệnh mặc định chỉ đọc: chọn account/Open, refresh, user isolation, admin read-only,
+Reports và desktop/mobile. `--transact` tạo/đóng một phiên sensor và kiểm tra
+receipt, ledger, balance, retry và reload; không nhận operator token hay outcome
+mô phỏng. Nếu đang có phiên ESP32 của user_2, verifier tiếp tục chính phiên đó.
+Có thể chỉ định ID với `HRC_UI_SESSION_ID` để kiểm chứng lại một phiên đã có.
+Evidence mới nằm trong `data/results/live-wallet-sessions-20261011/` (ignored).
+Để kiểm chứng sensor thật với chain test độc lập, giữ IoT/ESP32 và Dashboard
+đang chạy, thiết bị không có phiên đang đo, rồi chạy:
+
+```bash
+(cd smart_contracts && npx hardhat run scripts/verify_live_wallet.js --network hardhat)
+```
+
+Lệnh này triển khai contract test trong process riêng, chạy click browser
+Approve/Start/End và kiểm chứng lại cùng phiên đã settlement. Nó không ghi đè
+manifest, store hay RPC của demo đang dùng; evidence nằm trong `isolated-chain/`
+và `isolated-chain/resume/`. Outcome vẫn đến từ ESP32 thật. Integration tests
+contract/API dùng sensor fixture riêng và ghi rõ mô phỏng; kết quả đó được phân
+biệt với kiểm chứng ESP32 thật.
+
+API cần RPC, khóa ký và token trong environment hoặc `blockchain_api/.env`.
+Xem [cấu hình API](docs/blockchain/integration.md) và
+[hướng dẫn contract](docs/blockchain/contracts.md).
 
 ## Chạy bằng Docker
 

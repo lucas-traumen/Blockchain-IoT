@@ -307,3 +307,36 @@ def test_session_detail_stats_filter_by_processor_version(client, app):
     resp = client.get(f"/sessions/{session_id}")
     assert resp.status_code == 200
     assert resp.json()["violation_count"] == 1
+
+
+def test_outcome_processes_only_pending_samples_within_session_boundary(client, app, monkeypatch):
+    """End must catch up unassigned raw rows without replaying old telemetry."""
+    service = app.state.service
+    # Establish the boot/sequence before the session opens.
+    service.handle_message(TOPIC, json.dumps(make_payload(sequence=100)))
+    started = client.post("/sessions/start", json={}).json()
+    session_id = started["session_id"]
+    for sequence in (101, 102):
+        service.accept_message(TOPIC, json.dumps(make_payload(sequence=sequence)))
+    client.post(f"/sessions/{session_id}/stop")
+    service.accept_message(TOPIC, json.dumps(make_payload(sequence=103)))
+    processed = []
+    original_compute = service._compute_and_store_locked
+
+    def track_compute(row, *args, **kwargs):
+        processed.append(json.loads(row["payload_json"])["sequence"])
+        return original_compute(row, *args, **kwargs)
+
+    def reject_history_scan(*args, **kwargs):
+        raise AssertionError("Outcome replayed the complete historical raw table")
+
+    monkeypatch.setattr(service, "_compute_and_store_locked", track_compute)
+    monkeypatch.setattr(app.state.store, "all_raw_rows", reject_history_scan)
+    response = client.get(f"/sessions/{session_id}/outcome")
+    assert response.status_code == 200
+    assert response.json()["stats"]["sample_count"] == 2
+    assert sorted(processed) == [101, 102]
+    assert app.state.store.get_processed("esp32_01", "b1", 103, "safety-v1") is None
+    # A repeated outcome read must not push old samples into the live model again.
+    assert client.get(f"/sessions/{session_id}/outcome").status_code == 200
+    assert len(processed) == 2

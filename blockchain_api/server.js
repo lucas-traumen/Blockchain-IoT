@@ -3,9 +3,56 @@ const cors = require("cors");
 const { requireToken } = require("./apiAuth");
 const { ApiError, identifier } = require("./eventPayload");
 
-function createApp({ service, tokens = process.env } = {}) {
+function appToken(req) {
+    const match = /^Bearer ([^\s]+)$/.exec(req.get("authorization") || "");
+    return match?.[1] || null;
+}
+
+function requireUserSession(customerService) {
+    return (req, res, next) => {
+        const authenticated = customerService().authenticateToken(appToken(req));
+        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "A valid wallet session is required" });
+        req.appUser = authenticated.user;
+        req.appSession = authenticated.session;
+        next();
+    };
+}
+
+function requireUserRole(customerService, role) {
+    return (req, res, next) => {
+        const authenticated = customerService().authenticateToken(appToken(req));
+        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "A valid wallet session is required" });
+        if (authenticated.user.role !== role) return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This wallet does not have the required application role" });
+        req.appUser = authenticated.user;
+        req.appSession = authenticated.session;
+        next();
+    };
+}
+
+function requireDemoSession(demoService, role) {
+    return (req, res, next) => {
+        const authenticated = demoService().authenticateToken(appToken(req));
+        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "Choose a demo account first" });
+        if (role && authenticated.user.role !== role) {
+            return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This demo account is read-only for the requested operation" });
+        }
+        req.demoUser = authenticated.user;
+        req.demoSession = authenticated.session;
+        next();
+    };
+}
+
+function createApp({ service, customerService, demoService, liveService, tokens = process.env } = {}) {
     service ||= require("./safetyService");
+    let resolvedCustomerService = customerService;
+    const getCustomerService = () => resolvedCustomerService || (resolvedCustomerService = require("./customerService").getCustomerService(tokens));
+    let resolvedDemoService = demoService;
+    const getDemoService = () => resolvedDemoService || (resolvedDemoService = require("./demoWalletService").getDemoWalletService(tokens));
+    let resolvedLiveService = liveService;
+    const getLiveService = () => resolvedLiveService || (resolvedLiveService = require('./liveSessionService').buildLiveSessionService(getDemoService(), tokens));
     const app = express();
+    app.locals.startLiveRecovery = () => getLiveService().startRecovery();
+    app.locals.stopLiveRecovery = () => resolvedLiveService?.stopRecovery();
     const allowedOrigins = String(tokens.HRC_CORS_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080")
         .split(",").map(value => value.trim().replace(/\/$/, "")).filter(Boolean);
     if (allowedOrigins.includes("*")) throw new Error("HRC_CORS_ORIGINS must be an explicit allowlist");
@@ -13,6 +60,13 @@ function createApp({ service, tokens = process.env } = {}) {
         if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) return callback(null, true);
         return callback(null, false);
     }}));
+    app.use((req, res, next) => {
+        const requestId = require("node:crypto").randomUUID();
+        res.set("X-Request-ID", requestId);
+        req.requestId = requestId;
+        if (/^\/api\/(auth|demo|me|behavior|customers|tasks)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
+        next();
+    });
     app.use(express.json({ limit: "64kb", strict: true }));
     const respond = async (res, operation, defaultFailure = 503) => {
         const result = await operation();
@@ -26,11 +80,93 @@ function createApp({ service, tokens = process.env } = {}) {
             unlockRobot: "POST /api/robots/:deviceId/unlock", startRewardSession: "POST /api/session-start",
             settleRewardSession: "POST /api/session-outcome", rewardConfig: "GET /api/rewards/config",
             rewardSummary: "GET /api/rewards/summary?beneficiary=0x...", rewardSessions: "GET /api/rewards/sessions",
-            rewardTransactions: "GET /api/rewards/transactions", publicConfig: "GET /api/config", adminAccess: "GET /api/admin/access (admin)", archivedPayload: "GET /api/events/:eventId/payload (admin)" }
+            rewardTransactions: "GET /api/rewards/transactions", publicConfig: "GET /api/config", adminAccess: "GET /api/admin/access (admin)", archivedPayload: "GET /api/events/:eventId/payload (admin)",
+            walletChallenge: "POST /api/auth/challenge", walletLogin: "POST /api/auth/wallet", walletLogout: "POST /api/auth/logout",
+            me: "GET /api/me", profile: "PATCH /api/me/profile", behavior: "POST /api/behavior",
+            myBehavior: "GET /api/me/behavior", customers: "GET /api/customers (admin wallet)", customerBehavior: "GET /api/customers/:userId/behavior (admin wallet)",
+            demoAccounts: "GET /api/demo/accounts", demoLogin: "POST /api/demo/login", demoWallet: "GET /api/me/wallet",
+            demoEnd: "POST /api/me/sessions/:sessionId/end", demoApprove: "POST /api/me/wallet/approve", demoStart: "POST /api/me/sessions/start", demoSessions: "GET /api/me/sessions",
+            demoAdminOverview: "GET /api/demo/admin/overview", demoWalletTransactions: "GET /api/me/wallet/transactions" }
     }));
     app.get("/api/config", async (req, res) => {
         const read = service.getPublicConfig || (() => require("./publicConfig").getPublicConfig(tokens));
         await respond(res, () => read());
+    });
+    const requireWalletLogin = (req, res, next) => {
+        if (tokens.HRC_APP_AUTH_MODE !== "wallet") {
+            return res.status(403).json({ success: false, code: "WALLET_LOGIN_DISABLED",
+                error: "Wallet registration is disabled in the local demo. Choose admin, user_1 or user_2." });
+        }
+        next();
+    };
+    app.post("/api/auth/challenge", requireWalletLogin, async (req, res) => {
+        await respond(res, () => getCustomerService().createChallenge(req.body));
+    });
+    app.post("/api/auth/wallet", requireWalletLogin, async (req, res) => {
+        await respond(res, () => getCustomerService().authenticateWallet(req.body), 401);
+    });
+    app.get("/api/demo/accounts", async (req, res) => {
+        await respond(res, () => ({ success: true, accounts: getDemoService().listAccounts() }));
+    });
+    app.post("/api/demo/login", async (req, res) => {
+        await respond(res, () => getDemoService().login(req.body?.userId), 401);
+    });
+    // Alias kept short for the dashboard and local smoke scripts.
+    app.post("/api/auth/demo", async (req, res) => {
+        await respond(res, () => getDemoService().login(req.body?.userId), 401);
+    });
+    app.post("/api/demo/logout", requireDemoSession(getDemoService), async (req, res) => {
+        await respond(res, () => getDemoService().logout(appToken(req)));
+    });
+    app.get("/api/me/wallet", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getLiveService().wallet(req.demoUser.userId));
+    });
+    app.get("/api/me/wallet/transactions", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getDemoService().getTransactions(req.demoUser.userId));
+    });
+    app.post("/api/me/wallet/approve", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getDemoService().approve(req.demoUser.userId));
+    });
+    app.get("/api/me/sessions", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getLiveService().sessions(req.demoUser.userId));
+    });
+    app.get("/api/me/sessions/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        identifier(req.params.sessionId, "sessionId");
+        if (!req.params.sessionId.startsWith(`demo-${req.demoUser.userId}-`)) {
+            return res.status(403).json({ success: false, code: "SESSION_OWNER_MISMATCH", error: "session does not belong to this demo user" });
+        }
+        await respond(res, () => getLiveService().session(req.demoUser.userId, req.params.sessionId), 404);
+    });
+    app.post("/api/me/sessions/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getLiveService().start(req.demoUser.userId, req.body || {}));
+    });
+    app.post('/api/me/sessions/:sessionId/end', requireDemoSession(getDemoService, 'customer'), async (req, res) => {
+        await respond(res, () => getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
+    });
+    app.get("/api/demo/admin/overview", requireDemoSession(getDemoService, "admin"), async (req, res) => {
+        await respond(res, () => getLiveService().overview());
+    });
+    app.post("/api/auth/logout", requireUserSession(getCustomerService), async (req, res) => {
+        await respond(res, () => getCustomerService().logout(req.appSession));
+    });
+    app.patch("/api/me/profile", requireUserSession(getCustomerService), async (req, res) => {
+        await respond(res, () => getCustomerService().updateProfile(req.appUser, req.body));
+    });
+    app.get("/api/me", requireUserSession(getCustomerService), async (req, res) => {
+        await respond(res, () => getCustomerService().getMe(req.appUser));
+    });
+    app.post("/api/behavior", requireUserSession(getCustomerService), async (req, res) => {
+        await respond(res, () => getCustomerService().recordBehavior(req.appUser, req.body));
+    });
+    app.get("/api/me/behavior", requireUserSession(getCustomerService), async (req, res) => {
+        await respond(res, () => getCustomerService().getBehavior(req.appUser.userId, req.query.limit === undefined ? 100 : Number(req.query.limit)));
+    });
+    app.get("/api/customers", requireUserRole(getCustomerService, "admin"), async (req, res) => {
+        await respond(res, () => getCustomerService().listCustomers(req.query.limit === undefined ? 500 : Number(req.query.limit)));
+    });
+    app.get("/api/customers/:userId/behavior", requireUserRole(getCustomerService, "admin"), async (req, res) => {
+        identifier(req.params.userId, "userId");
+        await respond(res, () => getCustomerService().getCustomerBehavior(req.params.userId, req.query.limit === undefined ? 100 : Number(req.query.limit)));
     });
     app.post("/api/safety-event", requireToken("ingest", tokens), async (req, res) => {
         await respond(res, () => service.processSafetyEvent(req.body));
@@ -106,6 +242,13 @@ function createApp({ service, tokens = process.env } = {}) {
 if (require.main === module) {
     require("dotenv").config();
     const port = Number(process.env.PORT || 3000);
-    createApp().listen(port, () => console.log(`HRC Safety Log Backend running at http://localhost:${port}`));
+    const app = createApp();
+    const server = app.listen(port, () => {
+        console.log(`HRC Safety Log Backend running at http://localhost:${port}`);
+        try { app.locals.startLiveRecovery(); }
+        catch { console.error('Live session recovery is unavailable; check local reward configuration'); }
+    });
+    const shutdown = () => { app.locals.stopLiveRecovery(); server.close(() => process.exit(0)); };
+    process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
 }
 module.exports = { createApp };

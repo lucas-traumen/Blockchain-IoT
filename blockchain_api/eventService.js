@@ -1,4 +1,5 @@
 const { ethers } = require("ethers");
+const { withSignerWrite } = require("./signerQueue");
 const { ApiError, identifier, canonicalJson, preparePayload, TYPES } = require("./eventPayload");
 
 function failure(error) {
@@ -13,7 +14,7 @@ class EventService {
         this.tail = Promise.resolve();
     }
     serial(work) {
-        const task = this.tail.then(work);
+        const task = this.tail.then(async () => withSignerWrite(await this.wallet.getAddress(), work));
         this.tail = task.catch(() => {});
         return task.catch(failure);
     }

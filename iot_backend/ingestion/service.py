@@ -240,6 +240,23 @@ class IngestionService:
                 count += 1
         return count
 
+    def catch_up_session(self, session_id: str) -> int:
+        """Finish this session's committed samples without replaying history.
+
+        The compute lock also protects the check against the live MQTT worker,
+        so retries never push an already processed row into the predictor again.
+        """
+        count = 0
+        with self._compute_lock:
+            for row in self._store.pending_raw(PROCESSOR_VERSION, session_id=session_id):
+                if self._store.get_processed(
+                    row["device_id"], row["boot_id"], row["sequence"], PROCESSOR_VERSION
+                ) is not None:
+                    continue
+                summary = self._compute_and_store_locked(row)
+                count += int(summary["processed_inserted"])
+        return count
+
     def process_raw_rows(
         self, rows: list[sqlite3.Row], processor_version: str, mode: str
     ) -> int:

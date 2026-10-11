@@ -214,25 +214,43 @@ class Store:
                 (device_id, boot_id, sequence),
             ).fetchone()
 
-    def pending_raw(self, processor_version: str) -> list[sqlite3.Row]:
-        """Raw chưa có processed_samples cho ``processor_version`` đã cho.
+    def pending_raw(
+        self, processor_version: str, *, session_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Unprocessed raw rows, optionally bounded by one session's device/boot.
 
-        LEFT JOIN cùng khóa + processor_version, ORDER BY device_id, boot_id,
-        sequence — dùng cho restart recovery (catch_up).
+        Boundaries include committed samples that the asynchronous MQTT worker
+        has not assigned to session_samples yet. Concrete range predicates let
+        SQLite use the device/boot/sequence index for a closed session.
         """
         with self._lock:
+            clauses = ["p.id IS NULL"]
+            params: list[Any] = [processor_version]
+            if session_id is not None:
+                session = self._conn.execute(
+                    "SELECT * FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                if session is None:
+                    return []
+                clauses.append("r.device_id=?")
+                params.append(session["device_id"])
+                for column, operator in (
+                    ("start_boot_id", "="),
+                    ("start_sequence", ">="),
+                    ("stop_sequence", "<="),
+                ):
+                    if session[column] is not None:
+                        raw_column = "boot_id" if column == "start_boot_id" else "sequence"
+                        clauses.append(f"r.{raw_column}{operator}?")
+                        params.append(session[column])
             return self._conn.execute(
-                """
-                SELECT r.* FROM raw_samples r
-                LEFT JOIN processed_samples p
-                  ON p.device_id = r.device_id
-                 AND p.boot_id = r.boot_id
-                 AND p.sequence = r.sequence
-                 AND p.processor_version = ?
-                WHERE p.id IS NULL
-                ORDER BY r.device_id, r.boot_id, r.sequence
-                """,
-                (processor_version,),
+                "SELECT r.* FROM raw_samples r "
+                "LEFT JOIN processed_samples p "
+                "ON p.device_id=r.device_id AND p.boot_id=r.boot_id "
+                "AND p.sequence=r.sequence AND p.processor_version=? "
+                "WHERE " + " AND ".join(clauses) +
+                " ORDER BY r.device_id,r.boot_id,r.sequence",
+                params,
             ).fetchall()
 
     # -------------------------------------------------------------- rejected

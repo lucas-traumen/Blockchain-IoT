@@ -395,9 +395,10 @@ def create_app(settings: Settings) -> FastAPI:
         return [info.to_dict() for info in manager.list_sessions()]
 
     def _session_outcome_data(request: Request, session_id: str) -> dict[str, Any]:
-        # MQTT compute is asynchronous; catch_up makes the decision use all raw
-        # rows already committed before reward policy evaluation.
-        request.app.state.service.catch_up()
+        # MQTT commits raw before asynchronous compute. Finish only this
+        # session's boundary; global restart recovery would replay all history
+        # and reset live inference buffers on every outcome read.
+        request.app.state.service.catch_up_session(session_id)
         manager: SessionManager = request.app.state.manager
         store: Store = request.app.state.store
         try:
