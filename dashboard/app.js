@@ -38,6 +38,9 @@ let unlocking = false;
 let robotLocked = null;
 let sidebarEvents = [];
 let backendConnected = null;
+// "demo" keeps the fixed-account picker; "wallet"/"siwe" make the header trigger
+// connect a real wallet and sign the application login message instead.
+let appAuthMode = "demo";
 let transactionRows = [];
 let transactionMessage = "Loading transactions...";
 let transactionsLoading = false;
@@ -46,7 +49,12 @@ let rewardSummary = null;
 let rewardSessions = [];
 let rewardMessage = "Loading reward data...";
 let rewardsLoading = false;
-let appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
+// sessionToken authenticates the reward-session routes for a wallet-first login;
+// token authenticates the application identity routes.
+let appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: null, error: null };
+// Local, dependency-free view of the wallet-first state so the reward panel can
+// be exercised in isolation.
+function walletFirstActive() { return Boolean(appSession.sessionToken) && (appAuthMode === "wallet" || appAuthMode === "siwe"); }
 let appAuthGeneration = 0;
 let pendingBehavior = [];
 let behaviorFlushTimer = null;
@@ -292,11 +300,13 @@ function renderDemoWallet() {
     const customer = user?.role === 'customer';
     const admin = user?.role === 'admin';
     const busy = Boolean(demoBusy);
-    text('demoAccountButtonLabel', user?.userId || 'Choose account');
-    text('demoAccountStatus', user ? `${user.userId} · ${admin ? 'read-only report' : 'local demo wallet'}` : 'Admin views both users. User accounts can approve and start sessions.');
+    if (!(appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))) text('demoAccountButtonLabel', user?.userId || 'Choose account');
+    text('demoAccountStatus', user
+        ? `${user.userId} · ${admin ? 'read-only report' : user.walletFirst ? 'your wallet · you sign every transaction' : 'local demo wallet'}`
+        : walletFirstActive() ? 'Connect your wallet to start a session.' : 'Admin views both users. User accounts can approve and start sessions.');
     text('walletUserStatus', user ? `${user.role.toUpperCase()} · ${user.userId}` : 'Choose an account');
     text('connectedWalletAddress', user?.walletAddress || (admin ? 'Admin · read-only' : 'No demo account'));
-    text('walletRole', admin ? 'READ ONLY ADMIN' : customer ? 'DEMO USER' : 'READ ONLY');
+    text('walletRole', admin ? 'READ ONLY ADMIN' : customer ? (user?.walletFirst ? 'WALLET USER' : 'DEMO USER') : 'READ ONLY');
     text('demoWalletRole', user?.userId.toUpperCase() || 'CHOOSE ACCOUNT');
     text('demoWalletAddress', demoWallet?.address || user?.walletAddress || '--');
     text('demoWalletBalance', demoWallet ? formatDemoAmount(demoWallet.balance) : '-- HRC');
@@ -445,13 +455,22 @@ async function approveDemoWallet() {
     const session = demoSession;
     demoBusy = 'approve'; demoMessage = 'Submitting HRC approval...'; renderDemoWallet();
     try {
-        const result = await demoRequest('/api/me/wallet/approve', { method: 'POST', token: session.token });
+        const result = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))
+            ? await sendWalletPrepared(await demoRequest('/api/me/wallet/prepare/approve', { token: session.token }))
+            : await demoRequest('/api/me/wallet/approve', { method: 'POST', token: session.token });
         if (session !== demoSession) return;
         if (result.transactionHash) demoReceipt = result;
-        demoMessage = 'Approved 2 HRC allowance. Your balance is unchanged. Start opens the sensor session and locks 2 HRC.';
+        demoMessage = 'Approved ' + formatDemoAmount(demoWallet.requiredAllowance) + ' HRC allowance. Your balance is unchanged. Start opens the sensor session and locks ' + formatDemoAmount(demoWallet.stakeAmount) + ' HRC.';
         await loadDemoAccountData({ fresh: true });
     } catch (error) { if (session === demoSession) demoMessage = 'Approve failed: ' + error.message; }
     finally { demoBusy = null; renderDemoWallet(); }
+}
+
+// The backend prepares the calldata; the user's own wallet signs and broadcasts it.
+async function sendWalletPrepared(prepared) {
+    if (!window.hrcWallet?.sendPrepared) throw new Error("Connect a wallet that can sign transactions.");
+    const hash = await window.hrcWallet.sendPrepared(prepared);
+    return { ...prepared, transactionHash: hash, walletSigned: true };
 }
 
 async function startDemoSession() {
@@ -461,7 +480,8 @@ async function startDemoSession() {
     try { sessionStorage.setItem('hrc-demo-pending-' + session.user.userId, demoSessionRef); } catch { /* same-page retries still keep their session id */ }
     demoBusy = 'start'; demoMessage = 'Submitting the 2 HRC session stake...'; renderDemoWallet();
     try {
-        const result = await demoRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: demoSessionRef } });
+        const prepared = await demoRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: demoSessionRef } });
+        const result = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe')) ? await sendWalletPrepared(prepared) : prepared;
         if (session !== demoSession) return;
         demoReceipt = result;
         demoMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';
@@ -482,7 +502,9 @@ async function endDemoSession() {
     try {
         const result = await demoRequest('/api/me/sessions/' + encodeURIComponent(active.sessionId) + '/end', { method: 'POST', token: session.token, body: {} });
         if (session !== demoSession) return;
-        demoMessage = result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
+        demoMessage = result.operatorOnly
+            ? result.description
+            : result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
         await loadDemoAccountData({ fresh: true });
     } catch (error) { if (session === demoSession) demoMessage = 'End failed: ' + error.message + ' Retry keeps the same session.'; }
     finally { demoBusy = null; renderDemoWallet(); }
@@ -551,13 +573,13 @@ function renderAppIdentity() {
 }
 
 function saveAppSession() {
-    try { sessionStorage.setItem("hrc-app-session", JSON.stringify({ token: appSession.token, user: appSession.user })); }
+    try { sessionStorage.setItem("hrc-app-session", JSON.stringify({ token: appSession.token, sessionToken: appSession.sessionToken, user: appSession.user })); }
     catch { /* Private browsing can disable sessionStorage; memory auth still works. */ }
 }
 
 function clearAppSession() {
     appAuthGeneration++;
-    appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
+    appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: null, error: null };
     userBehavior = [];
     customerRows = [];
     customerMessage = "Connect an admin wallet to view customers.";
@@ -570,7 +592,7 @@ function clearAppSession() {
 function restoreAppSession() {
     try {
         const stored = JSON.parse(sessionStorage.getItem("hrc-app-session") || "null");
-        if (stored?.token && stored?.user) appSession = { ...appSession, token: stored.token, user: stored.user };
+        if (stored?.token && stored?.user) appSession = { ...appSession, token: stored.token, sessionToken: stored.sessionToken || null, user: stored.user };
     } catch { clearAppSession(); }
 }
 
@@ -678,7 +700,7 @@ async function syncWalletApplication(state) {
             } catch (error) {
                 if (!authFlowIsCurrent(run, key)) return;
                 if (error.status === 401) {
-                    appSession = { token: null, user: null, key: null, inFlightKey: key, error: "Sign the application login message in MetaMask." };
+                    appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: key, error: "Sign the application login message in MetaMask." };
                     renderAppIdentity();
                 } else throw error;
             }
@@ -694,12 +716,22 @@ async function syncWalletApplication(state) {
             message: challenge.message, signature
         }});
         if (!authFlowIsCurrent(run, key)) return;
-        appSession = { token: login.token, user: login.user, key, inFlightKey: key, error: null };
+        appSession = { token: login.token, sessionToken: login.sessionToken || null, user: login.user, key, inFlightKey: key, error: null };
         saveAppSession();
         renderAppIdentity();
+        if ((appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))) {
+            // Wallet-first: the same signed login also authorizes the reward-session
+            // routes, so the panel reads the wallet's own history.
+            demoSession = {
+                token: appSession.sessionToken,
+                user: { userId: login.user.userId, role: "customer", walletAddress: login.user.walletAddress, walletFirst: true }
+            };
+            demoSessionRef = pendingDemoSession(login.user.userId);
+        }
         await trackBehavior("wallet_connected", { chainId: state.chainId });
         await flushBehavior();
-        void loadRewards();
+        if (walletFirstActive()) await loadDemoAccountData({ fresh: true });
+        await loadRewards();
     } catch (error) {
         if (!authFlowIsCurrent(run, key)) return;
         const message = error.code === 4001 ? "Application login was cancelled in MetaMask." : "Application login failed: " + error.message;
@@ -947,14 +979,46 @@ async function loadRuntimeConfig() {
     try {
         const config = await request("/api/config");
         window.hrcRuntimeConfig = config;
+        appAuthMode = config?.app?.authMode || "demo";
+        applyAuthMode();
         renderRuntimeConfig(config);
         return config;
     } catch (error) {
         window.hrcRuntimeConfig = {};
+        appAuthMode = "demo";
+        applyAuthMode();
         renderRuntimeConfig({ network: "unavailable" });
         text("dashboardMessage", "Blockchain config unavailable: " + error.message);
         return null;
     }
+}
+
+function walletFirstMode() { return appAuthMode === "wallet" || appAuthMode === "siwe"; }
+
+// Adapt the header entry point to the configured auth mode. The demo picker stays
+// available in demo mode and is removed from the flow when the deployment is
+// wallet-first.
+function applyAuthMode() {
+    const walletFirst = walletFirstMode();
+    text("accountTriggerLabel", walletFirst ? (appAuthMode === "siwe" ? "SIWE LOGIN" : "WALLET") : "DEMO ACCOUNT");
+    document.querySelectorAll("[data-demo-account-open]").forEach(button => {
+        button.hidden = walletFirst;
+        button.disabled = walletFirst;
+    });
+    const modal = byId("demoAccountModal");
+    if (walletFirst && modal && !modal.classList.contains("hidden")) closeDemoAccountModal();
+    if (walletFirst) {
+        text("demoAccountButtonLabel", "Connect wallet");
+        text("walletAccessMessage", appAuthMode === "siwe"
+            ? "Connect a wallet and sign the SIWE message to start a session. The backend operator settles rewards."
+            : "Connect a wallet and sign the login message to start a session. The backend operator settles rewards.");
+    }
+}
+
+function onAccountTrigger() {
+    if (!walletFirstMode()) { openDemoAccountModal(); return; }
+    if (window.hrcWallet?.connect) { void window.hrcWallet.connect(); return; }
+    text("walletAccessMessage", "No EVM wallet detected. Install MetaMask to sign in.");
 }
 function svgElement(name, attributes = {}) {
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -1342,37 +1406,43 @@ async function unlockRobot() { return controlRobot("unlock"); }
 async function lockRobot() { return controlRobot("lock"); }
 refreshBtn.addEventListener("click", loadDashboard);
 function initWallet() {
+    const setText = (id, value) => { const element = byId(id); if (element) element.textContent = value; };
+    const unavailable = "MetaMask is not installed or the wallet script did not load. Refresh the page after enabling the extension.";
+    const connect = () => { void window.hrcWallet?.connect(); };
     if (typeof createWalletAccess === "function" && typeof ethers !== "undefined") {
         const injected = window.ethereum?.providers?.find(provider => provider.isMetaMask) || window.ethereum;
         window.hrcWallet = createWalletAccess(injected, ethers, state => {
-            byId("walletButtonLabel").textContent = state.connecting ? "Connecting..."
-                : state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : "Register / Connect Wallet";
-            byId("connectWalletBtn").disabled = state.connecting || unlocking;
-            byId("walletAccessMessage").textContent = state.message;
-            byId("connectedWalletAddress").textContent = state.account || "Not connected";
-            byId("contractOwnerAddress").textContent = state.owner || "Not verified";
-            byId("walletRole").textContent = state.isOwner ? "OWNER" : state.account && state.owner ? "READ ONLY" : "NOT VERIFIED";
-            byId("walletSettingsState").textContent = state.account || "Not connected";
-            byId("walletNetworkState").textContent = state.chainId ? String(state.chainId) + (state.networkMatches ? " · OK" : " · WRONG NETWORK") : "--";
+            const short = state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : null;
+            setText("demoAccountButtonLabel", state.connecting ? "Connecting..." : short || "Connect wallet");
+            setText("accountTriggerLabel", state.account
+                ? (appAuthMode === "siwe" ? "SIWE SESSION" : "WALLET")
+                : (appAuthMode === "siwe" ? "SIWE LOGIN" : "WALLET"));
+            setText("walletButtonLabel", state.connecting ? "Connecting..."
+                : short || "Register / Connect Wallet");
+            const connectBtn = byId("connectWalletBtn");
+            if (connectBtn) connectBtn.disabled = state.connecting || unlocking;
+            setText("walletAccessMessage", state.message);
+            setText("connectedWalletAddress", state.account || "Not connected");
+            setText("contractOwnerAddress", state.owner || "Not verified");
+            setText("walletRole", state.isOwner ? "OWNER" : state.account && state.owner ? "READ ONLY" : "NOT VERIFIED");
+            setText("walletSettingsState", state.account || "Not connected");
+            setText("walletNetworkState", state.chainId
+                ? String(state.chainId) + (state.networkMatches ? " · OK" : " · WRONG NETWORK") : "--");
             void syncWalletApplication(state);
             renderAppIdentity();
             updateAdminControls();
         }, window.hrcRuntimeConfig);
-        byId("connectWalletBtn").addEventListener("click", () => { void window.hrcWallet.connect(); });
-        byId("portalConnectWalletBtn")?.addEventListener("click", () => { void window.hrcWallet.connect(); });
+        byId("connectWalletBtn")?.addEventListener("click", connect);
+        byId("portalConnectWalletBtn")?.addEventListener("click", connect);
         void window.hrcWallet.refresh();
-    } else {
-        byId("portalConnectWalletBtn")?.addEventListener("click", () => {
-            byId("walletAccessMessage").textContent = "MetaMask chưa được cài hoặc script wallet chưa tải. Refresh trang sau khi bật extension.";
-        });
-        byId("connectWalletBtn").addEventListener("click", () => {
-            byId("walletAccessMessage").textContent = "Wallet scripts could not load. Refresh the page with Ctrl+F5.";
-        });
+        return;
     }
+    byId("portalConnectWalletBtn")?.addEventListener("click", () => setText("walletAccessMessage", unavailable));
+    byId("connectWalletBtn")?.addEventListener("click", () => setText("walletAccessMessage", unavailable));
 }
 unlockBtn?.addEventListener("click", unlockRobot);
 byId("lockRobotBtn")?.addEventListener("click", lockRobot);
-byId("demoAccountTrigger")?.addEventListener("click", openDemoAccountModal);
+byId("demoAccountTrigger")?.addEventListener("click", onAccountTrigger);
 byId("demoAccountCloseBtn")?.addEventListener("click", closeDemoAccountModal);
 byId("demoAccountCancelBtn")?.addEventListener("click", closeDemoAccountModal);
 byId("demoAccountModal")?.querySelector("[data-demo-account-close]")?.addEventListener("click", closeDemoAccountModal);
@@ -1494,7 +1564,7 @@ document.querySelectorAll("[data-customer-refresh]").forEach(button => {
 });
 byId("demoAccountForm")?.addEventListener("submit", event => { event.preventDefault(); void loginDemoAccount(); });
 byId("demoAccountSelect")?.addEventListener("change", updateDemoAccountPicker);
-document.querySelectorAll("[data-demo-account-open]").forEach(button => button.addEventListener("click", openDemoAccountModal));
+    document.querySelectorAll("[data-demo-account-open]").forEach(button => button.addEventListener("click", openDemoAccountModal));
 document.querySelectorAll("[data-demo-refresh]").forEach(button => button.addEventListener("click", () => { void loadDemoAccountData(); }));
 byId("demoApproveBtn")?.addEventListener("click", () => { void approveDemoWallet(); });
 byId("demoStartBtn")?.addEventListener("click", () => { void startDemoSession(); });
@@ -1503,6 +1573,14 @@ window.addEventListener("hashchange", navigate);
 navigate();
 async function bootstrap() {
     await loadRuntimeConfig();
+    if (walletFirstMode()) {
+        // Wallet-first: the header trigger connects a real wallet and signs the
+        // application login message. The demo picker is not part of this flow.
+        initWallet();
+        await Promise.allSettled([loadDashboard(), loadLiveRuntime()]);
+        connectLiveStream();
+        return;
+    }
     restoreDemoSession();
     await loadDemoAccounts();
     renderDemoWallet();

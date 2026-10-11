@@ -78,6 +78,16 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         if (!ethereum || !state.account) throw new Error("Connect a wallet before signing the application login message.");
         return ethereum.request({ method: "personal_sign", params: [message, state.account] });
     }
+    /// @notice Wallet-first flows ask the user's own wallet to submit the exact
+    ///         payload the backend prepared. The backend never holds this key.
+    async function sendPrepared(tx) {
+        if (!ethereum || !state.account) throw new Error("Connect a wallet before signing a transaction.");
+        if (!tx || !tx.to || !tx.data) throw new Error("The backend did not return a signable transaction");
+        return ethereum.request({
+            method: "eth_sendTransaction",
+            params: [{ from: state.account, to: tx.to, value: tx.value || "0x0", data: tx.data }]
+        });
+    }
     async function control(deviceId, eventId, submitted = () => {}) {
         const locking = eventId !== null;
         await refresh();
@@ -126,7 +136,7 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
             notify();
         });
     }
-    return { get isOwner() { return state.isOwner; }, state, connect, refresh, signMessage,
+    return { get isOwner() { return state.isOwner; }, state, connect, refresh, signMessage, sendPrepared,
         unlock: (deviceId, submitted) => control(deviceId, null, submitted),
         lock: (deviceId, eventId, submitted) => {
             if (typeof eventId !== "string" || !eventId) throw new Error("Lock reference event is required");

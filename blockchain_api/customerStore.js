@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 function emptyState() {
-    return { users: {}, challenges: {}, sessions: {}, behavior: [] };
+    return { users: {}, challenges: {}, sessions: {}, behavior: [], audit: [] };
 }
 
 function clone(value) {
@@ -88,6 +88,8 @@ class CustomerStore {
             }
         }
         if (!Array.isArray(this.state.behavior)) throw new Error("Invalid customer store behavior");
+        if (this.state.audit === undefined) this.state.audit = [];
+        if (!Array.isArray(this.state.audit)) throw new Error("Invalid customer store audit");
     }
 
     _writeState(nextState) {
@@ -208,6 +210,15 @@ class CustomerStore {
             .slice(-limit)
             .reverse()
             .map(item => clone(item));
+    }
+
+    appendAudit(entry) {
+        this._commit(state => { state.audit.push(clone(entry)); });
+        return clone(entry);
+    }
+
+    listAudit(limit = 100) {
+        return this.state.audit.slice(-limit).reverse().map(entry => clone(entry));
     }
 
     close() {

@@ -819,3 +819,52 @@ safety outcome.
   transaction. Pool 1000 → 997; beneficiary 20 → 23 (20 − 8 staked + 6 returned
   + 3 reward + 2 penalty to the same account acting as treasury).
 - `npx hardhat test` → 74 passing; `npm --prefix blockchain_api test` → 103/103.
+
+## P1–P7 wallet-first hardening (2026-10-12)
+
+- **P1 SIWE** behind `HRC_APP_AUTH_MODE=siwe`: `POST /api/auth/challenge` issues
+  the EIP-4361 message, `POST /api/auth/wallet` verifies the signature and
+  returns an app token plus a reward-session token. Legacy EIP-191 demo login is
+  kept as a secondary path.
+- **P2** session-ID prefix constraint removed; the store still reads legacy
+  prefixed IDs.
+- **P3** reward contract refactored onto OpenZeppelin `Ownable2Step`, `Pausable`
+  and `ReentrancyGuard`, with a `maxRewardPool` ceiling on `fundRewardPool`.
+- **P4** reward policy is now on-chain and owner-tunable: `MIN_REWARD_DURATION`
+  (30s), `FULL_BONUS_DURATION` (60s), `MAX_REWARD_BONUS_PERCENT` (100) via
+  `setPolicy()`. `rewardAmountForDuration()` scales linearly and caps at +100%.
+- **P5** SQLite store selected with `HRC_APP_STORE=sqlite`, plus
+  `scripts/migrate_json_to_sqlite.js` for JSON → SQLite migration.
+- **P6** admin surface: `GET /api/admin/reward/status`, `GET /api/admin/audit`,
+  pool funding, policy/pause toggles and treasury sweep (`sweepExcessToken`,
+  `setPenaltyTreasury`), all recorded in the audit log.
+- **P7** dashboard is wallet-first: the user connects a wallet and signs SIWE;
+  the demo account picker remains as a secondary mode.
+
+### Redeploy + verified behaviour
+
+- Fresh local deployment of `HRCSessionRewards` at
+  `0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82` (token `0xA51c…91C0`); the
+  previous contract lacked `paused`/`maxRewardPool`, so P3/P4 were inert until
+  this redeploy.
+- Live checks against the running stack: reward pool funded to 1050 HRC; a
+  45-second valid session paid `RewardPaid = 4.6 HRC` and returned the 2 HRC
+  stake; a violation session kept `rewardPaid = 0`, forfeited the 2 HRC stake
+  and credited exactly 2 HRC to the penalty treasury.
+- Duration curve read from chain: 30s → 3.0, 45s → 4.5, 60s → 6.0, 300s → 6.0
+  HRC (cap reached at 60s).
+- Wallet-first E2E: SIWE challenge → signed login → `prepare/approve` and
+  `prepare/start` return unsigned transactions for the user to sign locally; the
+  backend never signs on the user's behalf.
+
+### Bug found and fixed during verification
+
+- `RewardService.getOperatorStatus()` / `getAdminStatus()` did not set
+  `success: true`, and the shared `respond()` helper derives the HTTP status from
+  that flag, so `/api/admin/reward/status` answered **503** with a perfectly valid
+  body. The existing admin tests used a fake service that always set `success`,
+  which hid the defect. Both methods now set `success: true` and
+  `blockchain_api/tests/rewardServiceStatus.test.js` exercises the real service so
+  the regression cannot return.
+- Test totals after the change: `npx hardhat test` → 81 passing;
+  `npm --prefix blockchain_api test` → 126/126.

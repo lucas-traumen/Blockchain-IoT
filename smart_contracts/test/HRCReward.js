@@ -427,3 +427,142 @@ describe("HRCSessionRewards policy", function () {
         expect(stored.outcomeTimestamp).to.equal(1_791_532_800);
     });
 });
+
+describe("HRCSessionRewards owner controls", function () {
+    it("exposes a configurable policy that the owner can retune", async function () {
+        const { rewards, owner, stranger } = await loadFixture(deploySystem);
+        expect(await rewards.stakeAmount()).to.equal(COIN("2"));
+        expect(await rewards.MIN_REWARD_DURATION()).to.equal(30);
+        expect(await rewards.FULL_BONUS_DURATION()).to.equal(60);
+        expect(await rewards.MAX_REWARD_BONUS_PERCENT()).to.equal(100);
+
+        await expect(rewards.connect(stranger).setPolicy(
+            COIN("4"), COIN("5"), COIN("1"), 10, 20, 50
+        )).to.be.revertedWithCustomError(rewards, "OwnableUnauthorizedAccount");
+
+        await expect(rewards.connect(owner).setPolicy(
+            COIN("4"), COIN("5"), COIN("1"), 10, 20, 50
+        )).to.emit(rewards, "PolicyUpdated");
+
+        expect(await rewards.stakeAmount()).to.equal(COIN("4"));
+        expect(await rewards.rewardAmount()).to.equal(COIN("5"));
+        expect(await rewards.penaltyAmount()).to.equal(COIN("1"));
+        expect(await rewards.MIN_REWARD_DURATION()).to.equal(10);
+        expect(await rewards.FULL_BONUS_DURATION()).to.equal(20);
+        expect(await rewards.MAX_REWARD_BONUS_PERCENT()).to.equal(50);
+        // base reward below the threshold, half bonus at the midpoint, capped after
+        expect(await rewards.rewardAmountForDuration(9)).to.equal(COIN("5"));
+        expect(await rewards.rewardAmountForDuration(15)).to.equal(COIN("6.25"));
+        expect(await rewards.rewardAmountForDuration(20)).to.equal(COIN("7.5"));
+    });
+
+    it("rejects an invalid policy", async function () {
+        const { rewards, owner } = await loadFixture(deploySystem);
+        const invalid = [
+            [0, COIN("3"), COIN("2"), 30, 60, 100],
+            [COIN("2"), 0, COIN("2"), 30, 60, 100],
+            [COIN("2"), COIN("3"), 0, 30, 60, 100],
+            [COIN("2"), COIN("3"), COIN("3"), 30, 60, 100],
+            [COIN("2"), COIN("3"), COIN("2"), 0, 60, 100],
+            [COIN("2"), COIN("3"), COIN("2"), 60, 60, 100],
+            [COIN("2"), COIN("3"), COIN("2"), 30, 60, 1001]
+        ];
+        for (const args of invalid) {
+            await expect(rewards.connect(owner).setPolicy(...args))
+                .to.be.revertedWithCustomError(rewards, "InvalidPolicy");
+        }
+    });
+
+    it("pause stops new stakes and funding but still allows settlement", async function () {
+        const { token, rewards, owner, operator, user, stranger } = await loadFixture(deploySystem);
+        await expect(rewards.connect(stranger).pause())
+            .to.be.revertedWithCustomError(rewards, "OwnableUnauthorizedAccount");
+
+        const open = await start(rewards, user, "pause-open");
+        await expect(open.wait()).to.not.be.reverted;
+        await expect(rewards.connect(owner).pause()).to.emit(rewards, "RewardPoolPaused");
+
+        await expect(start(rewards, user, "pause-blocked"))
+            .to.be.revertedWithCustomError(rewards, "EnforcedPause");
+        await expect(rewards.connect(owner).fundRewardPool(COIN("1")))
+            .to.be.revertedWithCustomError(rewards, "EnforcedPause");
+
+        // Settlement must stay open so a paused pool cannot strand a stake.
+        const before = await token.balanceOf(user.address);
+        await settle(rewards, operator, "pause-open", user, VALID);
+        expect(await token.balanceOf(user.address)).to.equal(before + COIN("2") + COIN("3"));
+
+        await expect(rewards.connect(owner).unpause()).to.emit(rewards, "RewardPoolUnpaused");
+        await expect(start(rewards, user, "pause-resumed")).to.not.be.reverted;
+    });
+
+    it("caps the reward pool and rejects a cap below the funded balance", async function () {
+        const { token, rewards, owner, stranger } = await loadFixture(deploySystem);
+        expect(await rewards.maxRewardPool()).to.equal(COIN("100000"));
+
+        await expect(rewards.connect(stranger).setMaxRewardPool(COIN("5000")))
+            .to.be.revertedWithCustomError(rewards, "OwnableUnauthorizedAccount");
+        await expect(rewards.connect(owner).setMaxRewardPool(0))
+            .to.be.revertedWithCustomError(rewards, "InvalidPolicy");
+
+        const funded = await rewards.rewardPoolBalance();
+        await expect(rewards.connect(owner).setMaxRewardPool(funded - 1n))
+            .to.be.revertedWithCustomError(rewards, "InvalidPolicy");
+
+        const cap = funded + COIN("10");
+        await expect(rewards.connect(owner).setMaxRewardPool(cap))
+            .to.emit(rewards, "MaxRewardPoolUpdated");
+        expect(await rewards.maxRewardPool()).to.equal(cap);
+
+        await token.connect(owner).approve(await rewards.getAddress(), COIN("11"));
+        await expect(rewards.connect(owner).fundRewardPool(COIN("11")))
+            .to.be.revertedWithCustomError(rewards, "RewardPoolCapExceeded");
+        await expect(rewards.connect(owner).fundRewardPool(COIN("10"))).to.not.be.reverted;
+        expect(await rewards.rewardPoolBalance()).to.equal(cap);
+    });
+
+    it("grants the operator flag to the accepted owner after a two-step transfer", async function () {
+        const { rewards, owner, stranger } = await loadFixture(deploySystem);
+        await rewards.connect(owner).transferOwnership(stranger.address);
+        expect(await rewards.pendingOwner()).to.equal(stranger.address);
+        await rewards.connect(stranger).acceptOwnership();
+
+        expect(await rewards.owner()).to.equal(stranger.address);
+        expect(await rewards.operators(stranger.address)).to.equal(true);
+        expect(await rewards.pendingOwner()).to.equal(ethers.ZeroAddress);
+    });
+
+    it("sweeps only the surplus above the pool and escrowed stake", async function () {
+        const { token, rewards, owner, user, stranger } = await loadFixture(deploySystem);
+        const address = await rewards.getAddress();
+
+        // The pool plus escrow is committed user collateral and reward liability.
+        await expect(rewards.connect(owner).sweepExcessToken(stranger.address, COIN("1")))
+            .to.be.revertedWithCustomError(rewards, "InsufficientSurplus");
+
+        // A mistaken transfer creates a surplus that the owner may recover.
+        await token.connect(user).transfer(address, COIN("3"));
+        await expect(rewards.connect(stranger).sweepExcessToken(stranger.address, COIN("1")))
+            .to.be.revertedWithCustomError(rewards, "OwnableUnauthorizedAccount");
+        await expect(rewards.connect(owner).sweepExcessToken(stranger.address, COIN("4")))
+            .to.be.revertedWithCustomError(rewards, "InsufficientSurplus");
+
+        const before = await token.balanceOf(stranger.address);
+        await expect(rewards.connect(owner).sweepExcessToken(stranger.address, COIN("3")))
+            .to.emit(rewards, "ExcessTokenSwept").withArgs(stranger.address, COIN("3"));
+        expect(await token.balanceOf(stranger.address)).to.equal(before + COIN("3"));
+
+        // The committed balance is untouched by the sweep.
+        expect(await rewards.rewardPoolBalance()).to.equal(COIN("1000"));
+        expect(await rewards.escrowedStakeTotal()).to.equal(0);
+        expect(await token.balanceOf(address)).to.equal(COIN("1000"));
+    });
+
+    it("refuses to sweep while paused", async function () {
+        const { token, rewards, owner, user, stranger } = await loadFixture(deploySystem);
+        await token.connect(user).transfer(await rewards.getAddress(), COIN("1"));
+        await rewards.connect(owner).pause();
+        await expect(rewards.connect(owner).sweepExcessToken(stranger.address, COIN("1")))
+            .to.be.revertedWithCustomError(rewards, "EnforcedPause");
+    });
+});

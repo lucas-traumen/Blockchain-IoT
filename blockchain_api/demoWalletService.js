@@ -56,6 +56,26 @@ function normalizeSessionRef(value) {
     return ref;
 }
 
+const SESSION_ID_PREFIX = "hrc-";
+const SESSION_ID_SALT = "hrc-session-id-v1";
+const LEGACY_SESSION_ID = /^demo-([A-Za-z0-9_.:-]{1,64})-/;
+
+// Session identity no longer encodes the owner. Authorization is decided by the
+// stored record's userId, not by parsing the identifier.
+function legacySessionOwner(sessionId) {
+    const match = LEGACY_SESSION_ID.exec(String(sessionId ?? ""));
+    return match ? match[1] : null;
+}
+
+// Deterministic per (user, ref) so retries stay idempotent, but opaque: the
+// identifier no longer reveals which demo account owns the session.
+function newSessionId(userId, sessionRef) {
+    const ref = normalizeSessionRef(sessionRef);
+    const digest = crypto.createHmac("sha256", SESSION_ID_SALT)
+        .update(`${userId}\u0000${ref}`, "utf8").digest("hex").slice(0, 8);
+    return `${SESSION_ID_PREFIX}${digest}-${ref}`;
+}
+
 function readTuple(tuple) {
     return {
         beneficiary: tuple.beneficiary ?? tuple[0],
@@ -145,13 +165,43 @@ class DemoWalletService {
         };
         const token = new ethers.Contract(tokenAddress, config.tokenAbi, provider);
         const rewards = new ethers.Contract(rewardAddress, config.rewardAbi, provider);
-        const store = new DemoSessionStore(env.HRC_DEMO_SESSION_STORE_PATH || path.join(__dirname, "data", "demo-sessions.json"));
+        const sessionFile = env.HRC_DEMO_SESSION_STORE_PATH || path.join(__dirname, "data", "demo-sessions.json");
+        const store = env.HRC_APP_STORE === "sqlite"
+            ? (() => { const { SqliteDemoSessionStore } = require("./sqliteStores"); return new SqliteDemoSessionStore(env.HRC_APP_SESSION_DB_PATH || sessionFile.replace(/\.json$/, ".db")); })()
+            : new DemoSessionStore(sessionFile);
         const transactionSender = new DurableContractWriter({ provider, store });
         return new DemoWalletService({ provider, token, rewards, config, users, store, transactionSender, tokens: env });
     }
 
     listAccounts() {
         return [ADMIN, ...[...this.users.values()].map(user => ({ userId: user.userId, label: user.label, role: user.role, walletAddress: user.walletAddress }))];
+    }
+
+    /// @notice Wallet-first onboarding. The user holds their own key, so the
+    ///         backend never receives a signer for this account: it can only read
+    ///         chain state and prepare transactions for the wallet to sign.
+    walletUser(walletAddress) {
+        const address = ethers.getAddress(walletAddress);
+        const userId = "wallet_" + address.slice(2).toLowerCase();
+        const existing = this.users.get(userId);
+        if (existing) return existing;
+        const user = {
+            userId,
+            label: address.slice(0, 6) + "..." + address.slice(-4),
+            role: "customer",
+            wallet: null,
+            walletAddress: address,
+            walletFirst: true
+        };
+        this.users.set(userId, user);
+        return user;
+    }
+
+    loginWithWallet(walletAddress) {
+        const user = this.walletUser(walletAddress);
+        const token = crypto.randomBytes(32).toString("base64url");
+        this.sessionsByToken.set(token, { userId: user.userId, createdAt: Date.now() });
+        return { success: true, token, user: this.publicUser(user) };
     }
 
     login(userId) {
@@ -175,13 +225,33 @@ class DemoWalletService {
     }
 
     publicUser(user) {
-        return { userId: user.userId, label: user.label, role: user.role, walletAddress: user.walletAddress || null };
+        return {
+            userId: user.userId,
+            label: user.label,
+            role: user.role,
+            walletAddress: user.walletAddress || null,
+            walletFirst: Boolean(user.walletFirst)
+        };
     }
 
     _user(userId) {
         const user = this.users.get(userId);
         if (!user) throw new ApiError(403, "DEMO_ACCOUNT_REQUIRED", "A demo user account is required");
         return user;
+    }
+
+    _signer(user) {
+        if (!user.wallet) {
+            throw new ApiError(409, "WALLET_SIGNATURE_REQUIRED",
+                "This account is wallet-first. Sign the transaction in your own wallet.");
+        }
+        return user.wallet;
+    }
+
+    /// @notice True when the account signs its own transactions, so the backend
+    ///         must only prepare payloads instead of broadcasting them.
+    isWalletFirst(userId) {
+        return Boolean(this.users.get(userId)?.walletFirst);
     }
 
     async _requireLocalChain() {
@@ -272,14 +342,20 @@ class DemoWalletService {
         const supplied = input.sessionId;
         if (supplied) {
             const requested = identifier(supplied, "sessionId");
-            if (requested.startsWith("demo-user_1-") || requested.startsWith("demo-user_2-")) {
-                if (!requested.startsWith(`demo-${userId}-`)) throw new ApiError(403, "SESSION_OWNER_MISMATCH", "sessionId belongs to another demo user");
+            const legacyOwner = legacySessionOwner(requested);
+            if (legacyOwner) {
+                if (legacyOwner !== userId) throw new ApiError(403, "SESSION_OWNER_MISMATCH", "sessionId belongs to another user");
                 return requested;
             }
-            return `demo-${userId}-${normalizeSessionRef(requested)}`;
+            if (requested.startsWith(SESSION_ID_PREFIX)) return requested;
+            return newSessionId(userId, requested);
         }
-        return `demo-${userId}-${normalizeSessionRef(input.sessionRef)}`;
+        return newSessionId(userId, input.sessionRef);
     }
+
+    legacySessionOwner(sessionId) { return legacySessionOwner(sessionId); }
+
+    legacySessionOwner(sessionId) { return legacySessionOwner(sessionId); }
 
     async _readLogs(address, topics) {
         const latest = await this.provider.getBlockNumber();
@@ -387,9 +463,12 @@ class DemoWalletService {
     async getSession(userId, inputSessionId) {
         const user = this._user(userId);
         const sessionId = identifier(inputSessionId, "sessionId");
-        if (!sessionId.startsWith(`demo-${userId}-`)) throw new ApiError(403, "SESSION_OWNER_MISMATCH", "session does not belong to this demo user");
         const record = this.store.get(sessionId);
-        if (record && record.userId !== user.userId) throw new ApiError(403, "SESSION_OWNER_MISMATCH", "session does not belong to this demo user");
+        if (record) {
+            if (record.userId !== user.userId) throw new ApiError(403, "SESSION_OWNER_MISMATCH", "session does not belong to this user");
+        } else if (legacySessionOwner(sessionId) && legacySessionOwner(sessionId) !== user.userId) {
+            throw new ApiError(403, "SESSION_OWNER_MISMATCH", "session does not belong to this user");
+        }
         const fallback = record || { sessionId, sessionRef: null, userId: user.userId, createdAt: new Date(0).toISOString() };
         const key = sessionKey(sessionId);
         const tuple = await this.rewards.getSession(key);
@@ -464,4 +543,4 @@ function getDemoWalletService(env = process.env) {
 }
 function resetDemoWalletServiceForTests() { singleton = undefined; }
 
-module.exports = { DemoWalletService, getDemoWalletService, resetDemoWalletServiceForTests, normalizeSessionRef };
+module.exports = { DemoWalletService, getDemoWalletService, resetDemoWalletServiceForTests, normalizeSessionRef, legacySessionOwner, newSessionId };

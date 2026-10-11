@@ -1395,3 +1395,77 @@ be exercised on a machine with Docker Compose.**
 - **Evidence:** `npx hardhat test` 74 passing, `npm --prefix blockchain_api test`
   103/103, `scripts/smoke_reward_service.js` all outcomes as expected, invariant
   `balanceOf(rewards) == rewardPoolBalance + escrowedStakeTotal` = true.
+
+## R17 — Wallet-first migration (ĐỀ XUẤT, CHỜ DUYỆT) — 2026-10-12
+
+Đề xuất chuyển sang mô hình wallet-first: người dùng tự giữ ví, backend giữ vai
+trò oracle/operator xác nhận dữ liệu cảm biến. **Chưa triển khai — chờ duyệt.**
+
+### A. Đối chiếu đề xuất với code hiện tại
+
+Đã có sẵn (không phải việc mới):
+
+| Hạng mục đề xuất | Thực tế trong repo |
+| --- | --- |
+| Cờ `HRC_APP_AUTH_MODE` | Đã có, giá trị `demo` (mặc định) / `wallet`; route ví bị chặn 403 khi ở mode `demo` (`server.js`) |
+| Đăng nhập ví EIP-191 + nonce + TTL + session | `customerService.js`: `createChallenge` / `authenticateWallet`, nonce 24 byte, TTL 300s, session 86400s |
+| 4 endpoint auth | `/api/auth/challenge`, `/api/auth/wallet`, `/api/auth/logout`, `/api/me` |
+| Owner 2 bước + role operator + event role | `pendingOwner`/`acceptOwnership`, `operators`, `OperatorAdded/Removed`, `CannotRemoveOwner` |
+| Session gắn chủ sở hữu | `liveSessionService.owner()` trả `SESSION_OWNER_MISMATCH` |
+| Bắt buộc thời lượng tối thiểu on-chain | `MIN_REWARD_DURATION = 30s`, bonus cap `MAX_REWARD_BONUS_PERCENT = 100` |
+| Kế toán pool/escrow | `rewardPoolBalance` + `escrowedStakeTotal`, invariant đã audit (R16) |
+| Chain chỉ lưu address/sessionId/outcome/amount/evidenceHash/timestamp | Đúng như `SessionSettled`; không có tên/email on-chain |
+
+Delta thật cần làm:
+
+1. **SIWE (EIP-4361)** — hiện message là chuỗi tự chế, chưa phải SIWE chuẩn.
+2. **Bỏ hình dạng demo trong session ID** — `owner()` còn ép prefix `demo-<userId>-`.
+3. **OpenZeppelin** — contract không import OZ (`Ownable2Step`, `AccessControl`,
+   `ReentrancyGuard`, `Pausable` đang viết tay).
+4. **Pausable + trần reward pool** — chưa có `pause()` và chưa giới hạn `fundRewardPool`.
+5. **Tham số hóa policy** — `MIN_REWARD_DURATION`/bonus đang là `constant`.
+6. **DB thay JSON** — `customerStore.js`/`demoSessionStore.js` là JSON + single-writer lock.
+7. **Rút tiền / penalty treasury / slashing operator** — chưa có luồng rút.
+8. **Admin API + audit log** — chưa có.
+9. **UI wallet-first** — dashboard vẫn dùng account picker demo.
+
+### B. Rủi ro phải chốt trước khi làm
+
+- Đổi contract ⇒ **phải redeploy**, sinh địa chỉ mới, cập nhật
+  `deployments/reward-localhost.json`, `compose.env`, artifact ABI và test.
+- Bỏ `demo` mode ⇒ vỡ `run_local_demo.sh`, browser verifier và kịch bản demo
+  đang dùng hằng ngày. Đề xuất **giữ song song** hai mode.
+- Đổi format session ID ⇒ dữ liệu `.runtime/**/demo-sessions.json` cũ không đọc được.
+- Chuyển JSON → DB ⇒ phải có migration + backup, ảnh hưởng docker volume.
+
+### C. Thứ tự đề xuất (từng phase nhỏ, có rollback)
+
+- **P1** SIWE sau cờ `HRC_APP_AUTH_MODE=siwe`, giữ EIP-191 cũ để tương thích.
+- **P2** Bỏ ràng buộc prefix session ID, giữ đọc dữ liệu cũ.
+- **P3** OZ refactor + `Pausable` + trần pool; redeploy local, cập nhật ABI/env.
+- **P4** Tham số hóa policy on-chain (owner cấu hình minDuration/maxBonus).
+- **P5** DB (SQLite trước, Postgres sau) + migration từ JSON.
+- **P6** Admin API + audit log + luồng rút tiền treasury.
+- **P7** Dashboard wallet-first (connect ví, ký SIWE), giữ demo như chế độ phụ.
+
+### D. Trạng thái triển khai (đã xong)
+
+- **P1** ✅ SIWE sau cờ `HRC_APP_AUTH_MODE=siwe` (`POST /api/auth/challenge` +
+  `POST /api/auth/wallet`), EIP-191 cũ giữ nguyên để tương thích.
+- **P2** ✅ Bỏ ràng buộc prefix session ID; vẫn đọc được dữ liệu cũ.
+- **P3** ✅ OZ refactor + `Pausable` + trần `maxRewardPool`; contract đã redeploy
+  local (`0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82`).
+- **P4** ✅ Tham số hóa policy on-chain: `MIN_REWARD_DURATION=30`,
+  `FULL_BONUS_DURATION=60`, `MAX_REWARD_BONUS_PERCENT=100` + `setPolicy()`.
+  Thưởng scale tuyến tính: 30s→3 HRC, 45s→4.5 HRC, ≥60s→6 HRC (chạm trần +100%).
+- **P5** ✅ SQLite store sau cờ `HRC_APP_STORE=sqlite` + script migration JSON→SQLite.
+- **P6** ✅ Admin API + audit log (`GET /api/admin/audit`) + luồng rút treasury
+  (`sweepExcessToken`, `setPenaltyTreasury`).
+- **P7** ✅ Dashboard wallet-first (connect ví, ký SIWE); demo giữ làm chế độ phụ.
+
+**Sự cố đã sửa trong quá trình xác minh:** `RewardService.getOperatorStatus()`
+và `getAdminStatus()` không set `success: true`, khiến route admin trả **503**
+dù payload hợp lệ (test cũ dùng fake service luôn có `success` nên che lỗi).
+Đã sửa và thêm regression test `blockchain_api/tests/rewardServiceStatus.test.js`.
+
+Trạng thái: **P1–P7 đã triển khai và xác minh trên local stack.**

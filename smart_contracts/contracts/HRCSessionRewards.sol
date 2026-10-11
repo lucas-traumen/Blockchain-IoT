@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
 interface IHRCRewardToken {
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -11,20 +15,28 @@ interface IHRCRewardToken {
 /// @notice Session stake, duration-based safety reward and violation penalty.
 /// @dev The contract does not mint tokens. It moves fixed-supply ERC-20 tokens
 ///      between users, this contract's reward pool, and the penalty treasury.
-contract HRCSessionRewards {
+///      Ownership uses OpenZeppelin Ownable2Step, reentrancy is guarded by
+///      ReentrancyGuard and settlement can be halted with Pausable.
+contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     // ======================================================
     // SESSION REWARD POLICY
     // ======================================================
 
     // The project token uses 18 decimals, so 1 coin is 1 ether unit.
-    uint256 public constant stakeAmount = 2 ether;
-    // rewardAmount is the base reward at the 30-second validity threshold.
-    uint256 public constant rewardAmount = 3 ether;
-    uint256 public constant penaltyAmount = 2 ether;
-    uint256 public constant MIN_REWARD_DURATION = 30 seconds;
-    uint256 public constant FULL_BONUS_DURATION = 60 seconds;
-    uint256 public constant MAX_REWARD_BONUS_PERCENT = 100;
+    // These are owner-configurable so the policy can be tuned without a
+    // redeploy. The names are kept from the constant-only version so the
+    // backend read API and existing ABI consumers keep working.
+    uint256 public stakeAmount = 2 ether;
+    // rewardAmount is the base reward at the MIN_REWARD_DURATION threshold.
+    uint256 public rewardAmount = 3 ether;
+    uint256 public penaltyAmount = 2 ether;
+    uint256 public MIN_REWARD_DURATION = 30 seconds;
+    uint256 public FULL_BONUS_DURATION = 60 seconds;
+    uint256 public MAX_REWARD_BONUS_PERCENT = 100;
     uint256 public constant SECONDS_PER_DAY = 1 days;
+    // Upper bound a single funder can hold in the pool. It bounds the total
+    // outstanding reward liability of this contract.
+    uint256 public maxRewardPool = 100000 ether;
 
     // Outcome values submitted by the trusted backend/operator.
     uint8 public constant OUTCOME_VALID_NO_VIOLATION = 0;
@@ -43,8 +55,6 @@ contract HRCSessionRewards {
     // ERRORS
     // ======================================================
 
-    error NotOwner();
-    error NotPendingOwner();
     error NotOperator();
     error InvalidAddress();
     error InvalidAmount();
@@ -57,6 +67,9 @@ contract HRCSessionRewards {
     error SessionAlreadySettled();
     error BeneficiaryMismatch();
     error CannotRemoveOwner();
+    error RewardPoolCapExceeded(uint256 maximum, uint256 requested);
+    error InsufficientSurplus(uint256 requested, uint256 available);
+    error InvalidPolicy();
     error TokenTransferFailed();
 
     // ======================================================
@@ -82,8 +95,6 @@ contract HRCSessionRewards {
     address public immutable rewardPool;
     address public penaltyTreasury;
 
-    address public owner;
-    address public pendingOwner;
     mapping(address => bool) public operators;
 
     mapping(bytes32 => Session) public sessions;
@@ -94,8 +105,6 @@ contract HRCSessionRewards {
     // temporarily holds both reward-pool tokens and active session stakes.
     uint256 public rewardPoolBalance;
     uint256 public escrowedStakeTotal;
-
-    uint256 private _reentrancyState = 1;
 
     // ======================================================
     // EVENTS
@@ -147,37 +156,29 @@ contract HRCSessionRewards {
 
     event OperatorAdded(address indexed operator);
     event OperatorRemoved(address indexed operator);
-    event OwnershipTransferStarted(
-        address indexed previousOwner,
-        address indexed newOwner
+    event PolicyUpdated(
+        uint256 stakeAmount,
+        uint256 rewardAmount,
+        uint256 penaltyAmount,
+        uint256 minRewardDuration,
+        uint256 fullBonusDuration,
+        uint256 maxRewardBonusPercent
     );
-    event OwnershipTransferred(
-        address indexed previousOwner,
-        address indexed newOwner
-    );
+    event MaxRewardPoolUpdated(uint256 previousMaximum, uint256 newMaximum);
+    event RewardPoolPaused(address indexed operator);
+    event RewardPoolUnpaused(address indexed operator);
+    event ExcessTokenSwept(address indexed to, uint256 amount);
 
     // ======================================================
     // MODIFIERS / CONSTRUCTOR
     // ======================================================
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
 
     modifier onlyOperator() {
         if (!operators[msg.sender]) revert NotOperator();
         _;
     }
 
-    modifier nonReentrant() {
-        if (_reentrancyState != 1) revert TokenTransferFailed();
-        _reentrancyState = 2;
-        _;
-        _reentrancyState = 1;
-    }
-
-    constructor(address rewardToken, address treasury) {
+    constructor(address rewardToken, address treasury) Ownable(msg.sender) {
         if (rewardToken == address(0) || treasury == address(0)) {
             revert InvalidAddress();
         }
@@ -185,30 +186,19 @@ contract HRCSessionRewards {
         token = rewardToken;
         rewardPool = address(this);
         penaltyTreasury = treasury;
-        owner = msg.sender;
         operators[msg.sender] = true;
+    }
+
+    /// @dev Keeping the operator flag in sync with ownership keeps the existing
+    ///      operator read API authoritative after a two-step transfer.
+    function _transferOwnership(address newOwner) internal override {
+        operators[newOwner] = true;
+        super._transferOwnership(newOwner);
     }
 
     // ======================================================
     // OWNERSHIP AND OPERATORS
     // ======================================================
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert InvalidAddress();
-        pendingOwner = newOwner;
-        emit OwnershipTransferStarted(owner, newOwner);
-    }
-
-    function acceptOwnership() external {
-        if (msg.sender != pendingOwner) revert NotPendingOwner();
-
-        address previousOwner = owner;
-        owner = msg.sender;
-        pendingOwner = address(0);
-        operators[msg.sender] = true;
-
-        emit OwnershipTransferred(previousOwner, msg.sender);
-    }
 
     function addOperator(address operator) external onlyOwner {
         if (operator == address(0)) revert InvalidAddress();
@@ -217,9 +207,87 @@ contract HRCSessionRewards {
     }
 
     function removeOperator(address operator) external onlyOwner {
-        if (operator == owner) revert CannotRemoveOwner();
+        if (operator == owner()) revert CannotRemoveOwner();
         operators[operator] = false;
         emit OperatorRemoved(operator);
+    }
+
+    // ======================================================
+    // POLICY AND EMERGENCY CONTROLS
+    // ======================================================
+
+    /// @notice Update the reward policy. Existing unsettled sessions keep their
+    ///         staked amount and are settled with the new policy.
+    function setPolicy(
+        uint256 newStakeAmount,
+        uint256 newRewardAmount,
+        uint256 newPenaltyAmount,
+        uint256 newMinRewardDuration,
+        uint256 newFullBonusDuration,
+        uint256 newMaxRewardBonusPercent
+    ) external onlyOwner {
+        if (
+            newStakeAmount == 0 ||
+            newRewardAmount == 0 ||
+            newPenaltyAmount == 0 ||
+            newPenaltyAmount > newStakeAmount ||
+            newMinRewardDuration == 0 ||
+            newFullBonusDuration <= newMinRewardDuration ||
+            newMaxRewardBonusPercent > 1000
+        ) revert InvalidPolicy();
+
+        stakeAmount = newStakeAmount;
+        rewardAmount = newRewardAmount;
+        penaltyAmount = newPenaltyAmount;
+        MIN_REWARD_DURATION = newMinRewardDuration;
+        FULL_BONUS_DURATION = newFullBonusDuration;
+        MAX_REWARD_BONUS_PERCENT = newMaxRewardBonusPercent;
+
+        emit PolicyUpdated(
+            newStakeAmount,
+            newRewardAmount,
+            newPenaltyAmount,
+            newMinRewardDuration,
+            newFullBonusDuration,
+            newMaxRewardBonusPercent
+        );
+    }
+
+    function setMaxRewardPool(uint256 newMaximum) external onlyOwner {
+        if (newMaximum == 0 || newMaximum < rewardPoolBalance) {
+            revert InvalidPolicy();
+        }
+
+        uint256 previousMaximum = maxRewardPool;
+        maxRewardPool = newMaximum;
+        emit MaxRewardPoolUpdated(previousMaximum, newMaximum);
+    }
+
+    /// @notice Halt new stakes and pool funding. Settlement stays open so users
+    ///         can always return a session and recover their stake.
+    function pause() external onlyOwner {
+        _pause();
+        emit RewardPoolPaused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+        emit RewardPoolUnpaused(msg.sender);
+    }
+
+    /// @notice Sweep tokens sent to this contract by mistake. Only the surplus
+    ///         above the reward pool and escrowed stake can be moved, so this can
+    ///         never touch user collateral or funded rewards.
+    function sweepExcessToken(address to, uint256 amount) external onlyOwner nonReentrant whenNotPaused {
+        if (to == address(0)) revert InvalidAddress();
+        if (amount == 0) revert InvalidAmount();
+        uint256 committed = rewardPoolBalance + escrowedStakeTotal;
+        uint256 balance = IHRCRewardToken(token).balanceOf(address(this));
+        if (balance <= committed || amount > balance - committed) {
+            revert InsufficientSurplus(amount, balance > committed ? balance - committed : 0);
+        }
+        _transferTo(to, amount);
+        emit ExcessTokenSwept(to, amount);
     }
 
     function setPenaltyTreasury(address newTreasury) external onlyOwner {
@@ -240,11 +308,16 @@ contract HRCSessionRewards {
         external
         onlyOwner
         nonReentrant
+        whenNotPaused
     {
         if (amount == 0) revert InvalidAmount();
+        uint256 requested = rewardPoolBalance + amount;
+        if (requested > maxRewardPool) {
+            revert RewardPoolCapExceeded(maxRewardPool, requested);
+        }
         _transferFrom(msg.sender, rewardPool, amount);
 
-        rewardPoolBalance += amount;
+        rewardPoolBalance = requested;
         emit RewardPoolFunded(msg.sender, amount, rewardPoolBalance);
     }
 
@@ -253,7 +326,7 @@ contract HRCSessionRewards {
     // ======================================================
 
     /// @notice User starts a session and locks exactly stakeAmount() tokens.
-    function startSession(bytes32 sessionId) external nonReentrant {
+    function startSession(bytes32 sessionId) external nonReentrant whenNotPaused {
         _startSession(sessionId, msg.sender);
     }
 
@@ -262,6 +335,7 @@ contract HRCSessionRewards {
         external
         onlyOperator
         nonReentrant
+        whenNotPaused
     {
         _startSession(sessionId, beneficiary);
     }
@@ -531,7 +605,7 @@ contract HRCSessionRewards {
     ///      integer seconds; the result is still exact to the token decimals.
     function rewardAmountForDuration(uint256 durationSeconds)
         public
-        pure
+        view
         returns (uint256)
     {
         if (durationSeconds <= MIN_REWARD_DURATION) return rewardAmount;

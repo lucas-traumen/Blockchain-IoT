@@ -80,6 +80,129 @@ class RewardService {
         return withSignerWrite(await this.wallet.getAddress(), () => this._startSession(input));
     }
 
+    // ======================================================
+    // OWNER-ONLY OPERATIONS
+    // ======================================================
+
+    async getOperatorStatus() {
+        const [operator, owner, paused, poolBalance, maxRewardPool] = await Promise.all([
+            this.wallet.getAddress(),
+            this.contract.owner(),
+            this.contract.paused(),
+            this.contract.rewardPoolBalance(),
+            this.contract.maxRewardPool()
+        ]);
+        return {
+            success: true,
+            operator,
+            owner,
+            isOwner: operator.toLowerCase() === owner.toLowerCase(),
+            paused: Boolean(paused),
+            rewardPoolBalance: ethers.formatEther(poolBalance),
+            maxRewardPool: ethers.formatEther(maxRewardPool)
+        };
+    }
+
+    async fundRewardPool(amount) {
+        if (!/^\d+$/.test(String(amount)) || BigInt(amount) <= 0n) {
+            throw new ApiError(400, "INVALID_PAYLOAD", "amount must be a positive wei value");
+        }
+        return withSignerWrite(await this.wallet.getAddress(), async () => {
+            try {
+                const transaction = await this.contract.fundRewardPool(BigInt(amount));
+                const receipt = await transaction.wait(this.waitConfirmations);
+                return { success: true, transactionHash: transaction.hash, blockNumber: receipt.blockNumber };
+            } catch (error) {
+                throw new ApiError(503, "REWARD_FUND_FAILED", error.shortMessage || error.message || "Funding the reward pool failed");
+            }
+        });
+    }
+
+    async setPaused(paused) {
+        return withSignerWrite(await this.wallet.getAddress(), async () => {
+            try {
+                const transaction = await (paused ? this.contract.pause() : this.contract.unpause());
+                const receipt = await transaction.wait(this.waitConfirmations);
+                return { success: true, paused: Boolean(paused), transactionHash: transaction.hash, blockNumber: receipt.blockNumber };
+            } catch (error) {
+                throw new ApiError(503, "REWARD_PAUSE_FAILED", error.shortMessage || error.message || "Changing the pause state failed");
+            }
+        });
+    }
+
+    async setPolicy(policy) {
+        const fields = ["stakeAmount", "rewardAmount", "penaltyAmount", "minRewardDuration", "fullBonusDuration", "maxRewardBonusPercent"];
+        const values = fields.map(field => policy?.[field]);
+        if (values.some(value => !/^\d+$/.test(String(value)) || BigInt(value) <= 0n)) {
+            throw new ApiError(400, "INVALID_PAYLOAD", `policy requires positive integers: ${fields.join(", ")}`);
+        }
+        return withSignerWrite(await this.wallet.getAddress(), async () => {
+            try {
+                const transaction = await this.contract.setPolicy(...values.map(BigInt));
+                const receipt = await transaction.wait(this.waitConfirmations);
+                return { success: true, transactionHash: transaction.hash, blockNumber: receipt.blockNumber };
+            } catch (error) {
+                throw new ApiError(503, "REWARD_POLICY_FAILED", error.shortMessage || error.message || "Updating the policy failed");
+            }
+        });
+    }
+
+    /// @notice Penalties are paid straight to the penalty treasury wallet, so the
+    ///         contract holds no accrued treasury balance. What the owner can
+    ///         recover from the contract is only the surplus above the reward pool
+    ///         and escrowed stake, for example tokens sent here by mistake.
+    async sweepExcessToken(to, amount) {
+        if (!ethers.isAddress(to)) throw new ApiError(400, "INVALID_PAYLOAD", "to must be an address");
+        if (!/^\d+$/.test(String(amount)) || BigInt(amount) <= 0n) {
+            throw new ApiError(400, "INVALID_PAYLOAD", "amount must be a positive wei value");
+        }
+        return withSignerWrite(await this.wallet.getAddress(), async () => {
+            try {
+                const transaction = await this.contract.sweepExcessToken(to, BigInt(amount));
+                const receipt = await transaction.wait(this.waitConfirmations);
+                return { success: true, transactionHash: transaction.hash, blockNumber: receipt.blockNumber };
+            } catch (error) {
+                throw new ApiError(503, "REWARD_SWEEP_FAILED", error.shortMessage || error.message || "Sweeping excess tokens failed");
+            }
+        });
+    }
+
+    async setPenaltyTreasury(treasury) {
+        if (!ethers.isAddress(treasury)) throw new ApiError(400, "INVALID_PAYLOAD", "treasury must be an address");
+        return withSignerWrite(await this.wallet.getAddress(), async () => {
+            try {
+                const transaction = await this.contract.setPenaltyTreasury(treasury);
+                const receipt = await transaction.wait(this.waitConfirmations);
+                return { success: true, treasury, transactionHash: transaction.hash, blockNumber: receipt.blockNumber };
+            } catch (error) {
+                throw new ApiError(503, "REWARD_TREASURY_FAILED", error.shortMessage || error.message || "Updating the penalty treasury failed");
+            }
+        });
+    }
+
+    /// @notice Treasury report for the admin surface: where penalties go, what the
+    ///         treasury holds, and what is still locked in the contract.
+    async getAdminStatus() {
+        const status = await this.getOperatorStatus();
+        const [treasury, tokenAddress] = await Promise.all([
+            this.contract.penaltyTreasury(),
+            this.contract.token()
+        ]);
+        const token = new ethers.Contract(tokenAddress, ["function balanceOf(address) view returns (uint256)"], this.provider);
+        const [treasuryBalance, contractBalance] = await Promise.all([
+            token.balanceOf(treasury),
+            token.balanceOf(await this.contract.getAddress())
+        ]);
+        return {
+            ...status,
+            success: true,
+            penaltyTreasury: treasury,
+            token: tokenAddress,
+            treasuryBalance: ethers.formatEther(treasuryBalance),
+            contractTokenBalance: ethers.formatEther(contractBalance)
+        };
+    }
+
     async _startSession(input) {
         if (!input || typeof input !== "object" || Array.isArray(input)) {
             throw new ApiError(400, "INVALID_PAYLOAD", "payload must be an object");

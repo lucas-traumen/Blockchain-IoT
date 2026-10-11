@@ -59,7 +59,9 @@ test('concurrent retries stake once and reopened API reads the same session from
     const result = await Promise.all([f.service.startSession('user_1', input), f.service.startSession('user_1', input)]);
     assert.equal(f.state.starts, 1);
     assert.deepEqual(result.map(row => row.duplicate), [false, true]);
-    const id = 'demo-user_1-retry-test';
+    const id = result[0].sessionId;
+    assert.match(id, /^hrc-[0-9a-f]{8}-retry-test$/);
+    assert.equal(result[1].sessionId, id);
     f.service.store = new DemoSessionStore(path.join(f.directory, 'sessions.json'));
     const after = await f.service.getSession('user_1', id);
     assert.equal(after.session.stakedAmount, '2.0');

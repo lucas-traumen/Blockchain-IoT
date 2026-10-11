@@ -4,6 +4,9 @@ const { ethers } = require("ethers");
 const { ApiError, identifier } = require("./eventPayload");
 const { CustomerStore } = require("./customerStore");
 const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
+const { buildSiweMessage, parseSiweMessage } = require("./siweMessage");
+
+const AUTH_MODES = new Set(["wallet", "siwe"]);
 
 function now() {
     return new Date().toISOString();
@@ -77,11 +80,13 @@ function publicUser(user) {
 }
 
 class CustomerService {
-    constructor({ store, chainId = 31337, challengeTtlMs = 300000, sessionTtlMs = 86400000, adminWallets = [], appOrigin = "http://localhost:8080" } = {}) {
+    constructor({ store, chainId = 31337, challengeTtlMs = 300000, sessionTtlMs = 86400000, adminWallets = [], appOrigin = "http://localhost:8080", authMode = "wallet" } = {}) {
         this.store = store;
         this.chainId = safeChainId(chainId);
         this.challengeTtlMs = positiveTtl(challengeTtlMs, "challengeTtlMs");
         this.sessionTtlMs = positiveTtl(sessionTtlMs, "sessionTtlMs");
+        if (!AUTH_MODES.has(authMode)) throw new Error("HRC_APP_AUTH_MODE must be wallet or siwe");
+        this.authMode = authMode;
         const origin = new URL(appOrigin);
         if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) throw new Error("HRC_APP_ORIGIN must be an HTTP(S) origin");
         this.appOrigin = origin.origin;
@@ -93,14 +98,17 @@ class CustomerService {
         const configuredAdmins = String(env.HRC_APP_ADMIN_WALLETS || "")
             .split(",").map(value => value.trim()).filter(Boolean);
         const network = configuredNetwork(env);
-        const store = new CustomerStore(file);
+        const store = env.HRC_APP_STORE === "sqlite"
+            ? (() => { const { SqliteCustomerStore } = require("./sqliteStores"); return new SqliteCustomerStore(env.HRC_APP_DB_PATH || file.replace(/\.json$/, ".db")); })()
+            : new CustomerStore(file);
         const service = new CustomerService({
             store,
             chainId: Number(env.HRC_APP_CHAIN_ID || chainIdForNetwork(network)),
             challengeTtlMs: Number(env.HRC_AUTH_CHALLENGE_TTL_S || 300) * 1000,
             sessionTtlMs: Number(env.HRC_APP_SESSION_TTL_S || 86400) * 1000,
             adminWallets: configuredAdmins,
-            appOrigin: env.HRC_APP_ORIGIN || "http://localhost:8080"
+            appOrigin: env.HRC_APP_ORIGIN || "http://localhost:8080",
+            authMode: env.HRC_APP_AUTH_MODE === "siwe" ? "siwe" : "wallet"
         });
         process.once("exit", () => store.close());
         return service;
@@ -115,17 +123,27 @@ class CustomerService {
         const issuedAt = now();
         const expiresAt = new Date(Date.now() + this.challengeTtlMs).toISOString();
         const nonce = crypto.randomBytes(24).toString("hex");
-        const message = [
-            `HRC Safety Log at ${this.appOrigin} wants to verify ownership of this wallet.`,
-            "",
-            `Wallet: ${ethers.getAddress(walletAddress)}`,
-            `Chain ID: ${chainId}`,
-            `Nonce: ${nonce}`,
-            `Issued At: ${issuedAt}`,
-            `Expiration Time: ${expiresAt}`
-        ].join("\n");
+        const message = this.authMode === "siwe"
+            ? buildSiweMessage({
+                domain: new URL(this.appOrigin).host,
+                address: walletAddress,
+                uri: this.appOrigin,
+                chainId,
+                nonce,
+                issuedAt,
+                expirationTime: expiresAt
+            })
+            : [
+                `HRC Safety Log at ${this.appOrigin} wants to verify ownership of this wallet.`,
+                "",
+                `Wallet: ${ethers.getAddress(walletAddress)}`,
+                `Chain ID: ${chainId}`,
+                `Nonce: ${nonce}`,
+                `Issued At: ${issuedAt}`,
+                `Expiration Time: ${expiresAt}`
+            ].join("\n");
         this.store.saveChallenge({ walletAddress, chainId, nonce, message, issuedAt, expiresAt, used: false });
-        return { success: true, walletAddress: ethers.getAddress(walletAddress), chainId, message, expiresAt };
+        return { success: true, mode: this.authMode, walletAddress: ethers.getAddress(walletAddress), chainId, message, expiresAt };
     }
 
     authenticateWallet(input) {
@@ -147,6 +165,7 @@ class CustomerService {
         if (Date.parse(challenge.expiresAt) <= Date.now()) {
             throw new ApiError(401, "CHALLENGE_EXPIRED", "wallet challenge has expired");
         }
+        if (this.authMode === "siwe") this.verifySiweChallenge(message, challenge, walletAddress, chainId);
         let recovered;
         try { recovered = ethers.verifyMessage(message, signature).toLowerCase(); }
         catch { throw new ApiError(401, "SIGNATURE_INVALID", "wallet signature could not be verified"); }
@@ -173,7 +192,30 @@ class CustomerService {
         const token = crypto.randomBytes(32).toString("base64url");
         this.store.saveSession({ tokenHash: hash(token), userId, createdAt: timestamp,
             expiresAt });
-        return { success: true, token, expiresAt, user: publicUser(user) };
+        return { success: true, mode: this.authMode, token, expiresAt, user: publicUser(user) };
+    }
+
+    verifySiweChallenge(message, challenge, walletAddress, chainId) {
+        const parsed = parseSiweMessage(message);
+        if (parsed.address.toLowerCase() !== walletAddress) {
+            throw new ApiError(401, "SIGNATURE_INVALID", "SIWE address does not match walletAddress");
+        }
+        if (parsed.chainId !== chainId) throw new ApiError(400, "WRONG_NETWORK", `wallet must use chain ${this.chainId}`);
+        if (parsed.domain !== new URL(this.appOrigin).host) {
+            throw new ApiError(401, "CHALLENGE_INVALID", "SIWE domain does not match this application origin");
+        }
+        if (parsed.uri !== this.appOrigin) {
+            throw new ApiError(401, "CHALLENGE_INVALID", "SIWE URI does not match this application origin");
+        }
+        if (parsed.nonce !== challenge.nonce) {
+            throw new ApiError(401, "CHALLENGE_INVALID", "SIWE nonce does not match the issued challenge");
+        }
+        if (Date.parse(parsed.issuedAt) !== Date.parse(challenge.issuedAt)) {
+            throw new ApiError(401, "CHALLENGE_INVALID", "SIWE issued-at does not match the issued challenge");
+        }
+        if (parsed.expirationTime && Date.parse(parsed.expirationTime) <= Date.now()) {
+            throw new ApiError(401, "CHALLENGE_EXPIRED", "SIWE message has expired");
+        }
     }
 
     authenticateToken(token) {

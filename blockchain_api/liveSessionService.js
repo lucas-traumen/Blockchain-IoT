@@ -20,9 +20,12 @@ class LiveSessionService {
     owner(userId, id) {
         this.walletService._user(userId);
         identifier(id, 'sessionId');
-        if (!id.startsWith('demo-' + userId + '-')) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
         const record = this.store.get(id);
-        if (!record) throw new ApiError(404, 'SESSION_NOT_FOUND', 'Session reference was not found');
+        if (!record) {
+            const legacyOwner = this.walletService.legacySessionOwner(id);
+            if (legacyOwner && legacyOwner !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
+            throw new ApiError(404, 'SESSION_NOT_FOUND', 'Session reference was not found');
+        }
         if (record.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
         return record;
     }

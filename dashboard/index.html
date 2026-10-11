@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=duration-reward-4-clean-events">
+    <link rel="stylesheet" href="style.css?v=wallet-first-1">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -132,7 +132,7 @@
                 >
                     <span class="account-trigger-icon">◉</span>
                     <span class="account-trigger-copy">
-                        <small>DEMO ACCOUNT</small>
+                        <small id="accountTriggerLabel">DEMO ACCOUNT</small>
                         <strong id="demoAccountButtonLabel">Choose account</strong>
                     </span>
                     <span class="account-trigger-chevron">⌄</span>
@@ -900,6 +900,8 @@
 </div>
 
 
-    <script src="app.js?v=duration-reward-4-clean-events" defer></script>
+    <script src="vendor/ethers.umd.min.js" defer></script>
+    <script src="wallet.js" defer></script>
+    <script src="app.js?v=wallet-first-1" defer></script>
 </body>
 </html>

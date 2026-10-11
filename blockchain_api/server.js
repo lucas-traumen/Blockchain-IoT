@@ -42,7 +42,7 @@ function requireDemoSession(demoService, role) {
     };
 }
 
-function createApp({ service, customerService, demoService, liveService, tokens = process.env } = {}) {
+function createApp({ service, customerService, demoService, liveService, rewardService, auditLog, tokens = process.env } = {}) {
     service ||= require("./safetyService");
     let resolvedCustomerService = customerService;
     const getCustomerService = () => resolvedCustomerService || (resolvedCustomerService = require("./customerService").getCustomerService(tokens));
@@ -50,6 +50,14 @@ function createApp({ service, customerService, demoService, liveService, tokens 
     const getDemoService = () => resolvedDemoService || (resolvedDemoService = require("./demoWalletService").getDemoWalletService(tokens));
     let resolvedLiveService = liveService;
     const getLiveService = () => resolvedLiveService || (resolvedLiveService = require('./liveSessionService').buildLiveSessionService(getDemoService(), tokens));
+    let resolvedRewardService = rewardService || null;
+    const getRewardService = () => resolvedRewardService || (resolvedRewardService = require("./rewardService").getRewardService(tokens));
+    let resolvedWalletFirst = null;
+    const getWalletFirstService = () => resolvedWalletFirst || (resolvedWalletFirst = require("./walletFirstService")
+        .buildWalletFirstService(getCustomerService(), () => { try { return getDemoService(); } catch { return null; } }));
+    let resolvedAuditLog = auditLog || null;
+    const getAuditLog = () => resolvedAuditLog || (resolvedAuditLog = new (require("./auditLog").AuditLog)({ store: getCustomerService().store }));
+    const adminActor = req => req.get("x-hrc-actor") || "admin-token";
     const app = express();
     app.locals.startLiveRecovery = () => getLiveService().startRecovery();
     app.locals.stopLiveRecovery = () => resolvedLiveService?.stopRecovery();
@@ -93,9 +101,9 @@ function createApp({ service, customerService, demoService, liveService, tokens 
         await respond(res, () => read());
     });
     const requireWalletLogin = (req, res, next) => {
-        if (tokens.HRC_APP_AUTH_MODE !== "wallet") {
+        if (!["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) {
             return res.status(403).json({ success: false, code: "WALLET_LOGIN_DISABLED",
-                error: "Wallet registration is disabled in the local demo. Choose admin, user_1 or user_2." });
+                error: "Wallet registration is disabled in the local demo. Choose admin, user_1 or user_2, or run with HRC_APP_AUTH_MODE=wallet|siwe." });
         }
         next();
     };
@@ -103,7 +111,7 @@ function createApp({ service, customerService, demoService, liveService, tokens 
         await respond(res, () => getCustomerService().createChallenge(req.body));
     });
     app.post("/api/auth/wallet", requireWalletLogin, async (req, res) => {
-        await respond(res, () => getCustomerService().authenticateWallet(req.body), 401);
+        await respond(res, () => getWalletFirstService().login(req.body || {}), 401);
     });
     app.get("/api/demo/accounts", async (req, res) => {
         await respond(res, () => ({ success: true, accounts: getDemoService().listAccounts() }));
@@ -125,23 +133,36 @@ function createApp({ service, customerService, demoService, liveService, tokens 
         await respond(res, () => getDemoService().getTransactions(req.demoUser.userId));
     });
     app.post("/api/me/wallet/approve", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getDemoService().approve(req.demoUser.userId));
+        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
+            ? getWalletFirstService().prepareApproval(req.demoUser.userId)
+            : getDemoService().approve(req.demoUser.userId));
+    });
+    // Wallet-first: the user signs these locally. The backend only prepares them.
+    app.get("/api/me/wallet/prepare/approve", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getWalletFirstService().prepareApproval(req.demoUser.userId), 400);
+    });
+    app.get("/api/me/wallet/prepare/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getWalletFirstService().prepareStartSession(req.demoUser.userId, req.query), 400);
+    });
+    app.get("/api/me/wallet/prepare/end/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        await respond(res, () => getWalletFirstService().prepareEndSession(req.demoUser.userId, req.params.sessionId), 400);
     });
     app.get("/api/me/sessions", requireDemoSession(getDemoService, "customer"), async (req, res) => {
         await respond(res, () => getLiveService().sessions(req.demoUser.userId));
     });
     app.get("/api/me/sessions/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
         identifier(req.params.sessionId, "sessionId");
-        if (!req.params.sessionId.startsWith(`demo-${req.demoUser.userId}-`)) {
-            return res.status(403).json({ success: false, code: "SESSION_OWNER_MISMATCH", error: "session does not belong to this demo user" });
-        }
         await respond(res, () => getLiveService().session(req.demoUser.userId, req.params.sessionId), 404);
     });
     app.post("/api/me/sessions/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getLiveService().start(req.demoUser.userId, req.body || {}));
+        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
+            ? getWalletFirstService().prepareStartSession(req.demoUser.userId, req.body || {})
+            : getLiveService().start(req.demoUser.userId, req.body || {}));
     });
     app.post('/api/me/sessions/:sessionId/end', requireDemoSession(getDemoService, 'customer'), async (req, res) => {
-        await respond(res, () => getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
+        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
+            ? getWalletFirstService().prepareEndSession(req.demoUser.userId, req.params.sessionId)
+            : getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
     });
     app.get("/api/demo/admin/overview", requireDemoSession(getDemoService, "admin"), async (req, res) => {
         await respond(res, () => getLiveService().overview());
@@ -209,6 +230,38 @@ function createApp({ service, customerService, demoService, liveService, tokens 
     app.get("/api/admin/access", requireToken("admin", tokens), async (req, res) => {
         res.set("Cache-Control", "no-store");
         await respond(res, () => service.getAdminAccess());
+    });
+    app.get("/api/admin/reward/status", requireToken("admin", tokens), async (req, res) => {
+        res.set("Cache-Control", "no-store");
+        await respond(res, () => getRewardService().getAdminStatus());
+    });
+    app.post("/api/admin/reward/pause", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pause" },
+            () => getRewardService().setPaused(true)));
+    });
+    app.post("/api/admin/reward/unpause", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.unpause" },
+            () => getRewardService().setPaused(false)));
+    });
+    app.post("/api/admin/reward/policy", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.policy", details: req.body || {} },
+            () => getRewardService().setPolicy(req.body || {})));
+    });
+    app.post("/api/admin/reward/pool/fund", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pool.fund", details: { amount: req.body?.amount } },
+            () => getRewardService().fundRewardPool(req.body?.amount)));
+    });
+    app.post("/api/admin/reward/pool/sweep", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pool.sweep", target: req.body?.to, details: { amount: req.body?.amount } },
+            () => getRewardService().sweepExcessToken(req.body?.to, req.body?.amount)));
+    });
+    app.post("/api/admin/reward/treasury", requireToken("admin", tokens), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.treasury", target: req.body?.treasury },
+            () => getRewardService().setPenaltyTreasury(req.body?.treasury)));
+    });
+    app.get("/api/admin/audit", requireToken("admin", tokens), async (req, res) => {
+        res.set("Cache-Control", "no-store");
+        await respond(res, () => getAuditLog().list(req.query.limit));
     });
     app.get("/api/events/:eventId/payload", requireToken("admin", tokens), async (req, res) => {
         identifier(req.params.eventId, "eventId");

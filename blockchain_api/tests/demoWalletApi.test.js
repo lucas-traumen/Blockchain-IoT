@@ -26,10 +26,19 @@ function demoFixture() {
         getWallet(userId) { return { success: true, userId, address: USERS[userId].walletAddress, balance: "20", allowance: "0", requiredAllowance: "2", canStart: false }; },
         getTransactions(userId) { return { success: true, userId, transactions: [{ transactionHash: "0x" + "a".repeat(64), events: [{ name: "Approval" }], blockNumber: 10 }] }; },
         approve(userId) { return { success: true, userId, transactionHash: "0x" + "a".repeat(64), blockNumber: 10, event: { name: "Approval" } }; },
-        startSession(userId, body) { return { success: true, userId, sessionId: `demo-${userId}-${body.sessionRef || "default"}`, transactionHash: "0x" + "b".repeat(64), blockNumber: 11, event: { name: "SessionStarted" } }; },
+        startSession(userId, body) { return { success: true, userId, sessionId: `hrc-${userId}-${body.sessionRef || "default"}`, transactionHash: "0x" + "b".repeat(64), blockNumber: 11, event: { name: "SessionStarted" } }; },
         listSessions(userId) { return { success: true, userId, count: 0, sessions: [] }; },
-        getSession(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
-        adminOverview() { return { success: true, users: [{ userId: "user_1" }, { userId: "user_2" }] }; }
+        getSession(userId, sessionId) {
+            // Ownership is decided by the stored record, never by parsing the id.
+            const owner = (String(sessionId).match(/^(?:hrc|demo)-([A-Za-z0-9_.:-]+)-/) || [])[1];
+            if (owner && owner !== userId) {
+                const { ApiError } = require("../eventPayload");
+                throw new ApiError(403, "SESSION_OWNER_MISMATCH", "Other user session");
+            }
+            return { success: true, session: { userId, sessionId } };
+        },
+        adminOverview() { return { success: true, users: [{ userId: "user_1" }, { userId: "user_2" }] }; },
+        isWalletFirst() { return false; }
     };
     return { service, tokens };
 }
@@ -39,7 +48,7 @@ async function serve(t) {
     const liveService = {
         wallet: id => fixture.service.getWallet(id), sessions: id => fixture.service.listSessions(id),
         session: (id, ref) => fixture.service.getSession(id, ref), start: (id, body) => fixture.service.startSession(id, body),
-        end: (id, ref) => { if (!ref.startsWith('demo-' + id + '-')) { const { ApiError } = require('../eventPayload'); throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'Other user session'); } return { success: true, sessionId: ref, settled: true }; },
+        end: (id, ref) => { fixture.service.getSession(id, ref); return { success: true, sessionId: ref, settled: true }; },
         overview: () => fixture.service.adminOverview()
     };
     const app = createApp({ demoService: fixture.service, liveService, service: {}, tokens: {
@@ -71,10 +80,11 @@ test("fixed demo accounts expose stable identities and user wallet routes are is
     assert.equal((await f.call("/api/me/sessions", { token: login2.body.token })).body.userId, "user_2");
     assert.equal((await f.call("/api/me/wallet/transactions", { token: login2.body.token })).body.userId, "user_2");
     assert.equal((await f.call("/api/me/wallet/transactions")).status, 401);
-    assert.equal((await f.call("/api/me/sessions/start", { method: "POST", token: login2.body.token, body: { sessionRef: "demo" } })).body.sessionId, "demo-user_2-demo");
-    assert.equal((await f.call("/api/me/sessions/demo-user_1-demo", { token: login2.body.token })).status, 403);
-    assert.equal((await f.call('/api/me/sessions/demo-user_1-demo/end', { method: 'POST', token: login2.body.token })).status, 403);
-    assert.equal((await f.call('/api/me/sessions/demo-user_2-demo/end', { method: 'POST', token: login2.body.token })).body.settled, true);
+    const started = await f.call("/api/me/sessions/start", { method: "POST", token: login2.body.token, body: { sessionRef: "demo" } });
+    assert.equal(started.body.sessionId, "hrc-user_2-demo");
+    assert.equal((await f.call("/api/me/sessions/hrc-user_1-demo", { token: login2.body.token })).status, 403);
+    assert.equal((await f.call('/api/me/sessions/hrc-user_1-demo/end', { method: 'POST', token: login2.body.token })).status, 403);
+    assert.equal((await f.call('/api/me/sessions/hrc-user_2-demo/end', { method: 'POST', token: login2.body.token })).body.settled, true);
     assert.equal((await f.call('/api/me/sessions/demo-user_2-demo/end', { method: 'POST' })).status, 401);
 });
 

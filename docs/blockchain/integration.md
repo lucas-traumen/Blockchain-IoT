@@ -58,7 +58,9 @@ controls and cannot call customer Approve/Start/End routes.
 
 Configuration:
 
-- `HRC_APP_AUTH_MODE=demo`: fixed accounts only; arbitrary wallet registration is disabled.
+- `HRC_APP_AUTH_MODE`: one of `demo` (default, fixed accounts only; arbitrary
+  wallet registration is disabled), `wallet` (EIP-191 challenge text) or `siwe`
+  (strict EIP-4361/SIWE message).
 - `RPC_URL`: the existing local Hardhat RPC, normally `http://127.0.0.1:8545`.
 - `HRC_REWARD_DEPLOYMENT`: manifest for that node's token/reward deployment.
 - `HRC_DEMO_MNEMONIC`: local Hardhat mnemonic, retained on the backend.
@@ -162,13 +164,21 @@ own measured session and receipts.
 
 ## Application wallet login and behavior
 
-With explicit `HRC_APP_AUTH_MODE=wallet`, the legacy MetaMask client supports
+With explicit `HRC_APP_AUTH_MODE=wallet` or `HRC_APP_AUTH_MODE=siwe`, the MetaMask client supports
 owner-only robot controls and application login that binds a wallet to a customer
 record. The default demo blocks the challenge and login endpoints with 403. This is separate from the default
 demo account chooser. A client requests a challenge, signs the exact message with
 `personal_sign`, and sends the signature to the API. The API verifies the recovered
 address before issuing an app session token. No private key leaves the wallet and
 no wallet address is accepted from an unsigned request.
+
+`siwe` mode replaces the legacy sentence-shaped challenge with an EIP-4361
+message. The message binds the exact app origin (`domain` + `URI`, port
+included), the configured `Chain ID`, the server-issued `Nonce`, `Issued At` and
+`Expiration Time`. Login re-parses the message and rejects a mismatch on any of
+those fields, a duplicated field, a non-`1` version or a non-SIWE payload. The
+server keeps its own `Nonce`/`Issued At` copy, so a client cannot self-assert a
+fresh timestamp.
 
 Routes:
 
@@ -181,6 +191,23 @@ Routes:
 - `GET /api/me/behavior` — authenticated user's activity history.
 - `GET /api/customers` — admin-wallet-only customer directory.
 - `GET /api/customers/:userId/behavior` — admin-wallet-only customer activity.
+
+Admin reward operations (admin token required, every call is written to the
+append-only audit trail with actor, action, transaction hash and status):
+
+- `GET /api/admin/reward/status` — operator/owner, pause state, pool balance, cap.
+- `POST /api/admin/reward/pause` / `.../unpause` — halt or resume new stakes and
+  funding. Settlement stays open so a paused pool cannot strand a user's stake.
+- `POST /api/admin/reward/policy` — `{stakeAmount, rewardAmount, penaltyAmount,
+  minRewardDuration, fullBonusDuration, maxRewardBonusPercent}` in wei/seconds.
+- `POST /api/admin/reward/pool/fund` — `{amount}` in wei, bounded by the pool cap.
+- `POST /api/admin/reward/pool/sweep` — `{to, amount}`; only the surplus above the
+  reward pool and escrowed stake can leave the contract.
+- `POST /api/admin/reward/treasury` — `{treasury}` to rotate the penalty address.
+- `GET /api/admin/audit?limit=` — recent privileged actions, newest first.
+
+Set `x-hrc-actor` to label the caller in the audit trail; it defaults to
+`admin-token`.
 
 Behavior records are off-chain product telemetry, not safety evidence. Safety
 telemetry, blockchain event payloads and reward evidence keep their existing
