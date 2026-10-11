@@ -84,6 +84,159 @@ ai_model: session split → windows/features → train-only scaler → train/eva
 - LSTM dùng `(N,10,2)` `[distance_m, delta_distance_m]`, `delta[0]=0`, output
   `(N,5)`. Runtime chỉ nạp artifact LSTM và không tự chuyển model khi artifact lỗi.
 
+## Triển khai trên máy mới: pull image, Compose và dashboard
+
+Đây là luồng chính khi chạy hệ thống trên **một máy khác** đã cài Docker. Máy
+đích không cần Node.js, Python hoặc TensorFlow: image AI đã chứa runtime Python,
+TensorFlow/Keras và artifact canonical `lstm-v1`; Compose kéo thêm Mosquitto và
+Nginx để phục vụ dashboard.
+
+Luồng này cần checkout repo vì `compose.yaml`, `compose.env`, `configs/`,
+`docker/mosquitto/` và frontend `dashboard/` được mount từ repo. Chỉ
+`docker pull` image mà không có các file Compose/frontend là chưa đủ.
+
+### 1. Chuẩn bị máy đích
+
+Cài Docker Engine và Compose v2, sau đó clone repo:
+
+```bash
+git clone https://github.com/lucas-traumen/Blockchain-IoT.git
+cd Blockchain-IoT
+docker --version
+docker compose version
+```
+
+`blockchain-hrc:ai` là tag local mặc định. Để pull trên máy khác, trước đó
+phải có một tag đã được push vào registry. Ví dụ dưới đây dùng GHCR nhưng có
+thể thay bằng Docker Hub hoặc registry nội bộ:
+
+```bash
+export HRC_IMAGE=ghcr.io/<org-or-user>/blockchain-hrc:ai
+docker login ghcr.io
+docker pull "$HRC_IMAGE"
+```
+
+Nếu registry private, máy đích phải được cấp quyền đọc package. Không dùng
+`docker compose up --build` ở máy đích nếu mục tiêu là chạy đúng image đã phát
+hành; lệnh đó sẽ build lại từ source local.
+
+> **Lưu ý image:** image phải được build từ phiên bản có `.dockerignore` mới,
+> trong đó artifact `ai_model/artifacts/lstm-v1/` được đóng gói vào image.
+> Nếu image cũ không có artifact, `/models/active` sẽ báo
+> `model_available=false` dù container vẫn healthy.
+
+Máy phát hành image có thể build và push như sau (cần quyền ghi registry):
+
+```bash
+export HRC_IMAGE=ghcr.io/<org-or-user>/blockchain-hrc:ai
+docker build --target ai -t "$HRC_IMAGE" .
+docker push "$HRC_IMAGE"
+```
+
+Sau đó máy đích chỉ dùng `docker pull "$HRC_IMAGE"` và `docker compose ...
+--no-build`; không cần copy model artifact riêng.
+
+### 2. Tạo cấu hình Compose
+
+```bash
+cp compose.env.example compose.env
+${EDITOR:-vi} compose.env
+```
+
+Đổi các giá trị theo máy đích:
+
+```dotenv
+HRC_IMAGE=ghcr.io/<org-or-user>/blockchain-hrc:ai
+HRC_SOURCE_MODE=esp32
+HRC_DEVICE_ID=esp32_01
+HRC_MQTT_HOST_PORT=1885
+HRC_API_HOST_PORT=8001
+HRC_DASHBOARD_HOST_PORT=8080
+HRC_CORS_ORIGINS=http://<IP-MAY-DOCKER>:8080,http://localhost:8080,http://127.0.0.1:8080
+```
+
+Mở firewall cho TCP `1885` (ESP32 → MQTT), `8001` (dashboard → IoT API) và
+`8080` (trình duyệt → dashboard). Không mở các cổng này ra Internet nếu chỉ
+chạy trong LAN.
+
+### 3. Pull và khởi động toàn bộ runtime IoT
+
+```bash
+docker compose --env-file compose.env pull mqtt iot_backend dashboard
+docker compose --env-file compose.env up -d --no-build --wait mqtt iot_backend dashboard
+docker compose --env-file compose.env ps
+```
+
+Các service sau khi khởi động:
+
+| Service | Chức năng | Cổng máy đích |
+|---|---|---|
+| `mqtt` | Mosquitto nhận telemetry từ ESP32 | `1885` |
+| `iot_backend` | Validate, SQLite, safety, LSTM, SSE | `8001` |
+| `dashboard` | Nginx phục vụ frontend | `8080` |
+
+Kiểm tra trước khi mở trình duyệt:
+
+```bash
+curl -fsS http://127.0.0.1:8001/health
+curl -fsS http://127.0.0.1:8001/models/active
+curl -fsS http://127.0.0.1:8001/system/health
+```
+
+Mở dashboard tại `http://<IP-MAY-DOCKER>:8080/`. Vào mục **Live Monitoring**;
+badge phải chuyển sang `LIVE` sau khi backend nhận telemetry. Dashboard đọc
+realtime bằng `/live/stream` và tự fallback sang polling nếu SSE bị gián đoạn.
+
+### 4. Cho ESP32 gửi dữ liệu vào máy đích
+
+Trong `firmware/esp32/main/network_config.local.h`, đặt broker là IP LAN của
+máy chạy Docker, không dùng `localhost`:
+
+```c
+#define HRC_MQTT_URI "mqtt://<IP-MAY-DOCKER>:1885"
+```
+
+Build/flash firmware rồi kiểm tra serial log có Wi-Fi và MQTT connected. Xác
+nhận dữ liệu đã đi hết luồng bằng:
+
+```bash
+docker compose --env-file compose.env logs -f iot_backend
+curl -fsS http://127.0.0.1:8001/live/latest
+docker compose --env-file compose.env exec mqtt \
+  mosquitto_sub -h 127.0.0.1 -t 'hrc/v1/devices/+/telemetry' -C 1 -W 15
+```
+
+Kết quả cần thấy là `device_id`, `boot_id`, `sequence`, `distance_mm` và
+`received_at` mới. Khi đó dashboard đang hiển thị dữ liệu thật từ ESP32, không
+phải dữ liệu simulator. Giữ `HRC_SOURCE_MODE=esp32` để provenance trên API và
+dashboard không bị gắn nhãn synthetic.
+
+### 5. Blockchain và Session Rewards trên máy mới
+
+Compose pull ở trên chạy **MQTT + IoT/AI + dashboard**. Image này chưa chứa
+Hardhat node hoặc `blockchain_api`, nên dashboard live telemetry hoạt động độc
+lập nhưng các mục Blockchain/Session Rewards cần thêm:
+
+1. RPC/Hardhat hoặc một testnet RPC đang chạy;
+2. `blockchain_api` chạy ở cổng `3000` với deployment contract và `.env` riêng;
+3. `HRC_CORS_ORIGINS` của API cho phép origin `http://<IP-MAY-DOCKER>:8080`;
+4. các biến `HRC_REWARD_*`/`HRC_CHAIN_*` trong `compose.env` nếu muốn IoT tự
+   settlement hoặc gửi safety event lên chain.
+
+Nếu chưa triển khai blockchain API, bỏ qua các tab Blockchain/Rewards; không
+được coi việc dashboard mở được là blockchain đã kết nối.
+
+### 6. Dừng và cập nhật image
+
+```bash
+docker compose --env-file compose.env down
+docker pull "$HRC_IMAGE"
+docker compose --env-file compose.env up -d --no-build --wait mqtt iot_backend dashboard
+```
+
+Named volume `blockchain-hrc_backend_data` giữ SQLite khi recreate container.
+Không dùng `down -v` nếu cần giữ dữ liệu đã nhận.
+
 ## Triển khai và chạy local
 
 Đây là luồng chạy đầy đủ đã được kiểm tra cho demo local. Luồng này dùng
@@ -242,7 +395,7 @@ Build target AI và khởi động service ở **terminal 4**:
 
 ```bash
 docker compose --env-file compose.env build iot_backend
-docker compose --env-file compose.env up -d --force-recreate --wait mqtt iot_backend
+docker compose --env-file compose.env up -d --force-recreate --wait mqtt iot_backend dashboard
 docker compose --env-file compose.env ps
 ```
 
@@ -263,11 +416,19 @@ Nếu chỉ muốn chạy IoT/AI không nối blockchain, để các biến `HRC
 `HRC_CHAIN_*` trống hoặc đặt `HRC_REWARD_AUTO_START=false` và
 `HRC_REWARD_AUTO_SETTLE=false`.
 
-### 5. Chạy dashboard
+### 5. Chạy dashboard khi phát triển local
 
-Mở terminal khác:
+Khi đã chạy service `dashboard` trong Compose, mở:
+
+```text
+http://127.0.0.1:8080/#rewards
+```
+
+Nếu chỉ muốn phục vụ frontend bằng Python thay vì container Nginx, dừng service
+`dashboard` trước rồi mở terminal khác:
 
 ```bash
+docker compose --env-file compose.env stop dashboard
 python3 -m http.server 8080 --bind 127.0.0.1 --directory dashboard
 ```
 

@@ -1136,3 +1136,18 @@ Triển khai retry cần rebuild image để không dùng source/image cũ, recr
 - Synthetic verifier trong image mới: PASS; `51` events, debounce precision
   `1.0`, recall `0.6471`, F1 `0.7857`.
 - `docker compose config` và `git diff --check`: PASS.
+
+## R7 — Pull-based deployment và dashboard qua Compose — 2026-10-11
+
+**Trạng thái: hoàn thành ở mức source/Compose; registry publish vẫn cần tag và quyền ghi thực tế.**
+
+- `compose.yaml` nhận `HRC_IMAGE`, hỗ trợ máy đích pull image AI rồi chạy với
+  `--no-build`; service `dashboard` dùng Nginx ở cổng `8080`.
+- Runtime không còn mount thư mục artifact host đè lên image; `.dockerignore`
+  giữ canonical `ai_model/artifacts/lstm-v1/` trong image portable.
+- `README.md` đã chuyển luồng máy mới thành: `docker pull` → `compose pull/up`
+  → mở dashboard → kiểm tra `/live/latest` và MQTT telemetry thật từ ESP32.
+- Compose config PASS; image kiểm tra local có đủ `model.keras` và `manifest.json`
+  trong `/app/ai_model/artifacts/lstm-v1`.
+- Blockchain API/Hardhat chưa được đưa vào image IoT; README ghi rõ đây là
+  thành phần bổ sung nếu cần các tab Blockchain/Session Rewards.

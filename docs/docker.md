@@ -7,7 +7,7 @@ chiếm cổng 1883/1884/8000 trên máy phát triển.
 ## Khởi động
 
 ```bash
-docker compose up -d --build --wait mqtt iot_backend
+docker compose up -d --build --wait mqtt iot_backend dashboard
 docker compose ps
 curl http://localhost:8001/health
 ```
@@ -16,6 +16,7 @@ curl http://localhost:8001/health
 |---|---|---|---|
 | `mqtt` | Mosquitto 2.0.22 | `mqtt://<IP-LAN>:1885` | Volume `mqtt_data` |
 | `iot_backend` | FastAPI, ingestion, safety, inference, events | `http://localhost:8001` | SQLite `/app/data/hrc.db` trong `iot_backend_data` |
+| `dashboard` | Nginx phục vụ frontend live/reward | `http://localhost:8080` | Bind mount `dashboard/` chỉ đọc |
 | `ai` | Công cụ TensorFlow 2.20.0/Keras 3.15.1, profile tùy chọn | Không mở cổng riêng | Bind `data/`, `ai_model/artifacts/` |
 
 Backend dùng `mqtt:1883` trong mạng Compose. ESP32 dùng **IP LAN của máy
@@ -52,12 +53,15 @@ Mặc định có thể chạy ngay. Để đổi cấu hình:
 ```bash
 cp compose.env.example compose.env
 # Sửa HRC_* trong compose.env theo máy của bạn.
-docker compose --env-file compose.env up -d --build --wait mqtt iot_backend
+docker compose --env-file compose.env up -d --build --wait mqtt iot_backend dashboard
 ```
 
 Dùng cùng `--env-file compose.env` cho những lệnh Compose tiếp theo. Các key:
 
 - `HRC_MQTT_HOST_PORT=1885`, `HRC_API_HOST_PORT=8001`.
+- `HRC_IMAGE`: tag image AI đã publish; máy đích dùng `docker compose pull` và
+  `--no-build` thay cho build local.
+- `HRC_DASHBOARD_HOST_PORT=8080`: cổng Nginx phục vụ dashboard.
 - `HRC_MQTT_BIND=0.0.0.0`, `HRC_API_BIND=0.0.0.0`.
 - `HRC_DEVICE_ID=esp32_01`: khớp firmware hoặc simulator khi thử session.
   `HRC_SOURCE_MODE=simulator|esp32` là nhãn nguồn tường minh; không suy luận
@@ -71,7 +75,9 @@ Dùng cùng `--env-file compose.env` cho những lệnh Compose tiếp theo. Cá
 
 `.env` dùng cho Python chạy trực tiếp; các key `MQTT_HOST`/`MQTT_PORT` trong
 file đó không thay địa chỉ service nội bộ đã khai báo trong Compose.
-`compose.env` không commit và không đưa vào image.
+`compose.env` không commit và không đưa vào image. Trên máy mới, luồng pull
+không cần Python/Node/TensorFlow; chỉ cần Docker, repo chứa Compose/frontend và
+image `HRC_IMAGE` đã có artifact `lstm-v1`.
 
 ## AI và model
 

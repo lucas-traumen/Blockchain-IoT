@@ -23,7 +23,7 @@ services:
         max-file: "3"
 
   iot_backend:
-    image: blockchain-hrc:${HRC_RUNTIME_TARGET:-ai}
+    image: ${HRC_IMAGE:-blockchain-hrc:ai}
     build:
       context: .
       target: ${HRC_RUNTIME_TARGET:-ai}
@@ -67,7 +67,6 @@ services:
       HRC_CORS_ORIGINS: ${HRC_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
     volumes:
       - iot_backend_data:/app/data
-      - ./ai_model/artifacts:/app/ai_model/artifacts:ro
       - ./configs:/app/configs:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3))['status'] == 'ok'"]
@@ -82,10 +81,32 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  dashboard:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      iot_backend:
+        condition: service_healthy
+    ports:
+      - "${HRC_DASHBOARD_BIND:-0.0.0.0}:${HRC_DASHBOARD_HOST_PORT:-8080}:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Optional tools for train/evaluate/export; no second running API/DB writer.
   ai:
     profiles: ["ai"]
-    image: blockchain-hrc:ai
+    image: ${HRC_IMAGE:-blockchain-hrc:ai}
     build:
       context: .
       target: ai

@@ -14,7 +14,11 @@ core
 core.*
 data
 exports
-ai_model/artifacts
+# Keep only the canonical runtime artifact in a pullable AI image. Candidate
+# models and generated reports remain outside the image.
+ai_model/artifacts/*
+!ai_model/artifacts/lstm-v1/
+!ai_model/artifacts/lstm-v1/**
 firmware
 tests
 
