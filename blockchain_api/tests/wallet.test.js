@@ -98,3 +98,42 @@ test("missing extension, cancelled connection, disconnect and lost receipt show 
     assert.equal(f.wallet.isOwner, false);
     assert.equal(f.wallet.state.account, null);
 });
+
+test("refresh and repeated clicks without a provider keep an actionable message", async () => {
+    const messages = [];
+    const wallet = createWalletAccess({ providers: [] }, ethers, state => messages.push(state.message));
+    await wallet.refresh();
+    await wallet.connect();
+    await wallet.connect();
+    assert.equal(wallet.state.account, null);
+    assert.equal(wallet.state.connecting, false);
+    assert.match(wallet.state.message, /not available.*retry Connect wallet/);
+    assert.equal(messages.some(message => /undefined|reading 'request'/.test(message)), false);
+});
+
+test("a provider injected after page load connects and subscribes only once", async () => {
+    const fs = require("node:fs");
+    const vm = require("node:vm");
+    const source = fs.readFileSync(require.resolve("../../dashboard/wallet"), "utf8");
+    const context = vm.createContext({ window: {}, ethers, setTimeout });
+    vm.runInContext(source, context);
+    const lateWallet = vm.runInContext("createWalletAccess(undefined, ethers)", context);
+    await lateWallet.refresh();
+    const calls = [], subscriptions = [];
+    context.window.ethereum = {
+        on(name) { subscriptions.push(name); },
+        async request({ method }) {
+            calls.push(method);
+            if (method === "eth_requestAccounts" || method === "eth_accounts") return [other];
+            if (method === "eth_chainId") return "0x7a69";
+            if (method === "eth_call") return abi.encodeFunctionResult("owner", [owner]);
+            throw new Error("Unexpected method " + method);
+        }
+    };
+    await lateWallet.connect();
+    await lateWallet.refresh();
+    assert.equal(lateWallet.state.account, other);
+    assert.equal(lateWallet.state.networkMatches, true);
+    assert.ok(calls.includes("eth_requestAccounts"));
+    assert.deepEqual(subscriptions, ["accountsChanged", "chainChanged", "disconnect"]);
+});

@@ -389,3 +389,26 @@ Use `npm test` to run the offline service regression suite and integration tests
 `node e2eTest.js` is still a **live transaction-producing script**; it requires the
 ingestion token in the shell, uses a fresh session and retries 202 with the same
 payload. It is not part of `npm test` and was not run for this change.
+
+
+## Wallet connection troubleshooting
+
+Open `http://localhost:8080` in the browser where MetaMask is enabled. In
+`HRC_APP_AUTH_MODE=wallet` or `siwe`, use **Connect wallet** in the account panel
+or the header. Approve the connection, select the configured network, then sign
+the login message. The HRC session panel appears after the API verifies that
+signature. The dashboard distinguishes wallet connection from application login.
+
+If no wallet is detected, enable MetaMask and retry; a provider injected after
+page load is detected on the next connection attempt. A cancelled connection or
+signature leaves a retry button in the account panel. If the network is missing,
+add the local Hardhat network to the wallet with RPC `http://127.0.0.1:8545`,
+chain ID `31337`, native currency `ETH`, then retry **Switch network**. This RPC
+address is for a browser on the same machine as the local node.
+
+`node scripts/verify_wallet_first_ui.mjs` verifies native browser clicks for
+missing wallets, cancellation, wrong networks, successful SIWE retry and delayed
+provider injection against the running local stack. It creates a disposable test
+wallet for signing; its key stays outside the browser, and it broadcasts no HRC
+transactions. Evidence is stored in `data/results/wallet-first-connect/`, or the
+path supplied in `HRC_UI_EVIDENCE_DIR`.

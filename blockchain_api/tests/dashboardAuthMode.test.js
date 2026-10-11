@@ -70,3 +70,34 @@ test("wallet mode without an injected wallet reports the missing extension", () 
     assert.equal(h.calls.walletConnect, 0);
     assert.match(h.byId("walletAccessMessage").textContent, /No EVM wallet detected/);
 });
+
+test("wallet errors appear beside the visible connect action, including a rejected connection", async () => {
+    const h = harness({ authMode: "siwe" });
+    vm.runInContext("applyAuthMode(); onAccountTrigger()", h.context);
+    assert.equal(h.byId("walletFirstConnectBtn").hidden, false);
+    assert.equal(h.byId("walletFirstStatus").hidden, false);
+    assert.match(h.byId("walletFirstStatus").textContent, /MetaMask/);
+    h.context.window.hrcWallet = { connect: async () => { throw new Error("Connection rejected"); } };
+    await vm.runInContext("connectWalletFirst()", h.context);
+    assert.equal(h.byId("walletFirstStatus").textContent, "Connection rejected");
+    assert.equal(h.byId("walletAccessMessage").textContent, "Connection rejected");
+});
+
+test("connected wallets keep a retry action after login failure or a wrong network", () => {
+    const h = harness({ authMode: "siwe", trigger: true });
+    const account = "0x1111111111111111111111111111111111111111";
+    h.context.demoBusy = null;
+    h.context.appSession = { error: "Application login was cancelled in MetaMask.", inFlightKey: null, key: null };
+    h.context.walletFirstActive = () => false;
+    h.context.window.hrcWallet.state = { account, chainId: 31337, networkMatches: true, connecting: false };
+    vm.runInContext("renderWalletConnection()", h.context);
+    assert.match(h.byId("walletFirstStatus").textContent, /cancelled/);
+    assert.equal(h.byId("walletFirstConnectBtn").hidden, false);
+    assert.equal(h.byId("walletFirstConnectBtn").disabled, false);
+    assert.equal(h.byId("walletFirstConnectBtn").textContent, "Retry sign in");
+    h.context.window.hrcWallet.state.networkMatches = false;
+    h.context.window.hrcWallet.state.message = "Wrong network";
+    vm.runInContext("renderWalletConnection()", h.context);
+    assert.equal(h.byId("walletFirstStatus").textContent, "Wrong network");
+    assert.equal(h.byId("walletFirstConnectBtn").textContent, "Switch network");
+});

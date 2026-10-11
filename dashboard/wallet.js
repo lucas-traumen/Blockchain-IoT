@@ -1,5 +1,18 @@
-// Local ethers bundle is used only for ABI encoding; MetaMask owns signing.
+// Local ethers bundle is used only for ABI encoding; the wallet owns signing.
+function usableProvider(candidate) {
+    const providers = Array.isArray(candidate?.providers) ? candidate.providers : [];
+    return providers.find(provider => provider?.isMetaMask && typeof provider.request === "function")
+        || (typeof candidate?.request === "function" ? candidate : null)
+        || providers.find(provider => typeof provider?.request === "function")
+        || null;
+}
+function describeProviderProblem() {
+    return "MetaMask is not available. Install or enable it in this browser, then retry Connect wallet.";
+}
+
 function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig = {}) {
+    ethereum = usableProvider(ethereum);
+    let subscribedProvider = null;
     // API config is authoritative; defaults only support the standalone legacy test.
     const legacyAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
     const contractAddress = () => runtimeConfig.safety?.address || runtimeConfig.safetyAddress || legacyAddress;
@@ -25,6 +38,11 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         Object.assign(state, {
             account: null, owner: null, chainId: null, networkMatches: false, isOwner: false
         });
+        if (!resolveProvider()) {
+            state.message = describeProviderProblem();
+            notify();
+            return;
+        }
         notify();
         try {
             const accounts = await ethereum.request({ method: "eth_accounts" });
@@ -59,7 +77,7 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         state.connecting = true;
         notify();
         try {
-            if (!ethereum) throw new Error("MetaMask is not available. Install or enable the extension in this browser.");
+            if (!resolveProvider()) throw new Error(describeProviderProblem());
             await ethereum.request({ method: "eth_requestAccounts" });
             const network = await ethereum.request({ method: "eth_chainId" });
             if (network.toLowerCase() !== chain()) {
@@ -127,15 +145,21 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
         }
         return { pending: true, hash };
     }
-    if (ethereum?.on) {
-        ethereum.on("accountsChanged", () => { void refresh(); });
-        ethereum.on("chainChanged", () => { void refresh(); });
-        ethereum.on("disconnect", () => {
-            generation++;
-            Object.assign(state, { isOwner: false, account: null, owner: null, chainId: null, networkMatches: false, message: "Wallet disconnected." });
-            notify();
-        });
+    function resolveProvider() {
+        if (!ethereum) ethereum = usableProvider(typeof window === "undefined" ? null : window.ethereum);
+        if (ethereum && ethereum !== subscribedProvider && typeof ethereum.on === "function") {
+            subscribedProvider = ethereum;
+            ethereum.on("accountsChanged", () => { void refresh(); });
+            ethereum.on("chainChanged", () => { void refresh(); });
+            ethereum.on("disconnect", () => {
+                generation++;
+                Object.assign(state, { isOwner: false, account: null, owner: null, chainId: null, networkMatches: false, message: "Wallet disconnected." });
+                notify();
+            });
+        }
+        return ethereum;
     }
+    resolveProvider();
     return { get isOwner() { return state.isOwner; }, state, connect, refresh, signMessage, sendPrepared,
         unlock: (deviceId, submitted) => control(deviceId, null, submitted),
         lock: (deviceId, eventId, submitted) => {

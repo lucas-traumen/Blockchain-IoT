@@ -1396,10 +1396,10 @@ be exercised on a machine with Docker Compose.**
   103/103, `scripts/smoke_reward_service.js` all outcomes as expected, invariant
   `balanceOf(rewards) == rewardPoolBalance + escrowedStakeTotal` = true.
 
-## R17 — Wallet-first migration (ĐỀ XUẤT, CHỜ DUYỆT) — 2026-10-12
+## R17 — Wallet-first migration — 2026-10-12
 
 Đề xuất chuyển sang mô hình wallet-first: người dùng tự giữ ví, backend giữ vai
-trò oracle/operator xác nhận dữ liệu cảm biến. **Chưa triển khai — chờ duyệt.**
+trò oracle/operator xác nhận dữ liệu cảm biến. **Người dùng đã duyệt P1–P7; kết quả triển khai ở mục D.**
 
 ### A. Đối chiếu đề xuất với code hiện tại
 
@@ -1469,3 +1469,21 @@ dù payload hợp lệ (test cũ dùng fake service luôn có `success` nên che
 Đã sửa và thêm regression test `blockchain_api/tests/rewardServiceStatus.test.js`.
 
 Trạng thái: **P1–P7 đã triển khai và xác minh trên local stack.**
+
+
+## R18 — Sửa kết nối ví dashboard — 2026-10-12
+
+Đã được người dùng yêu cầu tiếp tục triển khai; không cần duyệt lại plan R17.
+
+| Task | Phạm vi | Tiêu chí / xác minh | Trạng thái |
+| --- | --- | --- | --- |
+| R18:orchestrator | dashboard/{app.js,wallet.js,index.html,style.css}, blockchain_api/tests/{wallet.test.js,dashboardAuthMode.test.js,demoDashboard.test.js}, scripts/verify_wallet_first_ui.mjs, docs/blockchain/integration.md, PLAN/MEMORY | Không ví: lỗi ngay cạnh CTA; ví inject muộn kết nối được; sai mạng và hủy ký có nút retry; SIWE thật qua local API; demo regression PASS; browser desktop/mobile PASS | done |
+
+Checkpoint tool của OpenCode không có trong phiên Codex này; đã đọc checkpoint
+local để tham khảo, không thay đổi con trỏ session OpenCode.
+
+R18 evidence: `node scripts/verify_wallet_first_ui.mjs` PASS 7 tình huống trên
+Chromium với SIWE signature và local API thật; không broadcast giao dịch HRC.
+JSON/ảnh nằm trong `data/results/wallet-first-connect/` (ignored). Tests hồi quy
+bổ sung: ví inject muộn, thiếu provider, thông báo gần CTA, retry sau hủy ký/sai
+mạng, nhãn header được giữ sau refresh. Không reset chain hay xóa volumes.

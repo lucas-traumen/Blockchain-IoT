@@ -868,3 +868,26 @@ safety outcome.
   the regression cannot return.
 - Test totals after the change: `npx hardhat test` → 81 passing;
   `npm --prefix blockchain_api test` → 126/126.
+
+
+## Wallet connection feedback and retry (R18, 2026-10-12)
+
+- The header wallet button already had a working click listener. The verified
+  defects were misleading demo copy overwriting the connect label, a raw
+  `undefined.request` error when MetaMask was absent, and feedback far from the
+  connection action. Do not infer click failure from `element.onclick`: listeners
+  registered via `addEventListener` are not reflected there.
+- In wallet/siwe mode, the account panel now has a Connect wallet button and live
+  status. Missing extension, wrong network, connection cancellation and SIWE
+  cancellation stay visible with a retry action. Connected and authenticated
+  are separate states; hide the CTA only after authenticated login succeeds.
+- The wallet provider is rediscovered on retry if it was absent during page load;
+  account/chain/disconnect listeners are registered once for that provider.
+  Missing providers update state without rejected/unhandled promises.
+- Demo rendering preserves wallet labels. Versioned app/wallet/CSS URLs refresh
+  cached browser assets. Demo mode retains its existing fixed account picker.
+- Verification: `scripts/verify_wallet_first_ui.mjs` uses native Chromium clicks,
+  a disposable test wallet (key stays in Node), real SIWE verification by the
+  running local API and reads of the local contract. Seven scenarios pass at
+  desktop/mobile sizes, without JavaScript exceptions or horizontal overflow.
+  No HRC transfers/session transactions are broadcast by this verifier.

@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=wallet-first-1">
+    <link rel="stylesheet" href="style.css?v=wallet-connect-2">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -147,8 +147,12 @@
         <div id="demoDashboardSlot">
         <div id="demoAccountWorkspace">
         <section id="demoAccountEmpty" class="panel demo-account-empty">
-            <div><h3>Your account &amp; HRC sessions</h3><p>Open user_1 or user_2 to approve a stake and start a session, or admin to view both users.</p></div>
-            <button type="button" class="wallet-btn" data-demo-account-open>Choose account</button>
+            <div><h3>Your account &amp; HRC sessions</h3><p id="demoAccountEmptyHint">Open user_1 or user_2 to approve a stake and start a session, or admin to view both users.</p></div>
+            <div class="demo-account-actions">
+                <button type="button" class="wallet-btn" data-demo-account-open>Choose account</button>
+                <button type="button" class="wallet-btn" id="walletFirstConnectBtn" hidden>Connect wallet</button>
+            </div>
+            <p id="walletFirstStatus" class="demo-account-hint" role="status" aria-live="polite" hidden></p>
         </section>
         <section id="demoWalletPanel" class="panel demo-wallet-panel" hidden aria-labelledby="demoWalletHeading">
             <div class="panel-header compact-panel-header">
@@ -901,7 +905,7 @@
 
 
     <script src="vendor/ethers.umd.min.js" defer></script>
-    <script src="wallet.js" defer></script>
-    <script src="app.js?v=wallet-first-1" defer></script>
+    <script src="wallet.js?v=wallet-connect-2" defer></script>
+    <script src="app.js?v=wallet-connect-2" defer></script>
 </body>
 </html>

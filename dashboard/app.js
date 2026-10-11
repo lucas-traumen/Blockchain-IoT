@@ -300,12 +300,13 @@ function renderDemoWallet() {
     const customer = user?.role === 'customer';
     const admin = user?.role === 'admin';
     const busy = Boolean(demoBusy);
-    if (!(appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))) text('demoAccountButtonLabel', user?.userId || 'Choose account');
+    const walletFirst = appAuthMode === "wallet" || appAuthMode === "siwe";
+    if (!walletFirst) text('demoAccountButtonLabel', user?.userId || 'Choose account');
     text('demoAccountStatus', user
         ? `${user.userId} · ${admin ? 'read-only report' : user.walletFirst ? 'your wallet · you sign every transaction' : 'local demo wallet'}`
         : walletFirstActive() ? 'Connect your wallet to start a session.' : 'Admin views both users. User accounts can approve and start sessions.');
     text('walletUserStatus', user ? `${user.role.toUpperCase()} · ${user.userId}` : 'Choose an account');
-    text('connectedWalletAddress', user?.walletAddress || (admin ? 'Admin · read-only' : 'No demo account'));
+    text('connectedWalletAddress', user?.walletAddress || (admin ? 'Admin · read-only' : (walletFirst ? (window.hrcWallet?.state.account || 'Not connected') : 'No demo account')));
     text('walletRole', admin ? 'READ ONLY ADMIN' : customer ? (user?.walletFirst ? 'WALLET USER' : 'DEMO USER') : 'READ ONLY');
     text('demoWalletRole', user?.userId.toUpperCase() || 'CHOOSE ACCOUNT');
     text('demoWalletAddress', demoWallet?.address || user?.walletAddress || '--');
@@ -319,7 +320,8 @@ function renderDemoWallet() {
     for (const [id, visible] of [['demoWalletPanel', customer], ['demoAdminReport', admin], ['demoAccountEmpty', !user]]) {
         const element = byId(id); if (element) element.hidden = !visible;
     }
-    const trigger = byId('demoAccountTrigger'); if (trigger) trigger.disabled = busy;
+    const trigger = byId('demoAccountTrigger');
+    if (trigger) trigger.disabled = busy || (walletFirst && Boolean(window.hrcWallet?.state.connecting || (appSession.inFlightKey && !appSession.key)));
     const approve = byId('demoApproveBtn');
     const start = byId('demoStartBtn');
     const ready = demoWallet && Number(demoWallet.allowance) >= Number(demoWallet.requiredAllowance);
@@ -551,6 +553,7 @@ async function appRequest(path, { method = "GET", body, token } = {}) {
 }
 
 function renderAppIdentity() {
+    renderWalletConnection();
     const user = appSession.user;
     text("walletUserStatus", user ? `${user.role.toUpperCase()} · ${user.userId}` : (appSession.error || "Application login pending"));
     text("userPortalId", user?.userId || "Application login pending");
@@ -737,11 +740,14 @@ async function syncWalletApplication(state) {
         const message = error.code === 4001 ? "Application login was cancelled in MetaMask." : "Application login failed: " + error.message;
         clearAppSession();
         appSession.error = message;
-        appSession.inFlightKey = key;
+        appSession.inFlightKey = null;
         renderAppIdentity();
         renderUserPortal();
     } finally {
-        if (run === appAuthGeneration && appSession.inFlightKey === key) appSession.inFlightKey = null;
+        if (run === appAuthGeneration && appSession.inFlightKey === key) {
+            appSession.inFlightKey = null;
+            renderAppIdentity();
+        }
     }
 }
 
@@ -1012,13 +1018,62 @@ function applyAuthMode() {
         text("walletAccessMessage", appAuthMode === "siwe"
             ? "Connect a wallet and sign the SIWE message to start a session. The backend operator settles rewards."
             : "Connect a wallet and sign the login message to start a session. The backend operator settles rewards.");
+        text("demoAccountEmptyHint", appAuthMode === "siwe"
+            ? "Connect MetaMask and sign in. Then approve your HRC stake and start a sensor session."
+            : "Connect MetaMask and sign in. Then approve your HRC stake and start a sensor session.");
     }
+    // The main panel owns the visible CTA in wallet-first mode; the demo picker is hidden.
+    const connectBtn = byId("walletFirstConnectBtn");
+    if (connectBtn) connectBtn.hidden = !walletFirst;
+    const status = byId("walletFirstStatus");
+    if (status && !walletFirst) status.hidden = true;
+}
+
+// Keep wallet errors beside the connect action in the account panel.
+function setWalletFirstStatus(message) {
+    text("walletAccessMessage", message);
+    const node = byId("walletFirstStatus");
+    if (node) {
+        node.hidden = false;
+        node.textContent = String(message ?? "");
+    }
+}
+function renderWalletConnection() {
+    if (!walletFirstMode()) return;
+    const state = window.hrcWallet?.state || {};
+    const authenticated = walletFirstActive() && state.networkMatches
+        && appSession.key === state.account?.toLowerCase() + ":" + state.chainId;
+    const signing = Boolean(appSession.inFlightKey && !appSession.key);
+    const short = state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : null;
+    text("demoAccountButtonLabel", state.connecting ? "Connecting..." : short || "Connect wallet");
+    text("accountTriggerLabel", authenticated ? "SIGNED IN" : "WALLET LOGIN");
+    const message = state.connecting ? "Open MetaMask to connect or switch network."
+        : !state.account || !state.networkMatches ? state.message
+        : appSession.error || (authenticated ? "Signed in. Your HRC wallet and sessions are ready." : "Wallet connected. Sign the login message in MetaMask.");
+    setWalletFirstStatus(message || "Connect MetaMask to sign in.");
+    const button = byId("walletFirstConnectBtn");
+    if (button) {
+        button.hidden = Boolean(authenticated);
+        button.disabled = Boolean(state.connecting || signing);
+        button.textContent = state.connecting ? "Connecting..." : signing ? "Sign in MetaMask..."
+            : state.account && !state.networkMatches ? "Switch network"
+            : state.account ? "Retry sign in" : "Connect wallet";
+    }
+    const trigger = byId("demoAccountTrigger");
+    if (trigger) trigger.disabled = Boolean(demoBusy || state.connecting || signing);
+}
+async function connectWalletFirst() {
+    if (!window.hrcWallet || typeof window.hrcWallet.connect !== "function") {
+        setWalletFirstStatus("No EVM wallet detected. Enable MetaMask and reload this page to sign in.");
+        return;
+    }
+    try { await window.hrcWallet.connect(); }
+    catch (error) { setWalletFirstStatus(error?.message || "Could not connect the wallet."); }
 }
 
 function onAccountTrigger() {
     if (!walletFirstMode()) { openDemoAccountModal(); return; }
-    if (window.hrcWallet?.connect) { void window.hrcWallet.connect(); return; }
-    text("walletAccessMessage", "No EVM wallet detected. Install MetaMask to sign in.");
+    connectWalletFirst();
 }
 function svgElement(name, attributes = {}) {
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -1408,20 +1463,9 @@ refreshBtn.addEventListener("click", loadDashboard);
 function initWallet() {
     const setText = (id, value) => { const element = byId(id); if (element) element.textContent = value; };
     const unavailable = "MetaMask is not installed or the wallet script did not load. Refresh the page after enabling the extension.";
-    const connect = () => { void window.hrcWallet?.connect(); };
     if (typeof createWalletAccess === "function" && typeof ethers !== "undefined") {
         const injected = window.ethereum?.providers?.find(provider => provider.isMetaMask) || window.ethereum;
         window.hrcWallet = createWalletAccess(injected, ethers, state => {
-            const short = state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : null;
-            setText("demoAccountButtonLabel", state.connecting ? "Connecting..." : short || "Connect wallet");
-            setText("accountTriggerLabel", state.account
-                ? (appAuthMode === "siwe" ? "SIWE SESSION" : "WALLET")
-                : (appAuthMode === "siwe" ? "SIWE LOGIN" : "WALLET"));
-            setText("walletButtonLabel", state.connecting ? "Connecting..."
-                : short || "Register / Connect Wallet");
-            const connectBtn = byId("connectWalletBtn");
-            if (connectBtn) connectBtn.disabled = state.connecting || unlocking;
-            setText("walletAccessMessage", state.message);
             setText("connectedWalletAddress", state.account || "Not connected");
             setText("contractOwnerAddress", state.owner || "Not verified");
             setText("walletRole", state.isOwner ? "OWNER" : state.account && state.owner ? "READ ONLY" : "NOT VERIFIED");
@@ -1432,17 +1476,15 @@ function initWallet() {
             renderAppIdentity();
             updateAdminControls();
         }, window.hrcRuntimeConfig);
-        byId("connectWalletBtn")?.addEventListener("click", connect);
-        byId("portalConnectWalletBtn")?.addEventListener("click", connect);
         void window.hrcWallet.refresh();
         return;
     }
-    byId("portalConnectWalletBtn")?.addEventListener("click", () => setText("walletAccessMessage", unavailable));
-    byId("connectWalletBtn")?.addEventListener("click", () => setText("walletAccessMessage", unavailable));
+    setWalletFirstStatus(unavailable);
 }
 unlockBtn?.addEventListener("click", unlockRobot);
 byId("lockRobotBtn")?.addEventListener("click", lockRobot);
 byId("demoAccountTrigger")?.addEventListener("click", onAccountTrigger);
+byId("walletFirstConnectBtn")?.addEventListener("click", connectWalletFirst);
 byId("demoAccountCloseBtn")?.addEventListener("click", closeDemoAccountModal);
 byId("demoAccountCancelBtn")?.addEventListener("click", closeDemoAccountModal);
 byId("demoAccountModal")?.querySelector("[data-demo-account-close]")?.addEventListener("click", closeDemoAccountModal);

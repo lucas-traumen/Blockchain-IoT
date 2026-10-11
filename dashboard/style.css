@@ -2802,7 +2802,10 @@ tbody tr:not(.empty-row):hover {
 /* Wallet actions stay on Dashboard; Reports contains read-only summaries. */
 .demo-picker-open { overflow: hidden; }
 #demoAccountWorkspace { margin-bottom: 16px; }
-.demo-account-empty { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; }
+.demo-account-empty { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; flex-wrap: wrap; }
+.demo-account-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+.demo-account-hint { flex-basis: 100%; margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.demo-account-hint:empty { display: none; }
 .demo-account-empty h3 { font-size: 14px; margin-bottom: 6px; }
 .demo-account-empty p { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .demo-account-empty button { flex-shrink: 0; }

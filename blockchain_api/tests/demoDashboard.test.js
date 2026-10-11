@@ -296,3 +296,12 @@ test('a restored wallet and a successful retry replace the stale choose-account 
     await f.run('loadDemoAccountData({ fresh: true })');
     assert.doesNotMatch(f.elements.get('demoWalletMessage').textContent, /Unable to refresh/);
 });
+
+test('anonymous wallet mode preserves the connect label across dashboard refreshes', () => {
+    const f = fixture();
+    f.run('appAuthMode = "siwe"');
+    f.elements.get('demoAccountButtonLabel').textContent = 'Connect wallet';
+    f.run('syncSidebarViews()');
+    assert.equal(f.elements.get('demoAccountButtonLabel').textContent, 'Connect wallet');
+    assert.equal(f.elements.get('connectedWalletAddress').textContent, 'Not connected');
+});
