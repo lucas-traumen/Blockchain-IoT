@@ -6,7 +6,11 @@ __pycache__/
 data/*
 !data/samples/
 release/
-ai_model/artifacts/
+# Keep the canonical production artifact available to Docker builds; ignore
+# candidate models and generated reports.
+ai_model/artifacts/*
+!ai_model/artifacts/lstm-v1/
+!ai_model/artifacts/lstm-v1/**
 exports/
 firmware/esp32/sdkconfig
 firmware/esp32/sdkconfig.old

@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "model_type": "lstm",
+  "model_version": "lstm-v1",
+  "preprocessing_version": "pp-lstm-v1",
+  "framework": {
+    "name": "tensorflow",
+    "version": "2.20.0",
+    "keras_version": "3.15.1"
+  },
+  "input_shape": [
+    10,
+    2
+  ],
+  "output_shape": [
+    5
+  ],
+  "features": [
+    "distance_m",
+    "delta_distance_m"
+  ],
+  "units": "m",
+  "window_size": 10,
+  "delta_s": 0.1,
+  "horizons_ms": [
+    100,
+    200,
+    300,
+    400,
+    500
+  ],
+  "random_seed": 20261010,
+  "model_file_sha256": "94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52",
+  "scaler_sha256": "20281417e61b5847f61413afa12245284ac88e6ae16b0d1c12b01da53e03986d",
+  "dataset_sha256": "0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8",
+  "split_manifest_sha256": "601e58319c6514c3231a7e64c33eb3a4a2ba4346dd1aeb72851ad0a4b87e43c5",
+  "n_train_windows": 63280,
+  "n_val_windows": 13560,
+  "n_test_windows": 13560,
+  "created_at": "2026-10-10T17:08:02.074Z",
+  "metrics_sha256": "9d0bed4b94d6d2cd6cd07212cd6b7e66b79de83fc8d38c6fdb1e5e75476d4fee"
+}
