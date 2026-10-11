@@ -84,9 +84,41 @@ ai_model: session split → windows/features → train-only scaler → train/eva
 - LSTM dùng `(N,10,2)` `[distance_m, delta_distance_m]`, `delta[0]=0`, output
   `(N,5)`. Runtime chỉ nạp artifact LSTM và không tự chuyển model khi artifact lỗi.
 
+## Chạy nhanh trên máy triển khai
+
+Người dùng chỉ cần chạy Compose một lần, sau đó mở giao diện. Compose khởi động
+đồng thời MQTT, IoT/AI backend và dashboard; không cần chạy Python HTTP server
+riêng.
+
+```bash
+cp compose.env.example compose.env
+# Đặt HRC_IMAGE thành image đã được cấp quyền pull nếu máy chưa có image.
+${EDITOR:-vi} compose.env
+
+docker compose --env-file compose.env pull
+docker compose --env-file compose.env up -d --no-build --wait
+docker compose --env-file compose.env ps
+```
+
+Mở giao diện tại:
+
+```text
+http://<IP-MAY-DOCKER>:8080/#live-monitoring
+```
+
+Kiểm tra nhanh backend:
+
+```bash
+curl http://<IP-MAY-DOCKER>:8001/health
+curl http://<IP-MAY-DOCKER>:8001/live/latest
+```
+
+Nếu chỉ xem trên chính máy Docker, dùng `http://127.0.0.1:8080`. Nếu dùng
+ESP32 thật, firmware phải trỏ MQTT tới `mqtt://<IP-MAY-DOCKER>:1885`.
+
 ## Triển khai trên máy mới: pull image, Compose và dashboard
 
-Đây là luồng chính khi chạy hệ thống trên **một máy khác** đã cài Docker. Máy
+Đây là phần chi tiết cho luồng chạy hệ thống trên **một máy khác** đã cài Docker. Máy
 đích không cần Node.js, Python hoặc TensorFlow: image AI đã chứa runtime Python,
 TensorFlow/Keras và artifact canonical `lstm-v1`; Compose kéo thêm Mosquitto và
 Nginx để phục vụ dashboard.
