@@ -94,6 +94,7 @@ try {
         window.__walletCalls = [];
         window.__walletAuthorized = false;
         window.__walletChain = ${JSON.stringify(scenario === 'wrong-network' ? '0x1' : '0x7a69')};
+        window.__walletChainAdded = false;
         const promises = new Map(); let nextId = 0;
         window.__walletReply = response => {
             const item = promises.get(response.id); if (!item) return;
@@ -110,8 +111,15 @@ try {
                 }
                 if (method === 'eth_chainId') return window.__walletChain;
                 if (method === 'wallet_switchEthereumChain') {
-                    if (window.__walletScenario === 'wrong-network') throw Object.assign(new Error('Unknown chain'), { code: 4902 });
+                    if (window.__walletScenario === 'wrong-network' && !window.__walletChainAdded) {
+                        throw Object.assign(new Error('Unknown chain'), { code: 4902 });
+                    }
                     window.__walletChain = params[0].chainId; return null;
+                }
+                if (method === 'wallet_addEthereumChain') {
+                    window.__walletChainAdded = true;
+                    window.__walletChain = params[0].chainId;
+                    return null;
                 }
                 if (method === 'personal_sign' && window.__walletScenario === 'cancel-sign') throw Object.assign(new Error('Cancelled'), { code: 4001 });
                 return new Promise((resolve, reject) => {
@@ -159,10 +167,16 @@ try {
     for (const scenario of ['cancel-connect', 'wrong-network', 'cancel-sign']) {
         await navigate(scenario);
         await click('#walletFirstConnectBtn');
-        const message = scenario === 'cancel-sign' ? 'Application login was cancelled' : scenario === 'wrong-network' ? 'Add the configured network' : 'MetaMask request cancelled';
-        await wait(`document.getElementById('walletFirstStatus').textContent.includes(${JSON.stringify(message)}) && !document.getElementById('walletFirstConnectBtn').disabled`);
-        assert.equal(await evaluate('document.getElementById("walletFirstConnectBtn").hidden'), false);
-        await check(scenario);
+        if (scenario === 'wrong-network') {
+            await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("demoWalletPanel").hidden');
+            assert.ok((await evaluate('window.__walletCalls')).includes('wallet_addEthereumChain'));
+            await check('wrong-network-add-chain');
+        } else {
+            const message = scenario === 'cancel-sign' ? 'Application login was cancelled' : 'MetaMask request cancelled';
+            await wait(`document.getElementById('walletFirstStatus').textContent.includes(${JSON.stringify(message)}) && !document.getElementById('walletFirstConnectBtn').disabled`);
+            assert.equal(await evaluate('document.getElementById("walletFirstConnectBtn").hidden'), false);
+            await check(scenario);
+        }
         if (scenario === 'cancel-sign') {
             await evaluate('window.__walletScenario = "success"');
             await click('#walletFirstConnectBtn');
@@ -187,5 +201,5 @@ try {
     provider.destroy();
     chrome.kill();
     await new Promise(resolve => { if (chrome.exitCode !== null) resolve(); else chrome.once('exit', resolve); });
-    await rm(profile, { recursive: true, force: true });
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

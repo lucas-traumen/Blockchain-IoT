@@ -891,3 +891,20 @@ safety outcome.
   running local API and reads of the local contract. Seven scenarios pass at
   desktop/mobile sizes, without JavaScript exceptions or horizontal overflow.
   No HRC transfers/session transactions are broadcast by this verifier.
+
+## Local RPC recovery and MetaMask Add Network (R19, 2026-10-12)
+
+- The dashboard connection error was caused by Hardhat RPC being down, not by the
+  MetaMask button. Hardhat is now running on `http://127.0.0.1:8545`, chain ID
+  `31337`; blockchain API `3000` reads the deployment generated for that same
+  chain and the dashboard proxy returns the matching config.
+- `dashboard/wallet.js` handles MetaMask error `4902` by requesting
+  `wallet_addEthereumChain` for `HRC Local` (`31337`, `Hardhat ETH`, RPC
+  `127.0.0.1:8545`) and retries `wallet_switchEthereumChain`.
+- `scripts/verify_wallet_first_ui.mjs` now models Add Network acceptance and uses
+  `rm` retry options for Chrome profile cleanup. Browser verifier passes 7
+  scenarios, including wrong-network Add Network followed by SIWE login.
+- A newly connected external wallet is not funded by contract deployment. Do not
+  request or store its private key/seed phrase. Before Approve/Start, provide
+  local-only ETH for gas and HRC test balance via a controlled faucet or an
+  explicit transfer to the user's full public address.

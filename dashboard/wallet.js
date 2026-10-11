@@ -17,6 +17,12 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
     const legacyAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
     const contractAddress = () => runtimeConfig.safety?.address || runtimeConfig.safetyAddress || legacyAddress;
     const chain = () => "0x" + Number(runtimeConfig.chainId || 31337).toString(16);
+    const networkParams = () => ({
+        chainId: chain(),
+        chainName: runtimeConfig.networkName || "HRC Local",
+        nativeCurrency: { name: "Hardhat ETH", symbol: "ETH", decimals: 18 },
+        rpcUrls: [runtimeConfig.rpcUrl || "http://127.0.0.1:8545"]
+    });
     const abi = new ethers.Interface([
         "function owner() view returns (address)",
         "function isRobotLocked(string) view returns (bool)",
@@ -81,14 +87,20 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
             await ethereum.request({ method: "eth_requestAccounts" });
             const network = await ethereum.request({ method: "eth_chainId" });
             if (network.toLowerCase() !== chain()) {
-                await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain() }] });
+                try {
+                    await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain() }] });
+                } catch (switchError) {
+                    if (switchError?.code !== 4902) throw switchError;
+                    await ethereum.request({ method: "wallet_addEthereumChain", params: [networkParams()] });
+                    await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain() }] });
+                }
             }
             await refresh();
         } catch (error) {
             state.isOwner = false;
             state.message = error.code === 4001 ? "MetaMask request cancelled. Click Connect Wallet to retry."
                 : error.code === -32002 ? "Open MetaMask: a connection request is already pending."
-                : error.code === 4902 ? "Add the configured network to MetaMask, then reconnect."
+                : error.code === 4902 ? "MetaMask refused adding HRC Local. Add chain 31337 manually, then retry."
                 : error.message;
         } finally { state.connecting = false; notify(); }
     }

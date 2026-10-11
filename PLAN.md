@@ -1487,3 +1487,16 @@ Chromium với SIWE signature và local API thật; không broadcast giao dịch
 JSON/ảnh nằm trong `data/results/wallet-first-connect/` (ignored). Tests hồi quy
 bổ sung: ví inject muộn, thiếu provider, thông báo gần CTA, retry sau hủy ký/sai
 mạng, nhãn header được giữ sau refresh. Không reset chain hay xóa volumes.
+
+## R19 — Khôi phục local RPC và Add Network flow — 2026-10-12
+
+| Hạng mục | Phạm vi | Trạng thái |
+| --- | --- | --- |
+| Local chain recovery | Khởi động Hardhat `31337` trên `127.0.0.1:8545`, redeploy safety/reward contracts, nối API `3000` bằng đúng deployment manifest | done |
+| MetaMask network onboarding | `wallet_switchEthereumChain` bắt lỗi `4902`, gọi `wallet_addEthereumChain` với HRC Local rồi retry switch | done |
+| Browser verifier | Fake provider mô phỏng Add Network; cleanup Chrome profile có retry; real dashboard/API/SIWE verifier | done |
+
+Evidence runtime hiện tại: dashboard `http://localhost:8080`, API `3000`, RPC
+`8545`, chain `31337`; verifier PASS 7 scenario, gồm
+`wrong-network-add-chain`. Ví MetaMask mới chưa tự có ETH gas/HRC; cần faucet
+local hoặc cấp test funds tới đúng địa chỉ trước khi chạy Approve/Start.
