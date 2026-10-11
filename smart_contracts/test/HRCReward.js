@@ -1,7 +1,8 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const {
-    loadFixture
+    loadFixture,
+    time
 } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
 const {
     anyValue
@@ -125,6 +126,13 @@ describe("HRCSessionRewards policy", function () {
 
         expect(await rewards.stakeAmount()).to.equal(COIN("2"));
         expect(await rewards.rewardAmount()).to.equal(COIN("3"));
+        expect(await rewards.MIN_REWARD_DURATION()).to.equal(30);
+        expect(await rewards.FULL_BONUS_DURATION()).to.equal(60);
+        expect(await rewards.MAX_REWARD_BONUS_PERCENT()).to.equal(100);
+        expect(await rewards.rewardAmountForDuration(30)).to.equal(COIN("3"));
+        expect(await rewards.rewardAmountForDuration(45)).to.equal(COIN("4.5"));
+        expect(await rewards.rewardAmountForDuration(60)).to.equal(COIN("6"));
+        expect(await rewards.rewardAmountForDuration(120)).to.equal(COIN("6"));
         expect(await rewards.penaltyAmount()).to.equal(COIN("2"));
         expect(await rewards.token()).to.equal(await token.getAddress());
         expect(await rewards.rewardPool()).to.equal(await rewards.getAddress());
@@ -178,6 +186,34 @@ describe("HRCSessionRewards policy", function () {
         expect(await rewards.rewardPoolBalance()).to.equal(COIN("997"));
         expect(await rewards.escrowedStakeTotal()).to.equal(0);
         expect(await rewards.hasSettled(id)).to.equal(true);
+    });
+
+    it("scales a valid reward from three to six coins and caps the bonus at 100 percent", async function () {
+        const { token, rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("duration-bonus");
+        const hash = evidence("duration-bonus");
+        const userBefore = await token.balanceOf(user.address);
+
+        await start(rewards, user, "duration-bonus");
+        const started = await rewards.getSession(id);
+        await time.increaseTo(Number(started.startedAt) + 44);
+
+        await expect(
+            rewards.connect(operator).submitSessionOutcome(
+                id,
+                user.address,
+                VALID,
+                hash,
+                1_791_532_800
+            )
+        )
+            .to.emit(rewards, "RewardPaid")
+            .withArgs(id, user.address, COIN("4.5"), anyValue)
+            .and.to.emit(rewards, "SessionSettled")
+            .withArgs(id, user.address, VALID, 0, COIN("2"), COIN("4.5"), 0, hash, 1_791_532_800);
+
+        expect(await token.balanceOf(user.address)).to.equal(userBefore + COIN("4.5"));
+        expect(await rewards.rewardPoolBalance()).to.equal(COIN("995.5"));
     });
 
     it("only an operator can submit outcome and client cannot provide amounts", async function () {

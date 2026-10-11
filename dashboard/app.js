@@ -31,13 +31,11 @@ let liveState = {
 let livePollTimer = null;
 const ROBOT_ID = "ROBOT-ARM-01";
 const byId = id => document.getElementById(id);
-const refreshBtn = byId("refreshBtn");
-const tableBody = byId("eventsTableBody");
+const refreshBtn = byId("dashboardRefreshBtn");
 const unlockBtn = byId("unlockRobotBtn");
 let loading = false;
 let unlocking = false;
 let robotLocked = null;
-let selectedTransaction = null;
 let sidebarEvents = [];
 let backendConnected = null;
 let transactionRows = [];
@@ -62,7 +60,7 @@ let demoWallet = null;
 let demoSessions = [];
 let demoTransactions = [];
 let demoAdminOverview = null;
-let demoMessage = 'Choose user_1 or user_2 to open a simulated wallet.';
+let demoMessage = 'Choose user_1 or user_2 to open a local wallet.';
 let demoSessionRef = null;
 let demoBusy = null;
 let demoReadTask = null;
@@ -502,7 +500,7 @@ function setDemoAccountModal(open) {
     else if (wasOpen) trigger?.focus();
 }
 
-function openDemoAccountModal() { if (!demoBusy) { demoLoginMessage = ''; closeDetails(); setDemoAccountModal(true); } }
+function openDemoAccountModal() { if (!demoBusy) { demoLoginMessage = ''; setDemoAccountModal(true); } }
 function closeDemoAccountModal() { setDemoAccountModal(false); }
 
 function restoreDemoSession() {
@@ -845,7 +843,7 @@ function setState(id, state) {
 }
 async function request(path, options = {}) {
     const { response, data } = await fetchChainJson(path, {
-        ...options, signal: AbortSignal.timeout(["/api/events", "/api/transactions", "/api/rewards/sessions"].includes(path) ? 90000 : 20000)
+        ...options, signal: AbortSignal.timeout(["/api/transactions", "/api/rewards/sessions"].includes(path) ? 90000 : 20000)
     });
     if (!response.ok || data.success !== true) {
         const error = new Error(data.error || `HTTP ${response.status}`);
@@ -1189,60 +1187,6 @@ function connectLiveStream() {
         renderLiveState();
     };
 }
-function tableMessage(message) {
-    sidebarEvents = [];
-    const row = document.createElement("tr");
-    row.className = "empty-row";
-    const cell = document.createElement("td");
-    cell.colSpan = 8;
-    cell.textContent = message;
-    row.appendChild(cell);
-    tableBody.replaceChildren(row);
-}
-function renderEvents(events) {
-    byId("eventCount").textContent = String(events.length);
-    document.querySelector(".nav-badge").textContent = String(events.length);
-    const sorted = [...events].sort((a, b) =>
-        Number(b.blockNumber) - Number(a.blockNumber) ||
-        Number(b.timestamp) - Number(a.timestamp));
-    sidebarEvents = sorted;
-    const latest = sorted.find(event => event.deviceId === ROBOT_ID);
-    const state = latest ? safetyState(latest) : "UNKNOWN";
-    ["aiSafetyState", "predictionState", "robotSafetyState"].forEach(id => setState(id, state));
-    if (!events.length) {
-        tableMessage("No safety events recorded.");
-        return;
-    }
-    const fragment = document.createDocumentFragment();
-    for (const event of sorted) {
-        const row = document.createElement("tr");
-        const state = safetyState(event);
-        const values = [
-            formatTimestamp(event.timestamp), event.eventId, event.deviceId,
-            state, event.riskLevel, event.blockNumber, event.transactionHash
-        ];
-        values.forEach((value, index) => {
-            const cell = document.createElement("td");
-            cell.textContent = String(value ?? "-");
-            if (index === 3) cell.className = stateClass(state);
-            if (index === 6) {
-                cell.className = "mono";
-                cell.title = String(value ?? "");
-            }
-            row.appendChild(cell);
-        });
-        const action = document.createElement("td");
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "view-all-btn";
-        button.textContent = "Details";
-        button.addEventListener("click", () => showDetails(event));
-        action.appendChild(button);
-        row.appendChild(action);
-        fragment.appendChild(row);
-    }
-    tableBody.replaceChildren(fragment);
-}
 function renderRobot(locked) {
     robotLocked = locked;
     const state = locked === true ? "LOCKED" : locked === false ? "UNLOCKED" : "UNKNOWN";
@@ -1317,32 +1261,21 @@ async function loadDashboard() {
     if (typeof trackBehavior === "function") void trackBehavior("dashboard_refresh");
     refreshBtn.disabled = true;
     refreshBtn.textContent = "Loading...";
-    byId("dashboardMessage").textContent = "Loading events, robot status and session rewards...";
+    byId("dashboardMessage").textContent = "Loading robot status and session rewards...";
     byId("robotStatusMessage").textContent = "Loading robot status...";
-    byId("eventCount").textContent = "-";
-    document.querySelector(".nav-badge").textContent = "-";
     ["aiSafetyState", "predictionState", "robotSafetyState"].forEach(id => setState(id, "UNKNOWN"));
     renderRobot(null);
-    tableMessage("Loading safety events...");
     backendConnected = null;
     syncSidebarViews();
     if (typeof loadLiveRuntime === "function") void loadLiveRuntime();
     void loadTransactions();
     if (typeof loadDemoAccountData === "function") void loadDemoAccountData();
-    const [eventsResult, robotResult] = await Promise.allSettled([
-        request("/api/events"), request(`/api/robots/${encodeURIComponent(ROBOT_ID)}/status`)
+    const [robotResult] = await Promise.allSettled([
+        request(`/api/robots/${encodeURIComponent(ROBOT_ID)}/status`)
     ]);
     backendConnected = robotResult.status === "fulfilled" && typeof robotResult.value.robotLocked === "boolean";
     const errors = [];
     try {
-        if (eventsResult.status === "fulfilled" && Array.isArray(eventsResult.value.events)) {
-            renderEvents(eventsResult.value.events);
-        } else {
-            const message = eventsResult.status === "rejected"
-                ? eventsResult.reason.message : "Invalid events response";
-            tableMessage("Unable to load events: " + message);
-            errors.push("Events: " + message);
-        }
         if (robotResult.status === "fulfilled" &&
             typeof robotResult.value.robotLocked === "boolean") {
             renderRobot(robotResult.value.robotLocked);
@@ -1363,24 +1296,6 @@ async function loadDashboard() {
         updateAdminControls();
         syncSidebarViews();
     }
-}
-function showDetails(event) {
-    const values = {
-        detailEventId: event.eventId, detailDeviceId: event.deviceId,
-        detailSafetyState: safetyState(event), detailRisk: event.riskLevel,
-        detailTx: event.transactionHash, detailDataHash: event.dataHash
-    };
-    Object.entries(values).forEach(([id, value]) => {
-        byId(id).textContent = String(value ?? "-");
-    });
-    selectedTransaction = /^0x[0-9a-fA-F]{64}$/.test(event.transactionHash || "")
-        ? event.transactionHash : null;
-    byId("etherscanBtn").disabled = !selectedTransaction;
-    byId("eventModal").classList.remove("hidden");
-    void trackBehavior("safety_event_viewed", { eventId: event.eventId, riskLevel: event.riskLevel });
-}
-function closeDetails() {
-    byId("eventModal").classList.add("hidden");
 }
 async function controlRobot(action) {
     if (!window.hrcWallet?.isOwner || unlocking || loading) return;
@@ -1457,8 +1372,6 @@ function initWallet() {
 }
 unlockBtn?.addEventListener("click", unlockRobot);
 byId("lockRobotBtn")?.addEventListener("click", lockRobot);
-byId("closeModalBtn")?.addEventListener("click", closeDetails);
-byId("eventModal")?.querySelector(".modal-overlay")?.addEventListener("click", closeDetails);
 byId("demoAccountTrigger")?.addEventListener("click", openDemoAccountModal);
 byId("demoAccountCloseBtn")?.addEventListener("click", closeDemoAccountModal);
 byId("demoAccountCancelBtn")?.addEventListener("click", closeDemoAccountModal);
@@ -1466,7 +1379,6 @@ byId("demoAccountModal")?.querySelector("[data-demo-account-close]")?.addEventLi
 document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     if (!byId("demoAccountModal")?.classList.contains("hidden")) closeDemoAccountModal();
-    else closeDetails();
 });
 byId("demoAccountModal")?.addEventListener("keydown", event => {
     if (event.key !== "Tab") return;
@@ -1475,13 +1387,8 @@ byId("demoAccountModal")?.addEventListener("keydown", event => {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
 });
-byId("etherscanBtn")?.addEventListener("click", () => {
-    if (selectedTransaction) window.open("about:blank", "_blank", "noopener,noreferrer");
-});
-
 const viewTitles = {
-    dashboard: "Safety Control Center", "live-monitoring": "Live Monitoring",
-    "safety-events": "Safety Events", reports: "Reports"
+    dashboard: "Safety Control Center", "live-monitoring": "Live Monitoring", reports: "Reports"
 };
 function navigate() {
     const requested = window.location.hash.slice(1);
@@ -1496,10 +1403,6 @@ function navigate() {
         else link.removeAttribute("aria-current");
     });
     document.querySelector(".page-heading h2").textContent = viewTitles[current];
-    const workspace = byId("demoAccountWorkspace");
-    const slot = byId(current === "reports" ? "demoReportsSlot" : "demoDashboardSlot");
-    if (workspace && slot && workspace.parentElement !== slot) slot.appendChild(workspace);
-    closeDetails();
     void trackBehavior("page_view", { view: current });
     if (current === "user") void loadUserPortal();
     if (current === "customers") void loadCustomers();
@@ -1509,9 +1412,6 @@ function syncSidebarViews() {
         button.disabled = loading || unlocking;
         button.textContent = loading ? "Loading..." : "Refresh Data";
     });
-    document.querySelectorAll("[data-load-message]").forEach(element => {
-        element.textContent = byId("dashboardMessage").textContent;
-    });
     byId("liveConnection").textContent = loading ? "LOADING" : liveStatus();
     byId("liveTelemetryConnection").textContent = liveStatus();
     byId("robotViewStatus").textContent = byId("robotStatus").textContent;
@@ -1519,17 +1419,6 @@ function syncSidebarViews() {
     setState("robotViewSafety", byId("robotSafetyState").textContent);
     byId("robotViewMessage").textContent = byId("robotStatusMessage").textContent;
 
-    // Reuse the dashboard's safely rendered rows and bind fresh listeners.
-    const allEvents = byId("allEventsTableBody");
-    allEvents.replaceChildren();
-    Array.from(tableBody.children).forEach((row, index) => {
-        const copy = row.cloneNode(true);
-        const details = copy.querySelector("button");
-        if (details && sidebarEvents[index]) {
-            details.addEventListener("click", () => showDetails(sidebarEvents[index]));
-        }
-        allEvents.appendChild(copy);
-    });
     renderTransactions();
     renderRewards();
     renderAppIdentity();

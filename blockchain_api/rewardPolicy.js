@@ -1,6 +1,6 @@
 const { ethers } = require("ethers");
 
-const POLICY_VERSION = "session-reward-v2";
+const POLICY_VERSION = "session-reward-v3-duration-bonus";
 const OUTCOMES = Object.freeze({
     VALID_NO_VIOLATION: 0,
     VIOLATION_CONFIRMED: 1,
@@ -14,7 +14,15 @@ const SETTLEMENT_STATUS = Object.freeze({
     PENALTY: 3,
     NO_REWARD: 4
 });
-const AMOUNTS = Object.freeze({ stake: "2", reward: "3", penalty: "2" });
+const AMOUNTS = Object.freeze({
+    stake: "2",
+    reward: "3",
+    maxReward: "6",
+    penalty: "2",
+    minDurationSeconds: 30,
+    fullBonusDurationSeconds: 60,
+    maxBonusPercent: 100
+});
 
 function normalizeOutcome(value) {
     if (typeof value !== "string" || !Object.hasOwn(OUTCOMES, value)) {

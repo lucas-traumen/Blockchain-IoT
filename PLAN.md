@@ -1376,3 +1376,22 @@ be exercised on a machine with Docker Compose.**
   `git diff --check`, and a clean real-chain `--smoke` run passed. Docker/Nginx
   runtime validation remains for the user's Docker machine because this
   executor has no Docker CLI.
+
+## R15 — Remove empty duplicated Safety Events surface — 2026-10-11
+
+- **Done:** removed the legacy empty `/api/events` navigation/table/card/modal
+  from the dashboard. Live telemetry remains under `Live Monitoring`; wallet,
+  session and transaction evidence remain under Dashboard/Reports.
+- **Verification:** `npm --prefix blockchain_api test -- --runInBand` → 103/103;
+  `node --check dashboard/app.js`; `git diff --check`; browser verifier with
+  `HRC_CHAIN_API_URL=http://127.0.0.1:3000` passed desktop/mobile, no JS errors,
+  no horizontal overflow and no read-only wallet writes.
+
+## R16 — Blockchain re-audit — 2026-10-11
+
+- **Done:** verified deployment wiring, the pool/escrow invariant, the on-chain
+  duration-bonus curve, and all four settlement outcomes plus idempotent retry
+  against the live local stack. No contract or policy change was required.
+- **Evidence:** `npx hardhat test` 74 passing, `npm --prefix blockchain_api test`
+  103/103, `scripts/smoke_reward_service.js` all outcomes as expected, invariant
+  `balanceOf(rewards) == rewardPoolBalance + escrowedStakeTotal` = true.

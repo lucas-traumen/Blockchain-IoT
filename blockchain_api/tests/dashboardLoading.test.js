@@ -7,7 +7,7 @@ const vm = require("node:vm");
 for (const missingMessage of [false, true]) {
     test(`dashboard loads while transaction API waits, including cached HTML=${missingMessage}`, async () => {
         const source = fs.readFileSync(path.join(__dirname, "../../dashboard/app.js"), "utf8");
-        const dashboard = source.slice(source.indexOf("async function loadDashboard()"), source.indexOf("function showDetails("));
+        const dashboard = source.slice(source.indexOf("async function loadDashboard()"), source.indexOf("async function controlRobot("));
         const transactions = source.slice(source.indexOf("async function loadTransactions()"), source.indexOf('document.querySelectorAll("[data-refresh]")', source.indexOf("async function loadTransactions()")));
         class Element {
             constructor() { this.children = []; this.textContent = ""; }
@@ -29,16 +29,11 @@ for (const missingMessage of [false, true]) {
             document: { querySelector: () => new Element(), createElement: () => new Element() },
             setState: (id, state) => { byId(id).textContent = state; },
             renderRobot: locked => { byId("robotStatus").textContent = locked ? "LOCKED" : "UNKNOWN"; },
-            renderEvents: events => { byId("eventCount").textContent = String(events.length); },
-            tableMessage() {},
             updateAdminControls() {},
-            request: async url => url === "/api/transactions" ? pending
-                : url === "/api/events" ? { success: true, events: [{}] }
-                : { success: true, robotLocked: true }
+            request: async url => url === "/api/transactions" ? pending : { success: true, robotLocked: true }
         });
         vm.runInContext(dashboard + transactions + "\nfunction syncSidebarViews() { renderTransactions(); }", context);
         await vm.runInContext("loadDashboard()", context);
-        assert.equal(byId("eventCount").textContent, "1");
         assert.equal(byId("robotStatus").textContent, "LOCKED");
         assert.equal(context.loading, false);
         assert.equal(context.refreshBtn.disabled, false);
@@ -47,7 +42,6 @@ for (const missingMessage of [false, true]) {
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(context.transactionsLoading, false);
         assert.match(context.transactionMessage, /timeout/);
-        assert.equal(byId("eventCount").textContent, "1");
         assert.equal(byId("robotStatus").textContent, "LOCKED");
     });
 }

@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=live-sessions-5">
+    <link rel="stylesheet" href="style.css?v=duration-reward-4-clean-events">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -50,12 +50,6 @@
                 <a href="#live-monitoring" data-view="live-monitoring" class="nav-item">
                     <span class="nav-icon">◉</span>
                     <span>Live Monitoring</span>
-                </a>
-
-                <a href="#safety-events" data-view="safety-events" class="nav-item">
-                    <span class="nav-icon">⚠</span>
-                    <span>Safety Events</span>
-                    <span class="nav-badge">0</span>
                 </a>
 
             </nav>
@@ -203,14 +197,19 @@
                     </div>
                     <div class="demo-policy-list">
                         <div class="demo-policy-row stake-policy"><span>START SESSION</span><strong>Lock 2 HRC</strong><small>Approve again whenever allowance is below 2 HRC.</small></div>
-                        <div class="demo-policy-row reward-policy"><span>VALID / NO VIOLATION</span><strong>Return 2 + reward 3 HRC</strong><small>Up to 3 HRC per UTC day, while the reward pool has funds.</small></div>
+                        <div class="demo-policy-row reward-policy"><span>VALID / NO VIOLATION</span><strong>Return 2 + reward up to 6 HRC</strong><small>Base reward is 3 HRC at 30s. The bonus rises to 100% at 60s, then caps.</small></div>
                         <div class="demo-policy-row penalty-policy"><span>VIOLATION CONFIRMED</span><strong>Forfeit the 2 HRC stake</strong><small>The stake goes to the configured penalty treasury.</small></div>
                         <div class="demo-policy-row neutral-policy"><span>SENSOR FAULT / INCOMPLETE</span><strong>Return 2 HRC · no reward</strong><small>Sensor faults and incomplete data receive no reward or penalty.</small></div>
                     </div>
                 </section>
             </div>
 
-            <div class="demo-settlement-note"><strong>End to receive the result</strong><span><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and 20 samples.</span></div>
+            <div class="demo-reward-scale" aria-label="Duration reward scale">
+                <div class="demo-reward-scale-heading"><strong>Duration reward</strong><span>Longer clear sessions earn more</span></div>
+                <div class="demo-reward-scale-track" aria-hidden="true"><span></span></div>
+                <div class="demo-reward-scale-points"><span><b>30s</b><small>3 HRC</small></span><span><b>45s</b><small>4.5 HRC</small></span><span><b>60s+</b><small>6 HRC max</small></span></div>
+            </div>
+            <div class="demo-settlement-note"><strong>End to receive the result</strong><span><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and 20 samples. Confirmed violations never receive the duration bonus.</span></div>
 
             <section class="demo-ledger" aria-labelledby="demoLedgerHeading">
                 <div class="demo-ledger-header"><h4 id="demoLedgerHeading">Recent wallet activity</h4><span>Amounts verified from contract events and token transfers</span></div>
@@ -225,18 +224,12 @@
                 <div class="table-wrapper demo-transaction-table"><table><thead><tr><th>ACTION / AMOUNTS</th><th>AVAILABLE Δ</th><th>LOCKED Δ</th><th>BLOCK</th><th>TRANSACTION HASH</th></tr></thead><tbody id="demoTransactionsTableBody"><tr class="empty-row"><td colspan="5">No transactions recorded yet.</td></tr></tbody></table></div>
             </details>
         </section>
-        <section id="demoAdminReport" class="panel admin-demo-report" hidden aria-labelledby="demoAdminHeading">
-            <div class="panel-header compact-panel-header"><div><span class="panel-kicker">READ-ONLY REPORT</span><h3 id="demoAdminHeading">Demo user overview</h3><p>Wallets, stakes and settlement results for user_1 and user_2.</p></div><button type="button" class="view-all-btn" data-demo-refresh>Refresh report</button></div>
-            <p id="demoAdminMessage" class="view-message" role="status" aria-live="polite">Loading both users...</p>
-            <div class="demo-admin-summary">
-                <div><span>Total user balance</span><strong id="demoAdminBalance">-- HRC</strong></div>
-                <div><span>Active / settled</span><strong id="demoAdminSessionCount">-- / --</strong></div>
-                <div><span>Rewards / penalties</span><strong id="demoAdminPayout">-- / -- HRC</strong></div>
-            </div>
-            <div class="table-wrapper demo-admin-table"><table><thead><tr><th>USER</th><th>WALLET</th><th>BALANCE</th><th>ALLOWANCE</th><th>SESSIONS</th><th>LAST RESULT</th></tr></thead><tbody id="demoAdminTableBody"><tr class="empty-row"><td colspan="6">Loading both users...</td></tr></tbody></table></div>
-            <details class="demo-history"><summary>All user sessions <span id="demoAdminHistoryCount">0</span></summary><div class="table-wrapper demo-session-table"><table><thead><tr><th>USER</th><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT</th><th>STAKE RETURNED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="demoAdminSessionsTableBody"><tr class="empty-row"><td colspan="9">No sessions recorded yet.</td></tr></tbody></table></div></details>
-        </section>
         </div>
+        </div>
+
+        <div class="dashboard-status-row">
+            <p id="dashboardMessage" role="status" aria-live="polite">Waiting for blockchain_api data.</p>
+            <button id="dashboardRefreshBtn" class="view-all-btn" type="button">Refresh Data</button>
         </div>
 
         <!-- =====================================================
@@ -255,7 +248,7 @@
                     </div>
 
                     <span class="card-label">
-                        ROBOT STATUS
+                        ROBOT ACCESS
                     </span>
 
                 </div>
@@ -265,7 +258,7 @@
                 <div class="card-meta">
                     <span class="status-dot online"></span>
                     <span id="robotDevice">
-                        Device: ROBOT-ARM-01
+                        On-chain emergency-stop state
                     </span>
                 </div>
 
@@ -282,7 +275,7 @@
                     </div>
 
                     <span class="card-label">
-                        AI SAFETY STATE
+                        CURRENT SAFETY STATE
                     </span>
 
                 </div>
@@ -296,38 +289,7 @@
                     <span class="status-dot clear"></span>
 
                     <span>
-                        State derived from latest on-chain risk
-                    </span>
-                </div>
-
-            </div>
-
-
-            <!-- EVENTS -->
-            <div class="overview-card">
-
-                <div class="card-top">
-
-                    <div class="card-icon event-icon">
-                        ⚡
-                    </div>
-
-                    <span class="card-label">
-                        SAFETY EVENTS
-                    </span>
-
-                </div>
-
-                <div
-                    class="card-value"
-                    id="eventCount"
-                >
-                    0
-                </div>
-
-                <div class="card-meta">
-                    <span>
-                        Recorded on-chain
+                        Latest ESP32 + backend assessment
                     </span>
                 </div>
 
@@ -344,7 +306,7 @@
                     </div>
 
                     <span class="card-label">
-                        BLOCKCHAIN
+                        CHAIN CONNECTION
                     </span>
 
                 </div>
@@ -356,7 +318,7 @@
                     <span class="status-dot online"></span>
 
                     <span>
-                        Backend reads on-chain records
+                        Network and blockchain API status
                     </span>
 
                 </div>
@@ -401,14 +363,14 @@
                                 <span></span>
                             </span>
 
-                            <h3>
-                                Real-Time Safety Monitor
+                                <h3>
+                            ESP32 Live Monitoring
                             </h3>
 
                         </div>
 
                         <p>
-                            Distance monitoring & AI prediction
+                            Distance, threshold and runtime assessment
                         </p>
 
                     </div>
@@ -538,11 +500,11 @@
                     <div>
 
                         <h3>
-                            AI Prediction
+                            AI Forecast
                         </h3>
 
                         <p>
-                            Future safety estimation
+                            Predicted distance for the next 100-500 ms
                         </p>
 
                     </div>
@@ -692,11 +654,11 @@
                     <div>
 
                         <h3>
-                            Safety State
+                            Safety Legend
                         </h3>
 
                         <p>
-                            AI safety classification
+                            Meaning of backend assessment states
                         </p>
 
                     </div>
@@ -777,70 +739,6 @@
 
 
 
-        <!-- =====================================================
-             ON-CHAIN EVENTS
-        ====================================================== -->
-
-        <section class="panel events-panel">
-
-            <div class="panel-header events-header">
-
-                <div>
-
-                    <h3>
-                        Recent On-Chain Safety Events
-                    </h3>
-
-                    <p>
-                        Immutable safety records stored on blockchain
-                    </p>
-
-                </div>
-
-                <button id="refreshBtn" class="view-all-btn" type="button">Refresh Data</button>
-
-            </div>
-
-
-            <p id="dashboardMessage" role="status" aria-live="polite">Waiting for blockchain_api data.</p>
-            <div class="table-wrapper">
-
-                <table>
-
-                    <thead>
-
-                        <tr>
-
-                            <th>TIME</th>
-
-                            <th>EVENT ID</th>
-
-                            <th>DEVICE</th>
-
-                            <th>STATE</th>
-
-                            <th>RISK</th>
-
-                            <th>BLOCK</th>
-
-                            <th>TRANSACTION</th>
-
-                            <th>ACTION</th>
-
-                        </tr>
-
-                    </thead>
-
-
-                    <tbody id="eventsTableBody"><tr class="empty-row"><td colspan="8">Loading safety events...</td></tr></tbody>
-
-                </table>
-
-            </div>
-
-        </section>
-
-
         </div>
 
         <section id="view-live-monitoring" class="sidebar-view panel" hidden aria-labelledby="liveHeading">
@@ -858,11 +756,6 @@
                 <div><dt>Edge parity</dt><dd id="liveParity">--</dd></div>
             </dl></div>
         </section>
-        <section id="view-safety-events" class="sidebar-view panel" hidden aria-labelledby="eventsHeading">
-            <div class="panel-header"><div><h3 id="eventsHeading">Safety Events</h3><p>Real on-chain records. Safety state is derived from risk.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
-            <p class="view-message" data-load-message role="status" aria-live="polite"></p>
-            <div class="table-wrapper"><table><thead><tr><th>TIME</th><th>EVENT ID</th><th>DEVICE</th><th>STATE</th><th>RISK</th><th>BLOCK</th><th>TRANSACTION</th><th>ACTION</th></tr></thead><tbody id="allEventsTableBody"></tbody></table></div>
-        </section>
         <section id="view-blockchain" class="sidebar-view panel" hidden aria-labelledby="blockchainHeading">
             <div class="panel-header"><div><h3 id="blockchainHeading">Blockchain</h3><p>Deployment information for the existing contract.</p></div></div>
             <div class="view-body"><dl class="view-info">
@@ -875,7 +768,17 @@
         </section>
         <section id="view-reports" class="sidebar-view panel" hidden aria-labelledby="reportsHeading">
             <div class="panel-header"><div><h3 id="reportsHeading">Reports</h3><p id="transactionsDescription">Safety and reward transactions recorded on the configured network.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
-            <div id="demoReportsSlot"></div>
+            <section id="demoAdminReport" class="panel admin-demo-report" hidden aria-labelledby="demoAdminHeading">
+                <div class="panel-header compact-panel-header"><div><span class="panel-kicker">READ-ONLY REPORT</span><h3 id="demoAdminHeading">Demo user overview</h3><p>Wallets, stakes and settlement results for user_1 and user_2.</p></div><button type="button" class="view-all-btn" data-demo-refresh>Refresh report</button></div>
+                <p id="demoAdminMessage" class="view-message" role="status" aria-live="polite">Loading both users...</p>
+                <div class="demo-admin-summary">
+                    <div><span>Total user balance</span><strong id="demoAdminBalance">-- HRC</strong></div>
+                    <div><span>Active / settled</span><strong id="demoAdminSessionCount">-- / --</strong></div>
+                    <div><span>Rewards / penalties</span><strong id="demoAdminPayout">-- / -- HRC</strong></div>
+                </div>
+                <div class="table-wrapper demo-admin-table"><table><thead><tr><th>USER</th><th>WALLET</th><th>BALANCE</th><th>ALLOWANCE</th><th>SESSIONS</th><th>LAST RESULT</th></tr></thead><tbody id="demoAdminTableBody"><tr class="empty-row"><td colspan="6">Loading both users...</td></tr></tbody></table></div>
+                <details class="demo-history"><summary>All user sessions <span id="demoAdminHistoryCount">0</span></summary><div class="table-wrapper demo-session-table"><table><thead><tr><th>USER</th><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT</th><th>STAKE RETURNED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="demoAdminSessionsTableBody"><tr class="empty-row"><td colspan="9">No sessions recorded yet.</td></tr></tbody></table></div></details>
+            </section>
             <p class="view-message" id="transactionsMessage" role="status" aria-live="polite"></p>
             <div class="table-wrapper"><table><thead><tr><th>TRANSACTION HASH</th><th>TYPE</th><th>BLOCK</th><th>EVENT ID</th><th>DEVICE</th><th>RISK</th><th>ETHERSCAN</th></tr></thead><tbody id="transactionsTableBody"></tbody></table></div>
         </section>
@@ -997,132 +900,6 @@
 </div>
 
 
-<!-- =========================================================
-     EVENT DETAIL MODAL
-========================================================== -->
-
-<div
-    id="eventModal"
-    class="modal hidden"
->
-
-    <div class="modal-overlay"></div>
-
-    <div class="modal-content">
-
-        <div class="modal-header">
-
-            <div>
-
-                <span class="modal-label">
-                    ON-CHAIN EVENT
-                </span>
-
-                <h3>
-                    Safety Event Details
-                </h3>
-
-            </div>
-
-            <button
-                id="closeModalBtn"
-                class="modal-close"
-            >
-                ×
-            </button>
-
-        </div>
-
-
-        <div class="event-details">
-
-            <div class="detail-item">
-
-                <span>Event ID</span>
-
-                <strong id="detailEventId">
-                    —
-                </strong>
-
-            </div>
-
-
-            <div class="detail-item">
-
-                <span>Device ID</span>
-
-                <strong id="detailDeviceId">
-                    —
-                </strong>
-
-            </div>
-
-
-            <div class="detail-item">
-
-                <span>Safety State</span>
-
-                <strong id="detailSafetyState">
-                    —
-                </strong>
-
-            </div>
-
-
-            <div class="detail-item">
-
-                <span>Risk Level</span>
-
-                <strong id="detailRisk">
-                    —
-                </strong>
-
-            </div>
-
-
-            <div class="detail-item full">
-
-                <span>Transaction Hash</span>
-
-                <strong
-                    id="detailTx"
-                    class="mono"
-                >
-                    —
-                </strong>
-
-            </div>
-
-
-            <div class="detail-item full">
-
-                <span>Data Hash</span>
-
-                <strong
-                    id="detailDataHash"
-                    class="mono"
-                >
-                    —
-                </strong>
-
-            </div>
-
-        </div>
-
-
-        <div class="modal-actions">
-
-            <button id="etherscanBtn" class="etherscan-btn" type="button">
-                ↗ View on Etherscan
-            </button>
-
-        </div>
-
-    </div>
-
-</div>
-
-
-    <script src="app.js?v=live-sessions-5" defer></script>
+    <script src="app.js?v=duration-reward-4-clean-events" defer></script>
 </body>
 </html>

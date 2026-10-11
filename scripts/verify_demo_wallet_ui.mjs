@@ -100,7 +100,7 @@ try {
     await call('Network.enable');
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await call('Page.navigate', { url: base });
-    await wait('document.readyState === "complete" && typeof openDemoAccountModal === "function" && !document.getElementById("refreshBtn").disabled');
+    await wait('document.readyState === "complete" && typeof openDemoAccountModal === "function" && !document.getElementById("dashboardRefreshBtn").disabled');
     const browserApi = await evaluate('API_URL');
     assert.equal(browserApi, api, 'The browser and receipt verifier must use the same blockchain API');
     await evaluate(`document.addEventListener('click', event => { window.__hrcClickCorrect = window.__hrcExpectedClick?.contains(event.target) === true; }, true);`);
@@ -116,8 +116,8 @@ try {
     await login('user_1');
     check('Open loads the fixed user_1 wallet', await evaluate('document.getElementById("demoWalletAddress").textContent.startsWith("0x3C44")'));
     const before = await evaluate('document.getElementById("demoWalletBalance").textContent');
-    await click('#refreshBtn');
-    await wait('!document.getElementById("refreshBtn").disabled');
+    await click('#dashboardRefreshBtn');
+    await wait('!document.getElementById("dashboardRefreshBtn").disabled');
     check('Refresh preserves the selected user balance', await evaluate(`document.getElementById('demoWalletBalance').textContent === ${JSON.stringify(before)} && document.getElementById('rewardBalance').textContent === ${JSON.stringify(before)}`));
     await login('user_2');
     check('user_2 sees its own wallet and sessions', await evaluate('document.getElementById("demoWalletAddress").textContent.startsWith("0x90F7") && !document.getElementById("demoSessionsTableBody").textContent.includes("demo-user_1-")'));
@@ -179,7 +179,7 @@ try {
         check('Repeated End does not settle twice', repeated.duplicate === true && Number((await request('/api/me/wallet', token)).balance) === Number(after.balance));
         await writeFile(join(evidence, 'live-sensor-settlement.json'), JSON.stringify({ source: 'live-esp32-session', chain: process.env.HRC_UI_CHAIN_LABEL || 'existing-local-demo', apiUrl: api, resumed: Boolean(existingId), alreadySettled, initialBalance: initial.balance, balanceBeforeEnd: staked.balance, after: after.balance, measured: measured.session, readback, settlement }, null, 2) + '\n');
         await call('Page.reload');
-        await wait('document.readyState === "complete" && demoSession.user?.userId === "user_2" && demoTransactions.length > 0 && !document.getElementById("refreshBtn").disabled');
+        await wait('document.readyState === "complete" && demoSession.user?.userId === "user_2" && demoTransactions.length > 0 && !document.getElementById("dashboardRefreshBtn").disabled');
         await evaluate(`document.addEventListener('click', event => { window.__hrcClickCorrect = window.__hrcExpectedClick?.contains(event.target) === true; }, true);`);
         check('Reload restores settlement and visible amount history', await evaluate('demoTransactions.some(transaction => transaction.action === "SETTLEMENT") && document.getElementById("demoRecentActivity").children.length > 0'));
     }
@@ -189,8 +189,9 @@ try {
     check('Admin has no visible contract transaction buttons', await evaluate('!document.getElementById("demoApproveBtn").getClientRects().length && !document.getElementById("demoStartBtn").getClientRects().length && !document.getElementById("demoEndBtn").getClientRects().length'));
     await screenshot('admin-dashboard-desktop');
     await click('[data-view="reports"]');
-    await wait('document.getElementById("demoAccountWorkspace").parentElement.id === "demoReportsSlot"');
-    check('Admin report is accessible through Reports', await evaluate('document.getElementById("demoAdminReport").getClientRects().length > 0'));
+    await wait('document.getElementById("demoAdminReport").getClientRects().length > 0');
+    check('Wallet workspace stays on Dashboard instead of duplicating in Reports', await evaluate('document.getElementById("demoAccountWorkspace").parentElement.id === "demoDashboardSlot" && !document.getElementById("demoWalletPanel").getClientRects().length'));
+    check('Admin overview is accessible through Reports', await evaluate('document.getElementById("demoAdminReport").getClientRects().length > 0'));
     await screenshot('admin-reports-desktop');
     await click('[data-view="dashboard"]');
     await login('user_2');

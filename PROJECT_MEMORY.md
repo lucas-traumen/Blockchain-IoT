@@ -657,10 +657,11 @@ start, transaction/event receipts, and session history. Navigation remains
 Dashboard, Live Monitoring, Safety Events, Reports; admin views reports only.
 
 The reward policy is shown beside the user actions: a session locks 2 HRC; a
-valid outcome returns 2 HRC and pays 3 HRC when the daily policy allows it; a
-confirmed violation forfeits the 2 HRC stake; sensor fault or incomplete
-returns the stake without reward. Users submit approval and session start only;
-the backend operator submits settlement from the recorded safety outcome.
+valid outcome returns 2 HRC and pays the duration-based reward when the daily
+policy allows it; a confirmed violation forfeits the 2 HRC stake; sensor fault
+or incomplete returns the stake without reward. Users submit approval and
+session start only; the backend operator submits settlement from the recorded
+safety outcome.
 
 
 ## R10 verification and recovery behavior (2026-10-11)
@@ -766,3 +767,55 @@ the backend operator submits settlement from the recorded safety outcome.
 - The local demo is not ready until `/api/chain/api/config` parses as JSON with
   `success=true`. A stale dashboard process or missing blockchain API therefore
   fails at startup with actionable logs instead of opening a broken wallet UI.
+
+## Duration-based HRC reward (R14, 2026-10-11)
+
+- The contract is authoritative for reward amounts. A valid, violation-free
+  session earns a 3 HRC base reward at the 30-second validity threshold, with a
+  linear duration bonus reaching 100% (6 HRC total) at 60 seconds. Rewards cap
+  at 6 HRC after 60 seconds. The existing one-reward-per-beneficiary-per-UTC-day
+  limit and reward-pool check still apply.
+- Duration is measured on-chain as `block.timestamp - startedAt`; clients and
+  the API cannot choose a payout amount. Confirmed violations still forfeit the
+  2 HRC stake. Sensor faults and incomplete sessions return the stake and pay no
+  reward.
+- The dashboard shows the 30s/3 HRC, 45s/4.5 HRC and 60s+/6 HRC scale beside
+  wallet actions. API policy summary reads duration and amount limits from the
+  deployed contract.
+- Verification on 2026-10-11: smart contracts 74 passing and blockchain API
+  103 passing. A fresh local Hardhat deployment/API returned the v3 policy; a
+  chain-time-advanced 45-second valid session emitted `RewardPaid=4.5 HRC` and
+  returned the 2 HRC stake. This was a local contract check, not a physical
+  ESP32 session. Dashboard browser verification passed at 1440x1000 and 390x844
+  with no horizontal overflow or JavaScript exceptions.
+
+## Dashboard safety-events cleanup (2026-10-11)
+
+- Legacy `/api/events` currently returns an empty safety-event list in the local
+  reward demo and duplicated the live safety/session surfaces. The dashboard no
+  longer exposes a separate `Safety Events` navigation item, empty event count
+  card, duplicated event table, or event-detail modal.
+- `Dashboard` keeps account/session actions and a compact refresh/status row;
+  `Live Monitoring` is the source for current ESP32 telemetry, threshold and AI
+  assessment; `Reports` is the read-only location for reward/session and
+  transaction history.
+- Frontend no longer requests `/api/events` during Dashboard refresh. Browser
+  verification and blockchain API tests were updated for the reduced surface.
+
+## Blockchain re-audit (2026-10-11)
+
+- Wiring: token `0xe7f1…0512`, HRCSessionRewards `0x9fE4…f6e0`; `rewardPool()`
+  points at the contract itself, `penaltyTreasury` = `0x7099…79C8`, owner =
+  `0xf39F…2266` is a registered operator.
+- Invariant `token.balanceOf(rewards) == rewardPoolBalance + escrowedStakeTotal`
+  holds before and after settlements; `escrowedStakeTotal` returns to `0`, so no
+  stake is left stranded.
+- Duration bonus curve on chain: 30s → 3.0 HRC, 45s → 4.5, ≥60s → 6.0 (cap
+  100%), matching `rewardPolicy.js`.
+- End-to-end smoke (`scripts/smoke_reward_service.js`) against the running local
+  stack: valid → `REWARDED` +3; second valid same day → `REWARD_DAILY_LIMIT`
+  (stake returned, no reward); violation → `PENALTY` 2; sensor fault →
+  `NO_REWARD` (stake returned); duplicate retry → `duplicate: true` with no new
+  transaction. Pool 1000 → 997; beneficiary 20 → 23 (20 − 8 staked + 6 returned
+  + 3 reward + 2 penalty to the same account acting as treasury).
+- `npx hardhat test` → 74 passing; `npm --prefix blockchain_api test` → 103/103.

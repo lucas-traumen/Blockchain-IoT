@@ -138,7 +138,7 @@ class RewardReadService {
 
     async getSummary(beneficiary) {
         const address = this._beneficiary(beneficiary);
-        const [network, balance, poolBalance, contractBalance, symbol, totalSupply, stake, reward, penalty] = await Promise.all([
+        const [network, balance, poolBalance, contractBalance, symbol, totalSupply, stake, reward, penalty, minDuration, fullBonusDuration, maxBonusPercent, maxReward] = await Promise.all([
             this.provider.getNetwork(),
             this.token.balanceOf(address),
             this.rewards.rewardPoolBalance(),
@@ -147,7 +147,11 @@ class RewardReadService {
             this.token.totalSupply(),
             this.rewards.stakeAmount(),
             this.rewards.rewardAmount(),
-            this.rewards.penaltyAmount()
+            this.rewards.penaltyAmount(),
+            this.rewards.MIN_REWARD_DURATION(),
+            this.rewards.FULL_BONUS_DURATION(),
+            this.rewards.MAX_REWARD_BONUS_PERCENT(),
+            this.rewards.rewardAmountForDuration(await this.rewards.FULL_BONUS_DURATION())
         ]);
         return {
             success: true,
@@ -164,7 +168,11 @@ class RewardReadService {
             policy: {
                 stake: ethers.formatEther(stake),
                 reward: ethers.formatEther(reward),
+                maxReward: ethers.formatEther(maxReward),
                 penalty: ethers.formatEther(penalty),
+                minDurationS: Number(minDuration),
+                fullBonusDurationS: Number(fullBonusDuration),
+                maxBonusPercent: Number(maxBonusPercent),
                 dailyRewardLimit: 1
             }
         };

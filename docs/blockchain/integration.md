@@ -348,7 +348,8 @@ The IoT service can settle a closed session through `blockchain_api` without
 holding a wallet key. Configure the bridge in `compose.env` with the API URL,
 ingest token and beneficiary, then enable `HRC_REWARD_AUTO_START` and
 `HRC_REWARD_AUTO_SETTLE`. The start call stakes 2 HRC; the outcome call lets the
-contract apply the fixed policy for `VALID_NO_VIOLATION`, `VIOLATION_CONFIRMED`,
+contract apply the duration-based reward policy for `VALID_NO_VIOLATION` and
+the corresponding stake/penalty behavior for `VIOLATION_CONFIRMED`,
 `SENSOR_FAULT` or `INCOMPLETE`.
 
 The IoT SQLite database contains the `reward_settlements` outbox. It records the

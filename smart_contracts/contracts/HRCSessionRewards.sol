@@ -8,18 +8,22 @@ interface IHRCRewardToken {
 }
 
 /// @title HRCSessionRewards
-/// @notice Fixed policy for session stake, safety reward and violation penalty.
+/// @notice Session stake, duration-based safety reward and violation penalty.
 /// @dev The contract does not mint tokens. It moves fixed-supply ERC-20 tokens
 ///      between users, this contract's reward pool, and the penalty treasury.
 contract HRCSessionRewards {
     // ======================================================
-    // FIXED POLICY
+    // SESSION REWARD POLICY
     // ======================================================
 
     // The project token uses 18 decimals, so 1 coin is 1 ether unit.
     uint256 public constant stakeAmount = 2 ether;
+    // rewardAmount is the base reward at the 30-second validity threshold.
     uint256 public constant rewardAmount = 3 ether;
     uint256 public constant penaltyAmount = 2 ether;
+    uint256 public constant MIN_REWARD_DURATION = 30 seconds;
+    uint256 public constant FULL_BONUS_DURATION = 60 seconds;
+    uint256 public constant MAX_REWARD_BONUS_PERCENT = 100;
     uint256 public constant SECONDS_PER_DAY = 1 days;
 
     // Outcome values submitted by the trusted backend/operator.
@@ -373,21 +377,24 @@ contract HRCSessionRewards {
             stakeReturned = current.stakedAmount;
 
             uint256 rewardDay = _rewardDay(block.timestamp);
+            uint256 sessionReward = rewardAmountForDuration(
+                block.timestamp - current.startedAt
+            );
             if (lastRewardDay[beneficiary] == rewardDay) {
                 settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
-            } else if (rewardPoolBalance < rewardAmount) {
+            } else if (rewardPoolBalance < sessionReward) {
                 settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
             } else {
-                rewardPoolBalance -= rewardAmount;
-                _transferTo(beneficiary, rewardAmount);
+                rewardPoolBalance -= sessionReward;
+                _transferTo(beneficiary, sessionReward);
                 lastRewardDay[beneficiary] = rewardDay;
-                rewardPaid = rewardAmount;
+                rewardPaid = sessionReward;
                 settlementStatus = SETTLEMENT_REWARDED;
 
                 emit RewardPaid(
                     sessionId,
                     beneficiary,
-                    rewardAmount,
+                    sessionReward,
                     rewardDay
                 );
             }
@@ -458,7 +465,10 @@ contract HRCSessionRewards {
             stakeReturned = stakeAmount;
             dailyLimitReached =
                 lastRewardDay[beneficiary] == _rewardDay(block.timestamp);
-            poolEmpty = rewardPoolBalance < rewardAmount;
+            rewardPaid = current.started
+                ? rewardAmountForDuration(block.timestamp - current.startedAt)
+                : rewardAmount;
+            poolEmpty = rewardPoolBalance < rewardPaid;
 
             if (dailyLimitReached) {
                 settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
@@ -466,7 +476,6 @@ contract HRCSessionRewards {
                 settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
             } else {
                 settlementStatus = SETTLEMENT_REWARDED;
-                rewardPaid = rewardAmount;
             }
         } else if (outcome == OUTCOME_VIOLATION_CONFIRMED) {
             settlementStatus = SETTLEMENT_PENALTY;
@@ -514,6 +523,27 @@ contract HRCSessionRewards {
 
     function currentRewardDay() external view returns (uint256) {
         return _rewardDay(block.timestamp);
+    }
+
+    /// @notice Returns the reward for an elapsed session duration.
+    /// @dev The base reward starts at 30 seconds and reaches a 100% bonus at
+    ///      60 seconds. Integer seconds are used because block timestamps are
+    ///      integer seconds; the result is still exact to the token decimals.
+    function rewardAmountForDuration(uint256 durationSeconds)
+        public
+        pure
+        returns (uint256)
+    {
+        if (durationSeconds <= MIN_REWARD_DURATION) return rewardAmount;
+
+        uint256 bonusSeconds = durationSeconds - MIN_REWARD_DURATION;
+        if (bonusSeconds > FULL_BONUS_DURATION - MIN_REWARD_DURATION) {
+            bonusSeconds = FULL_BONUS_DURATION - MIN_REWARD_DURATION;
+        }
+
+        return rewardAmount
+            + (rewardAmount * MAX_REWARD_BONUS_PERCENT * bonusSeconds)
+                / (100 * (FULL_BONUS_DURATION - MIN_REWARD_DURATION));
     }
 
     function outcomeName(uint8 outcome)
