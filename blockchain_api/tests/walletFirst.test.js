@@ -34,6 +34,7 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         async sessions(userId) { return { success: true, userId, count: 0, sessions: [] }; },
         async session(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
         async start() { return { success: true, mode: "backend" }; },
+        async confirmWalletStart(userId, sessionId, body) { return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash }; },
         async end() { return { success: true, settled: true }; }
     };
     const server = createApp({ service: {}, customerService, demoService, liveService, walletFirst, tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode } }).listen(0, "127.0.0.1");
@@ -99,6 +100,12 @@ test("wallet-first sessions are prepared for the user to sign, never broadcast",
     assert.equal(end.body.operatorOnly, true);
     assert.equal(end.body.data, null);
     assert.match(end.body.description, /operator/i);
+
+    const confirmed = await f.call(`/api/me/sessions/${start.body.sessionId}/confirm-start`, {
+        method: "POST", token, body: { transactionHash: "0x" + "b".repeat(64) }
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.stage, "RUNNING");
 });
 
 test("a wallet cannot prepare a session for another wallet's session id", async t => {

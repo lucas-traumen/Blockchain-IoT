@@ -149,6 +149,66 @@ class LiveSessionService {
             return this.advanceStart(record);
         });
     }
+
+    // Wallet-first users sign the stake transaction in MetaMask. The backend
+    // must still own the sensor reservation and persist the session after the
+    // wallet confirms that on-chain start succeeded.
+    confirmWalletStart(userId, sessionId, body = {}) {
+        this.validateBody(body, ['transactionHash']);
+        if (!/^0x[0-9a-fA-F]{64}$/.test(String(body.transactionHash || ''))) {
+            throw new ApiError(400, 'INVALID_PAYLOAD', 'transactionHash must be a 32-byte transaction hash');
+        }
+        return this.serial(async () => {
+            const user = this.walletService._user(userId);
+            const id = identifier(sessionId, 'sessionId');
+            let record = this.store.get(id);
+            if (record && record.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
+
+            const chain = (await this.walletService.getSession(userId, id)).session;
+            if (!chain.started) {
+                return { success: true, httpStatus: 202, pending: true, sessionId: id, transactionHash: body.transactionHash, stage: 'START_PENDING' };
+            }
+            if (chain.beneficiary.toLowerCase() !== user.walletAddress.toLowerCase()) {
+                throw new ApiError(409, 'BENEFICIARY_MISMATCH', 'The on-chain session belongs to another wallet');
+            }
+
+            record ||= this.store.save({
+                sessionId: id,
+                sessionRef: null,
+                userId,
+                beneficiary: user.walletAddress,
+                createdAt: new Date(this.clock()).toISOString(),
+                source: 'esp32',
+                deviceId: this.deviceId,
+                stage: 'START_PENDING'
+            });
+            if (chain.settled) {
+                record = this.store.update(id, { stage: 'SETTLED', lastError: null, nextRetryAt: null });
+                return this.response(record, { duplicate: true, transactionHash: body.transactionHash });
+            }
+
+            try {
+                let info = await this.iot.get(id);
+                if (!info) {
+                    const device = await this.deviceState({ fresh: true });
+                    if (!device.ready || (device.busySessionId && device.busySessionId !== id)) {
+                        throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason || 'The sensor is busy');
+                    }
+                    info = await this.iot.start(id);
+                    this.invalidateDeviceState();
+                }
+                if (info.device_id !== this.deviceId || info.session_id !== id) {
+                    throw new ApiError(409, 'IOT_SESSION_MISMATCH', 'Sensor session identity does not match the wallet session');
+                }
+                record = this.store.update(id, { source: 'esp32', stage: 'RUNNING', iotSession: this.sensorInfo(info), lastError: null, nextRetryAt: null });
+                this.log('WALLET_SESSION_STARTED', record, { transactionHash: body.transactionHash });
+                return this.response(record, { duplicate: false, transactionHash: body.transactionHash });
+            } catch (error) {
+                record = this.store.update(id, { source: 'esp32', stage: 'RUNNING', lastError: error.message });
+                return this.freezeIncomplete(record, 'wallet_session_sensor_start_failed');
+            }
+        });
+    }
     async advanceStart(record) {
         const id = record.sessionId;
         try {

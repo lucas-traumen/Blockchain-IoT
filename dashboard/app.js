@@ -483,7 +483,12 @@ async function startDemoSession() {
     demoBusy = 'start'; demoMessage = 'Submitting the 2 HRC session stake...'; renderDemoWallet();
     try {
         const prepared = await demoRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: demoSessionRef } });
-        const result = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe')) ? await sendWalletPrepared(prepared) : prepared;
+        const signed = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe')) ? await sendWalletPrepared(prepared) : prepared;
+        const result = prepared.mode === 'wallet-first'
+            ? await demoRequest('/api/me/sessions/' + encodeURIComponent(prepared.sessionId) + '/confirm-start', {
+                method: 'POST', token: session.token, body: { transactionHash: signed.transactionHash }
+            })
+            : signed;
         if (session !== demoSession) return;
         demoReceipt = result;
         demoMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';

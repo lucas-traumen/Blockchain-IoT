@@ -908,3 +908,20 @@ safety outcome.
   request or store its private key/seed phrase. Before Approve/Start, provide
   local-only ETH for gas and HRC test balance via a controlled faucet or an
   explicit transfer to the user's full public address.
+
+## Wallet-first Start reconciliation (R20, 2026-10-12)
+
+- A wallet-first `POST /api/me/sessions/start` response is an unsigned
+  transaction preparation. After MetaMask broadcasts it, the dashboard must
+  call `POST /api/me/sessions/:sessionId/confirm-start` with the transaction
+  hash. The backend verifies the on-chain beneficiary/session, persists the
+  session record, opens the matching IoT session and sets stage `RUNNING`.
+- Without this confirmation, the chain can contain `SessionStarted` while the
+  JSON/SQLite session store has no record, so the dashboard cannot render
+  `End Session`. This was fixed in R20 and tested with the live-session fixture.
+- If sensor startup fails after the wallet stake is already confirmed, the
+  backend records an explicit incomplete recovery and settles the stake instead
+  of leaving an orphaned locked balance.
+- Two orphan sessions created before R20 were settled as `INCOMPLETE` with
+  explicit recovery evidence; the test wallet returned to `20 HRC` and the
+  reward contract escrow returned to zero.

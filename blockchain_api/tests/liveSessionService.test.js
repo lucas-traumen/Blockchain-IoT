@@ -90,6 +90,19 @@ test('Start/End bind one sensor session to the user, and concurrent retries do n
     assert.equal((await f.live.wallet('user_1')).balance,'23.0');assert.equal((await f.live.wallet('user_1')).lockedBalance,'0.0');
 });
 
+test('wallet-first signed start is reconciled into the sensor session store', async t => {
+    const f = fixture(t);
+    const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'wallet-confirm' });
+    const key = ethers.id(sessionId);
+    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
+    const result = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash: '0x' + 'a'.repeat(64) });
+    assert.equal(result.stage, 'RUNNING');
+    assert.equal(result.transactionHash, '0x' + 'a'.repeat(64));
+    assert.equal(f.state.sensorStarts, 1);
+    assert.equal(f.walletService.store.get(sessionId).source, 'esp32');
+    assert.equal((await f.live.wallet('user_1')).activeSessionId, sessionId);
+});
+
 test('offline or busy sensor is rejected before moving any HRC', async t => {
     const f=fixture(t);f.state.ready=false;
     await assert.rejects(f.live.start('user_1',{sessionRef:'offline'}),{code:'SENSOR_UNAVAILABLE'});

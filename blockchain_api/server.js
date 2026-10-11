@@ -93,7 +93,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
             me: "GET /api/me", profile: "PATCH /api/me/profile", behavior: "POST /api/behavior",
             myBehavior: "GET /api/me/behavior", customers: "GET /api/customers (admin wallet)", customerBehavior: "GET /api/customers/:userId/behavior (admin wallet)",
             demoAccounts: "GET /api/demo/accounts", demoLogin: "POST /api/demo/login", demoWallet: "GET /api/me/wallet",
-            demoEnd: "POST /api/me/sessions/:sessionId/end", demoApprove: "POST /api/me/wallet/approve", demoStart: "POST /api/me/sessions/start", demoSessions: "GET /api/me/sessions",
+            demoEnd: "POST /api/me/sessions/:sessionId/end", demoApprove: "POST /api/me/wallet/approve", demoStart: "POST /api/me/sessions/start", walletStartConfirm: "POST /api/me/sessions/:sessionId/confirm-start", demoSessions: "GET /api/me/sessions",
             demoAdminOverview: "GET /api/demo/admin/overview", demoWalletTransactions: "GET /api/me/wallet/transactions" }
     }));
     app.get("/api/config", async (req, res) => {
@@ -158,6 +158,12 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
             ? getWalletFirstService().prepareStartSession(req.demoUser.userId, req.body || {})
             : getLiveService().start(req.demoUser.userId, req.body || {}));
+    });
+    app.post("/api/me/sessions/:sessionId/confirm-start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+        if (!getDemoService().isWalletFirst(req.demoUser.userId)) {
+            return res.status(400).json({ success: false, code: "NOT_WALLET_FIRST", error: "This route is only for wallet-first sessions" });
+        }
+        await respond(res, () => getLiveService().confirmWalletStart(req.demoUser.userId, req.params.sessionId, req.body || {}), 400);
     });
     app.post('/api/me/sessions/:sessionId/end', requireDemoSession(getDemoService, 'customer'), async (req, res) => {
         await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)

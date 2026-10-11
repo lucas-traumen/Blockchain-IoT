@@ -81,6 +81,7 @@ Configuration:
 | `GET /api/me/wallet` | Available balance, locked stake, allowance, device readiness, active/pending ID |
 | `POST /api/me/wallet/approve` | Signs ERC-20 allowance for 2 HRC; balance does not change |
 | `POST /api/me/sessions/start` | Stable `{sessionRef}`; opens matching IoT session, then stakes 2 HRC |
+| `POST /api/me/sessions/:sessionId/confirm-start` | Wallet-first only; reconciles the user's signed stake, persists the session and opens the matching IoT session |
 | `POST /api/me/sessions/:sessionId/end` | Owner only; closes sensor session, freezes outcome and operator settlement |
 | `GET /api/me/sessions` | Only this user's sessions, including sensor progress and outcome reason |
 | `GET /api/me/sessions/:sessionId` | Owned contract state, sensor metadata and events |
@@ -104,6 +105,13 @@ and evidence can finish while the operator is offline; settlement waits for RPC.
 Users cannot submit outcome, beneficiary, reward or penalty. The protected
 `POST /api/session-outcome` operator route remains available to backend clients;
 a demo app token cannot call it.
+
+For wallet-first users, `POST /api/me/sessions/start` only prepares the unsigned
+stake transaction. After MetaMask returns a transaction hash, the dashboard
+calls `confirm-start`; the backend verifies the on-chain session, creates the
+durable sensor record and opens ESP32 measurement. If sensor startup fails after
+the stake is confirmed, the session is settled as `INCOMPLETE` so the stake is
+not left locked without a sensor record.
 
 `HRCSessionRewards` decides all amounts: valid returns 2 HRC and pays up to 3 HRC
 once per beneficiary per UTC day if the pool allows; confirmed violation moves

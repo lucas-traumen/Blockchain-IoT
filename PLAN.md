@@ -1500,3 +1500,14 @@ Evidence runtime hiện tại: dashboard `http://localhost:8080`, API `3000`, RP
 `8545`, chain `31337`; verifier PASS 7 scenario, gồm
 `wrong-network-add-chain`. Ví MetaMask mới chưa tự có ETH gas/HRC; cần faucet
 local hoặc cấp test funds tới đúng địa chỉ trước khi chạy Approve/Start.
+
+## R20 — Reconcile wallet-first Start với sensor session — 2026-10-12
+
+| Hạng mục | Phạm vi | Trạng thái |
+| --- | --- | --- |
+| Post-sign reconciliation | `confirm-start` xác minh session on-chain, lưu durable record và mở ESP32 | done |
+| Dashboard action state | Sau MetaMask broadcast, gọi reconcile để hiển thị `End Session` | done |
+| Orphan recovery | Hai session thử nghiệm trước patch được settle `INCOMPLETE`, hoàn lại 4 HRC | done |
+
+Evidence: blockchain API `132/132` pass; wallet test có coverage session
+reconcile; ví test hiện `20 HRC`, khoảng `1 ETH`, escrowed stake `0 HRC`.
