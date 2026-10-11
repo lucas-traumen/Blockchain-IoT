@@ -1151,3 +1151,17 @@ Triển khai retry cần rebuild image để không dùng source/image cũ, recr
   trong `/app/ai_model/artifacts/lstm-v1`.
 - Blockchain API/Hardhat chưa được đưa vào image IoT; README ghi rõ đây là
   thành phần bổ sung nếu cần các tab Blockchain/Session Rewards.
+
+## R8 — Fix dashboard LAN live-data access — 2026-10-11
+
+**Trạng thái: hoàn thành.**
+
+- Dashboard Nginx proxy cùng origin `/api/iot/*` tới `iot_backend:8000`, gồm cả
+  SSE `/api/iot/live/stream`; browser không còn phụ thuộc vào CORS allowlist
+  theo IP LAN.
+- Frontend mặc định dùng proxy cùng origin, nhưng vẫn giữ
+  `HRC_IOT_API_URL` override cho môi trường phát triển đặc biệt.
+- Compose và `compose.env.example` dùng `HRC_SOURCE_MODE=esp32` mặc định cho
+  deployment thực; demo simulator vẫn chọn explicit trong `compose.env`.
+- Đã tái kiểm tra trường hợp thực tế: backend có telemetry/model nhưng browser
+  ở `http://192.168.2.34:8080` không nhận được dữ liệu vì thiếu CORS origin.

@@ -58,7 +58,7 @@ services:
       HRC_REWARD_AUTO_START: ${HRC_REWARD_AUTO_START:-false}
       HRC_REWARD_AUTO_SETTLE: ${HRC_REWARD_AUTO_SETTLE:-false}
       HRC_REWARD_TIMEOUT_S: ${HRC_REWARD_TIMEOUT_S:-10.0}
-      HRC_SOURCE_MODE: ${HRC_SOURCE_MODE:-simulator}
+      HRC_SOURCE_MODE: ${HRC_SOURCE_MODE:-esp32}
       HRC_CHAIN_API_URL: ${HRC_CHAIN_API_URL:-}
       HRC_CHAIN_INGEST_TOKEN: ${HRC_CHAIN_INGEST_TOKEN:-}
       HRC_CHAIN_AUTO_SUBMIT: ${HRC_CHAIN_AUTO_SUBMIT:-false}
@@ -91,6 +91,7 @@ services:
       - "${HRC_DASHBOARD_BIND:-0.0.0.0}:${HRC_DASHBOARD_HOST_PORT:-8080}:80"
     volumes:
       - ./dashboard:/usr/share/nginx/html:ro
+      - ./docker/nginx/dashboard.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
       interval: 10s

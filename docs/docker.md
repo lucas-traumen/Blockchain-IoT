@@ -16,7 +16,7 @@ curl http://localhost:8001/health
 |---|---|---|---|
 | `mqtt` | Mosquitto 2.0.22 | `mqtt://<IP-LAN>:1885` | Volume `mqtt_data` |
 | `iot_backend` | FastAPI, ingestion, safety, inference, events | `http://localhost:8001` | SQLite `/app/data/hrc.db` trong `iot_backend_data` |
-| `dashboard` | Nginx phục vụ frontend live/reward | `http://localhost:8080` | Bind mount `dashboard/` chỉ đọc |
+| `dashboard` | Nginx phục vụ frontend live/reward và proxy `/api/iot/*` | `http://localhost:8080` | Bind mount `dashboard/` chỉ đọc |
 | `ai` | Công cụ TensorFlow 2.20.0/Keras 3.15.1, profile tùy chọn | Không mở cổng riêng | Bind `data/`, `ai_model/artifacts/` |
 
 Backend dùng `mqtt:1883` trong mạng Compose. ESP32 dùng **IP LAN của máy
@@ -65,7 +65,8 @@ Dùng cùng `--env-file compose.env` cho những lệnh Compose tiếp theo. Cá
 - `HRC_MQTT_BIND=0.0.0.0`, `HRC_API_BIND=0.0.0.0`.
 - `HRC_DEVICE_ID=esp32_01`: khớp firmware hoặc simulator khi thử session.
   `HRC_SOURCE_MODE=simulator|esp32` là nhãn nguồn tường minh; không suy luận
-  từ tên device hoặc model artifact. Demo synthetic nên dùng `simulator`.
+  từ tên device hoặc model artifact. Runtime triển khai ESP32 dùng `esp32`;
+  demo synthetic có thể đổi sang `simulator`.
 - `HRC_RUNTIME_TARGET=ai`, `HRC_MODEL_TYPE=lstm`,
   `HRC_MODEL_SUBDIR=lstm-v1`: cấu hình mặc định của demo synthetic-only, dùng
   image có TensorFlow với Sp mô phỏng 40 mm.
@@ -75,7 +76,9 @@ Dùng cùng `--env-file compose.env` cho những lệnh Compose tiếp theo. Cá
 
 `.env` dùng cho Python chạy trực tiếp; các key `MQTT_HOST`/`MQTT_PORT` trong
 file đó không thay địa chỉ service nội bộ đã khai báo trong Compose.
-`compose.env` không commit và không đưa vào image. Trên máy mới, luồng pull
+Dashboard gọi IoT API qua cùng origin tại `/api/iot/*`, nên không cần thêm IP
+LAN của máy Docker vào CORS chỉ để mở giao diện. `compose.env` không commit và
+không đưa vào image. Trên máy mới, luồng pull
 không cần Python/Node/TensorFlow; chỉ cần Docker, repo chứa Compose/frontend và
 image `HRC_IMAGE` đã có artifact `lstm-v1`.
 

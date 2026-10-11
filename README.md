@@ -92,8 +92,7 @@ riêng.
 
 ```bash
 cp compose.env.example compose.env
-# Đặt HRC_IMAGE thành image đã được cấp quyền pull nếu máy chưa có image.
-${EDITOR:-vi} compose.env
+# Nếu dùng image trong registry, sửa HRC_IMAGE trong compose.env.
 
 docker compose --env-file compose.env pull
 docker compose --env-file compose.env up -d --no-build --wait
@@ -109,12 +108,14 @@ http://<IP-MAY-DOCKER>:8080/#live-monitoring
 Kiểm tra nhanh backend:
 
 ```bash
-curl http://<IP-MAY-DOCKER>:8001/health
-curl http://<IP-MAY-DOCKER>:8001/live/latest
+curl http://<IP-MAY-DOCKER>:8080/api/iot/health
+curl http://<IP-MAY-DOCKER>:8080/api/iot/live/latest
 ```
 
 Nếu chỉ xem trên chính máy Docker, dùng `http://127.0.0.1:8080`. Nếu dùng
 ESP32 thật, firmware phải trỏ MQTT tới `mqtt://<IP-MAY-DOCKER>:1885`.
+Dashboard chuyển tiếp `/api/iot/*` tới `iot_backend`, vì vậy khi mở bằng IP
+LAN không cần thêm IP dashboard vào `HRC_CORS_ORIGINS`.
 
 ## Triển khai trên máy mới: pull image, Compose và dashboard
 
@@ -184,12 +185,11 @@ HRC_DEVICE_ID=esp32_01
 HRC_MQTT_HOST_PORT=1885
 HRC_API_HOST_PORT=8001
 HRC_DASHBOARD_HOST_PORT=8080
-HRC_CORS_ORIGINS=http://<IP-MAY-DOCKER>:8080,http://localhost:8080,http://127.0.0.1:8080
 ```
 
-Mở firewall cho TCP `1885` (ESP32 → MQTT), `8001` (dashboard → IoT API) và
-`8080` (trình duyệt → dashboard). Không mở các cổng này ra Internet nếu chỉ
-chạy trong LAN.
+Mở firewall cho TCP `1885` (ESP32 → MQTT) và `8080` (trình duyệt → dashboard).
+Cổng `8001` chỉ cần khi một công cụ bên ngoài gọi trực tiếp IoT API. Không mở
+các cổng này ra Internet nếu chỉ chạy trong LAN.
 
 ### 3. Pull và khởi động toàn bộ runtime IoT
 
@@ -210,14 +210,15 @@ Các service sau khi khởi động:
 Kiểm tra trước khi mở trình duyệt:
 
 ```bash
-curl -fsS http://127.0.0.1:8001/health
-curl -fsS http://127.0.0.1:8001/models/active
-curl -fsS http://127.0.0.1:8001/system/health
+curl -fsS http://127.0.0.1:8080/api/iot/health
+curl -fsS http://127.0.0.1:8080/api/iot/models/active
+curl -fsS http://127.0.0.1:8080/api/iot/system/health
 ```
 
 Mở dashboard tại `http://<IP-MAY-DOCKER>:8080/`. Vào mục **Live Monitoring**;
 badge phải chuyển sang `LIVE` sau khi backend nhận telemetry. Dashboard đọc
-realtime bằng `/live/stream` và tự fallback sang polling nếu SSE bị gián đoạn.
+realtime bằng `/api/iot/live/stream` và tự fallback sang polling nếu SSE bị
+gián đoạn.
 
 ### 4. Cho ESP32 gửi dữ liệu vào máy đích
 
@@ -251,8 +252,7 @@ lập nhưng các mục Blockchain/Session Rewards cần thêm:
 
 1. RPC/Hardhat hoặc một testnet RPC đang chạy;
 2. `blockchain_api` chạy ở cổng `3000` với deployment contract và `.env` riêng;
-3. `HRC_CORS_ORIGINS` của API cho phép origin `http://<IP-MAY-DOCKER>:8080`;
-4. các biến `HRC_REWARD_*`/`HRC_CHAIN_*` trong `compose.env` nếu muốn IoT tự
+3. các biến `HRC_REWARD_*`/`HRC_CHAIN_*` trong `compose.env` nếu muốn IoT tự
    settlement hoặc gửi safety event lên chain.
 
 Nếu chưa triển khai blockchain API, bỏ qua các tab Blockchain/Rewards; không

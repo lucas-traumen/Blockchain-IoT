@@ -10,7 +10,11 @@ function serviceOrigin(port) {
     return "http://127.0.0.1:" + port;
 }
 const API_URL = window.HRC_CHAIN_API_URL || serviceOrigin(3000);
-const IOT_API_URL = window.HRC_IOT_API_URL || serviceOrigin(8001);
+const IOT_API_URL = window.HRC_IOT_API_URL || (
+    window.location?.protocol === "http:" || window.location?.protocol === "https:"
+        ? "/api/iot"
+        : serviceOrigin(8001)
+);
 window.hrcRuntimeConfig = window.hrcRuntimeConfig || {};
 let liveState = {
     latest: null, history: [], source: "LIVE", sourceLabel: "UNKNOWN",
