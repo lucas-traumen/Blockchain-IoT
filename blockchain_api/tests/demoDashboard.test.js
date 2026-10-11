@@ -13,6 +13,12 @@ const users = {
 };
 const wallet = id => ({ success: true, address: users[id].walletAddress, balance: '20', allowance: '2', requiredAllowance: '2', stakeAmount: '2', chainId: 31337, canStart: true });
 const reply = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
+const htmlReply = (status = 200) => ({
+    ok: status < 400,
+    status,
+    headers: { get: name => name.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null },
+    json: async () => { throw new SyntaxError("Unexpected token '<'"); }
+});
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 function fixture(fetchImpl = async () => reply({ success: true, sessions: [], transactions: [] }), storage = new Map()) {
@@ -215,6 +221,46 @@ test('Open closes the authenticated picker and displays a wallet read failure in
     assert.equal(f.elements.get('demoWalletAddress').textContent,users.user_1.walletAddress);
     assert.match(f.elements.get('demoWalletMessage').textContent,/Local RPC is unavailable/);
     assert.equal(f.elements.get('demoStartBtn').disabled,true);
+});
+
+test('an HTML proxy response is reported as a stale or unavailable local demo instead of a JSON parser error', async () => {
+    const f = fixture(async url => {
+        if (url.endsWith('/login')) return reply({success:true,token:'user_2-token',user:users.user_2});
+        return htmlReply(502);
+    });
+    f.elements.get('demoAccountSelect').value='user_2';
+    await f.run('loginDemoAccount()');
+    assert.match(f.elements.get('demoWalletMessage').textContent, /Blockchain API returned HTML \(HTTP 502\)/);
+    assert.match(f.elements.get('demoWalletMessage').textContent, /run_local_demo\.sh/);
+    assert.doesNotMatch(f.elements.get('demoWalletMessage').textContent, /Unexpected token/);
+});
+
+test('a dashboard served without nginx falls back from its HTML 404 page to the direct blockchain API', async () => {
+    const urls = [];
+    const f = fixture(async url => {
+        urls.push(url);
+        if (url.startsWith('/api/chain/')) return htmlReply(404);
+        if (url === 'http://localhost:3000/api/me/wallet') return reply(wallet('user_2'));
+        return reply({success:true});
+    });
+    f.select('user_2');
+    const result = await f.run("demoRequest('/api/me/wallet')");
+    assert.equal(result.address, users.user_2.walletAddress);
+    assert.deepEqual(urls, ['/api/chain/api/me/wallet', 'http://localhost:3000/api/me/wallet']);
+});
+
+test('concurrent account reads all complete when the static dashboard discovers the direct API', async () => {
+    const f = fixture(async url => {
+        if (url.startsWith('/api/chain/')) return htmlReply(404);
+        if (url.endsWith('/wallet')) return reply(wallet('user_1'));
+        if (url.endsWith('/sessions')) return reply({success:true,sessions:[]});
+        if (url.endsWith('/transactions')) return reply({success:true,transactions:[]});
+        return reply({success:true});
+    });
+    f.select('user_1');
+    await f.run('loadDemoAccountData()');
+    assert.equal(f.elements.get('demoWalletBalance').textContent, '20 HRC');
+    assert.doesNotMatch(f.elements.get('demoWalletMessage').textContent, /Unable to/);
 });
 
 test('a recovered Start clears its pending reference after refresh without another stake request', async () => {

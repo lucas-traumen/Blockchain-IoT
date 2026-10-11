@@ -500,8 +500,19 @@ docker compose --env-file compose.env stop dashboard
 python3 -m http.server 8080 --bind 127.0.0.1 --directory dashboard
 ```
 
-Mở `http://127.0.0.1:8080/#rewards`. Dashboard không chứa private key hoặc
-bearer token; thao tác owner Lock/Unlock dùng MetaMask trên Hardhat Local.
+Mở `http://127.0.0.1:8080/#rewards`. Vì Python static server không có reverse
+proxy, dashboard sẽ tự thử lại blockchain API tại `http://127.0.0.1:3000`;
+phải giữ `blockchain_api` đang chạy. Dashboard không chứa private key hoặc bearer
+token; thao tác owner Lock/Unlock dùng MetaMask trên Hardhat Local.
+
+Nếu dashboard báo API trả HTML hoặc `Unexpected token '<'`, thường là dashboard
+cũ chưa được restart hoặc chỉ có static server nhưng blockchain API chưa chạy.
+Dừng stack cũ rồi khởi động lại bằng một lệnh:
+
+```bash
+docker compose down
+./scripts/run_local_demo.sh
+```
 
 ### 6. Chạy session simulator end-to-end
 

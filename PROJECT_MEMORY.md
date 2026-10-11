@@ -753,3 +753,16 @@ the backend operator submits settlement from the recorded safety outcome.
   contracts 73 passing, clean real-chain smoke passed twice. Docker Compose was
   not executable in the review environment; only YAML/static proxy wiring was
   checked there.
+
+## Dashboard API routing resilience (R13, 2026-10-11)
+
+- The normal Compose dashboard uses same-origin `/api/chain` and `/api/iot`
+  Nginx proxies. Upstream 502/504 responses are converted to structured JSON so
+  frontend code never tries to parse an Nginx HTML error page.
+- The documented Python static-server mode has no reverse proxy. If the default
+  `/api/chain` route returns HTML or `CHAIN_API_UNAVAILABLE`, the dashboard
+  retries `http://<current-host>:3000`. An explicit `HRC_CHAIN_API_URL` remains
+  authoritative and is never replaced by this fallback.
+- The local demo is not ready until `/api/chain/api/config` parses as JSON with
+  `success=true`. A stale dashboard process or missing blockchain API therefore
+  fails at startup with actionable logs instead of opening a broken wallet UI.

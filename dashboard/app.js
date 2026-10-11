@@ -19,6 +19,9 @@ const IOT_API_URL = window.HRC_IOT_API_URL || (
         ? "/api/iot"
         : serviceOrigin(8001)
 );
+const DIRECT_CHAIN_API_URL = serviceOrigin(3000);
+const USE_CHAIN_PROXY_FALLBACK = !window.HRC_CHAIN_API_URL && API_URL === '/api/chain';
+let activeChainApiUrl = API_URL;
 window.hrcRuntimeConfig = window.hrcRuntimeConfig || {};
 let liveState = {
     latest: null, history: [], source: "LIVE", sourceLabel: "UNKNOWN",
@@ -71,14 +74,61 @@ function randomId() {
     return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 }
 
+async function readJsonResponse(response, serviceName) {
+    try {
+        return await response.json();
+    } catch (cause) {
+        const status = response?.status ? ` (HTTP ${response.status})` : '';
+        const contentType = response?.headers?.get?.('content-type') || '';
+        const responseKind = contentType.toLowerCase().includes('text/html') ? 'HTML' : 'a non-JSON response';
+        const error = new Error(
+            `${serviceName} returned ${responseKind}${status}. `
+            + 'Restart the local demo with ./scripts/run_local_demo.sh and keep that terminal open.'
+        );
+        error.status = response?.status;
+        error.code = 'INVALID_API_RESPONSE';
+        error.cause = cause;
+        throw error;
+    }
+}
+
+async function fetchChainJson(path, options) {
+    const fetchFrom = async baseUrl => {
+        const response = await fetch(baseUrl + path, options);
+        const data = await readJsonResponse(response, 'Blockchain API');
+        return { response, data };
+    };
+    const requestedBaseUrl = activeChainApiUrl;
+    const canUseDirectFallback = USE_CHAIN_PROXY_FALLBACK && requestedBaseUrl !== DIRECT_CHAIN_API_URL;
+    try {
+        const result = await fetchFrom(requestedBaseUrl);
+        if (!canUseDirectFallback || result.data?.code !== 'CHAIN_API_UNAVAILABLE') return result;
+    } catch (error) {
+        if (!canUseDirectFallback || error.code !== 'INVALID_API_RESPONSE') throw error;
+    }
+    try {
+        const result = await fetchFrom(DIRECT_CHAIN_API_URL);
+        activeChainApiUrl = DIRECT_CHAIN_API_URL;
+        return result;
+    } catch (cause) {
+        if (cause.code === 'INVALID_API_RESPONSE') throw cause;
+        const error = new Error(
+            `Blockchain API is unreachable through the dashboard proxy and ${DIRECT_CHAIN_API_URL}. `
+            + 'Run ./scripts/run_local_demo.sh and keep that terminal open.'
+        );
+        error.code = 'CHAIN_API_UNAVAILABLE';
+        error.cause = cause;
+        throw error;
+    }
+}
+
 async function demoRequest(path, { method = 'GET', body, token = demoSession.token } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers.Authorization = 'Bearer ' + token;
-    const response = await fetch(API_URL + path, {
+    const { response, data } = await fetchChainJson(path, {
         method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000)
     });
-    const data = await response.json();
     if (!response.ok || data.success !== true) {
         const error = new Error(data.error || `HTTP ${response.status}`);
         error.status = response.status;
@@ -468,10 +518,9 @@ async function appRequest(path, { method = "GET", body, token } = {}) {
     const headers = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (token) headers.Authorization = "Bearer " + token;
-    const response = await fetch(API_URL + path, {
+    const { response, data } = await fetchChainJson(path, {
         method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000)
     });
-    const data = await response.json();
     if (!response.ok || data.success !== true) {
         const error = new Error(data.error || `HTTP ${response.status}`);
         error.status = response.status;
@@ -795,10 +844,9 @@ function setState(id, state) {
     if (color) element.classList.add(color);
 }
 async function request(path, options = {}) {
-    const response = await fetch(API_URL + path, {
+    const { response, data } = await fetchChainJson(path, {
         ...options, signal: AbortSignal.timeout(["/api/events", "/api/transactions", "/api/rewards/sessions"].includes(path) ? 90000 : 20000)
     });
-    const data = await response.json();
     if (!response.ok || data.success !== true) {
         const error = new Error(data.error || `HTTP ${response.status}`);
         error.status = response.status;
@@ -813,7 +861,7 @@ async function requestIot(path, options = {}) {
         signal: AbortSignal.timeout(8000),
         headers: { Accept: "application/json", ...(options.headers || {}) },
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response, 'IoT API');
     if (!response.ok) {
         const error = new Error(data.detail || data.error || `HTTP ${response.status}`);
         error.status = response.status;

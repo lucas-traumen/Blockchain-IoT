@@ -1357,3 +1357,22 @@ be exercised on a machine with Docker Compose.**
   one with `NETWORK=caas_ingress_only`. Compose YAML, JavaScript/Python syntax
   and `git diff --check` passed. Docker CLI was unavailable in this executor,
   so the full container startup was not run here.
+
+## R13 — Dashboard HTML/API response fix — 2026-10-11
+
+**Implementation and non-Docker verification complete.**
+
+- Root cause: a stale Nginx process or the documented Python static server can
+  answer `/api/chain/*` with HTML. The dashboard previously passed that body to
+  `response.json()`, producing `Unexpected token '<'` and an unusable wallet.
+- The hosted dashboard keeps the same-origin `/api/chain` proxy. When that
+  default route returns HTML or the proxy-specific unavailable code, local
+  static development retries the blockchain API at the current host on port
+  3000. Explicit `HRC_CHAIN_API_URL` values are never overridden.
+- Nginx now returns structured JSON for unavailable IoT/blockchain upstreams.
+  `run_local_demo.sh` parses and validates proxy JSON before printing `ready`.
+- Verification: blockchain API **103 passed**; dashboard fallback tests include
+  concurrent wallet/session/transaction reads; JavaScript and shell syntax,
+  `git diff --check`, and a clean real-chain `--smoke` run passed. Docker/Nginx
+  runtime validation remains for the user's Docker machine because this
+  executor has no Docker CLI.

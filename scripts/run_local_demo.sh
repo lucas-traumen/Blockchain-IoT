@@ -216,6 +216,33 @@ wait_for_api() {
 }
 wait_for_api
 
+wait_for_dashboard_chain_proxy() {
+    local dashboard_port="$1"
+    local output_file="$RUN_DIR/dashboard-chain-proxy.json"
+    local proxy_url="http://127.0.0.1:$dashboard_port/api/chain/api/config"
+    for _ in $(seq 1 40); do
+        if curl -sS --max-time 2 "$proxy_url" >"$output_file" 2>/dev/null \
+            && node -e '
+                const fs = require("node:fs");
+                try {
+                    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                    if (value.success !== true) process.exit(1);
+                } catch { process.exit(1); }
+            ' "$output_file"; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo "Dashboard blockchain proxy did not return a successful JSON response from $proxy_url" >&2
+    if [[ -s "$output_file" ]]; then
+        echo "Last proxy response:" >&2
+        sed -n '1,12p' "$output_file" >&2
+    fi
+    echo "Stop any older stack with 'docker compose down', then run this script again." >&2
+    docker compose --env-file "$RUN_DIR/compose.env" logs --no-color --tail 40 dashboard >&2 || true
+    return 1
+}
+
 if [[ "$SMOKE" == true ]]; then
     echo "Running a real API-to-contract smoke transaction..."
     NOW="$(date +%s)"
@@ -276,8 +303,7 @@ EOF
     COMPOSE_STARTED=true
     docker compose --env-file "$RUN_DIR/compose.env" up -d --build --force-recreate --wait mqtt iot_backend dashboard
     DASHBOARD_PORT="${HRC_DASHBOARD_HOST_PORT:-8080}"
-    curl -fsS --max-time 5 "http://127.0.0.1:$DASHBOARD_PORT/api/chain/api/config" \
-        >"$RUN_DIR/dashboard-chain-proxy.json"
+    wait_for_dashboard_chain_proxy "$DASHBOARD_PORT"
     echo "Demo is ready: http://127.0.0.1:$DASHBOARD_PORT/#rewards"
     echo "Press Ctrl+C to stop."
 fi
