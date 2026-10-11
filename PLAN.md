@@ -1163,5 +1163,8 @@ Triển khai retry cần rebuild image để không dùng source/image cũ, recr
   `HRC_IOT_API_URL` override cho môi trường phát triển đặc biệt.
 - Compose và `compose.env.example` dùng `HRC_SOURCE_MODE=esp32` mặc định cho
   deployment thực; demo simulator vẫn chọn explicit trong `compose.env`.
+- Artifact canonical `ai_model/artifacts/lstm-v1` được track riêng trong Git;
+  model candidate/report khác vẫn bị ignore, nên clone mới có thể build image
+  portable mà không cần bind mount model từ host.
 - Đã tái kiểm tra trường hợp thực tế: backend có telemetry/model nhưng browser
   ở `http://192.168.2.34:8080` không nhận được dữ liệu vì thiếu CORS origin.
