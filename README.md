@@ -84,6 +84,298 @@ ai_model: session split → windows/features → train-only scaler → train/eva
 - LSTM dùng `(N,10,2)` `[distance_m, delta_distance_m]`, `delta[0]=0`, output
   `(N,5)`. Runtime chỉ nạp artifact LSTM và không tự chuyển model khi artifact lỗi.
 
+## Triển khai và chạy local
+
+Đây là luồng chạy đầy đủ đã được kiểm tra cho demo local. Luồng này dùng
+Hardhat `chainId=31337`, Mosquitto, `iot_backend` với LSTM canonical và
+`blockchain_api`. Không cần ESP32 để chạy smoke test; simulator MQTT được dùng
+thay cho thiết bị thật.
+
+### 0. Điều kiện máy
+
+Cần có Docker Engine/Compose v2, Node.js/npm, Python 3.12 nếu muốn chạy test
+hoặc công cụ Python trực tiếp, và `openssl` để tạo bearer token local.
+
+```bash
+docker --version
+docker compose version
+node --version
+npm --version
+python3 --version
+```
+
+Cổng local mặc định:
+
+| Thành phần | Địa chỉ |
+|---|---|
+| Hardhat RPC | `http://127.0.0.1:8545` |
+| Blockchain API | `http://127.0.0.1:3000` |
+| Dashboard | `http://127.0.0.1:8080` |
+| MQTT từ host/ESP32 | `mqtt://<IP-LAN>:1885` |
+| IoT API | `http://127.0.0.1:8001` |
+
+Nếu một cổng đang bị chiếm, sửa `compose.env` hoặc biến `PORT` trước khi chạy.
+ESP32 phải dùng IP LAN của máy chạy Docker; `localhost` trên ESP32 không trỏ
+về máy host.
+
+### 1. Cài dependency
+
+Chạy từ thư mục repo:
+
+```bash
+npm --prefix smart_contracts ci
+npm --prefix blockchain_api ci
+
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Không cài TensorFlow vào `.venv` baseline. Image Compose target `ai` đã chứa
+TensorFlow `2.20.0`, Keras `3.15.1` và được dùng cho runtime LSTM.
+
+### 2. Khởi động và deploy Hardhat local
+
+Mở **terminal 1** và giữ terminal này chạy:
+
+```bash
+cd smart_contracts
+npx hardhat node
+```
+
+Hardhat in ra account và private key local. Ghi lại account đầu tiên và private
+key tương ứng; account này dùng làm signer của `blockchain_api` và beneficiary
+trong demo. Không dùng private key local trên testnet hoặc mainnet.
+
+Mở **terminal 2**:
+
+```bash
+cd smart_contracts
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network localhost
+npx hardhat run scripts/deploy_reward.js --network localhost
+```
+
+`deploy.js` ghi `deployments/localhost.json`; `deploy_reward.js` ghi
+`deployments/reward-localhost.json`. Nếu restart Hardhat, chain và địa chỉ
+contract được tạo lại; phải deploy lại rồi restart blockchain API.
+
+### 3. Cấu hình và chạy blockchain API
+
+Tạo file local, không commit:
+
+```bash
+cp blockchain_api/.env.example blockchain_api/.env
+${EDITOR:-vi} blockchain_api/.env
+```
+
+Đặt các giá trị chính sau trong `blockchain_api/.env`:
+
+```dotenv
+RPC_URL=http://127.0.0.1:8545
+NETWORK=localhost
+PRIVATE_KEY=<private-key-account-dau-tien-cua-hardhat>
+PORT=3000
+
+# Để trống khi dùng deployment JSON local.
+CONTRACT_ADDRESS=
+HRC_REWARD_ADDRESS=
+HRC_REWARD_DEPLOYMENT=../smart_contracts/deployments/reward-localhost.json
+
+HRC_INGEST_API_TOKEN=<token-ingest-it-nhat-32-ky-tu>
+HRC_ADMIN_API_TOKEN=<token-admin-khac-ingest>
+HRC_DASHBOARD_BENEFICIARY=<dia-chi-account-dau-tien-cua-hardhat>
+HRC_CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
+```
+
+Tạo hai token khác nhau, không dùng token ghi trong tài liệu:
+
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Mở **terminal 3**:
+
+```bash
+cd blockchain_api
+node server.js
+```
+
+Kiểm tra API:
+
+```bash
+curl http://127.0.0.1:3000/
+curl http://127.0.0.1:3000/api/config
+curl http://127.0.0.1:3000/api/rewards/config
+```
+
+### 4. Cấu hình và chạy MQTT + IoT/AI
+
+Tạo file Compose local:
+
+```bash
+cp compose.env.example compose.env
+${EDITOR:-vi} compose.env
+```
+
+Để bật full bridge IoT → reward → blockchain local, đặt tối thiểu:
+
+```dotenv
+HRC_RUNTIME_TARGET=ai
+HRC_MODEL_TYPE=lstm
+HRC_MODEL_SUBDIR=lstm-v1
+HRC_SOURCE_MODE=simulator
+HRC_DEVICE_ID=esp32_01
+
+HRC_REWARD_API_URL=http://host.docker.internal:3000
+HRC_REWARD_INGEST_TOKEN=<trung-voi-HRC_INGEST_API_TOKEN>
+HRC_REWARD_BENEFICIARY=<dia-chi-account-hardhat>
+HRC_REWARD_AUTO_START=true
+HRC_REWARD_AUTO_SETTLE=true
+
+HRC_CHAIN_API_URL=http://host.docker.internal:3000
+HRC_CHAIN_INGEST_TOKEN=<trung-voi-HRC_INGEST_API_TOKEN>
+HRC_CHAIN_AUTO_SUBMIT=true
+```
+
+Build target AI và khởi động service ở **terminal 4**:
+
+```bash
+docker compose --env-file compose.env build iot_backend
+docker compose --env-file compose.env up -d --force-recreate --wait mqtt iot_backend
+docker compose --env-file compose.env ps
+```
+
+Cold start TensorFlow có thể mất một phút. Xác minh runtime:
+
+```bash
+curl http://127.0.0.1:8001/health
+curl http://127.0.0.1:8001/models/active
+curl http://127.0.0.1:8001/system/health
+```
+
+Trạng thái mong đợi là `/health` có `status=ok`, `mqtt=true`,
+`model_available=true`; `/models/active` có `status=ACTIVE`,
+`model_version=lstm-v1`, `training_data=synthetic-only`,
+`simulation_mode=true` và `threshold_verified_on_hardware=false`.
+
+Nếu chỉ muốn chạy IoT/AI không nối blockchain, để các biến `HRC_REWARD_*` và
+`HRC_CHAIN_*` trống hoặc đặt `HRC_REWARD_AUTO_START=false` và
+`HRC_REWARD_AUTO_SETTLE=false`.
+
+### 5. Chạy dashboard
+
+Mở terminal khác:
+
+```bash
+python3 -m http.server 8080 --bind 127.0.0.1 --directory dashboard
+```
+
+Mở `http://127.0.0.1:8080/#rewards`. Dashboard không chứa private key hoặc
+bearer token; thao tác owner Lock/Unlock dùng MetaMask trên Hardhat Local.
+
+### 6. Chạy session simulator end-to-end
+
+Đổi `demo-local-001` thành ID mới ở mỗi lần chạy. Session đã settle chỉ được
+retry idempotent với cùng evidence.
+
+Mở session và stake 2 HRC:
+
+```bash
+curl -X POST http://127.0.0.1:8001/sessions/start \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"demo-local-001","scenario":"approach","object":"synthetic-target"}'
+```
+
+Phát 200 mẫu synthetic qua MQTT:
+
+```bash
+docker compose --env-file compose.env run --rm --no-deps iot_backend \
+  python -m scripts.device_sim \
+  --host mqtt --port 1883 --device-id esp32_01 \
+  --samples 200 --scenario approach --record-jsonl /app/data/demo-local-001.jsonl
+```
+
+Đóng session và đọc kết quả reward:
+
+```bash
+curl -X POST http://127.0.0.1:8001/sessions/demo-local-001/stop
+curl http://127.0.0.1:8001/sessions/demo-local-001
+curl http://127.0.0.1:8001/sessions/demo-local-001/outcome
+curl 'http://127.0.0.1:3000/api/rewards/summary?beneficiary=<dia-chi-account-hardhat>'
+```
+
+Khi `HRC_REWARD_AUTO_START=true` và `HRC_REWARD_AUTO_SETTLE=true`, backend sẽ
+tự gọi blockchain API lúc START/STOP. Nếu chain hoặc API tạm thời lỗi, safety
+và session local vẫn được lưu; retry settlement sau khi dịch vụ trở lại:
+
+```bash
+curl -X POST http://127.0.0.1:8001/sessions/demo-local-001/settle
+```
+
+### 7. Kiểm tra và xem log
+
+```bash
+docker compose --env-file compose.env logs --tail=100 mqtt iot_backend
+docker compose --env-file compose.env ps
+
+.venv/bin/python -m pytest -q
+npm --prefix blockchain_api test
+npm --prefix smart_contracts test
+docker compose --env-file compose.env config
+```
+
+Release local đã kiểm tra: Python `444 passed, 12 skipped`, blockchain API
+`53 passed`, smart contracts `64 passing`. Đây là software/local evidence,
+không thay thế hardware validation.
+
+### 8. Dừng, restart và reset
+
+Restart service nhưng giữ dữ liệu:
+
+```bash
+docker compose --env-file compose.env restart mqtt iot_backend
+docker compose --env-file compose.env up -d --wait mqtt iot_backend
+```
+
+Dừng stack nhưng giữ named volume:
+
+```bash
+docker compose --env-file compose.env down
+```
+
+Xóa toàn bộ SQLite và dữ liệu broker chỉ khi muốn reset local:
+
+```bash
+docker compose --env-file compose.env down -v
+```
+
+`Ctrl+C` ở terminal Hardhat sẽ reset chain local. Sau đó phải deploy lại
+contract, kiểm tra deployment JSON và restart `blockchain_api` trước khi bật
+bridge IoT.
+
+### 9. Chạy với ESP32 thật
+
+Simulator chỉ kiểm tra pipeline software. Để chạy ESP32 + HC-SR04:
+
+1. cấu hình Wi-Fi và broker trong `firmware/esp32/main/network_config.local.h`;
+2. đặt broker thành `mqtt://<IP-LAN-MAY-CHAY-DOCKER>:1885`;
+3. chọn đúng target ESP32/ESP32-S3 rồi build/flash;
+4. kiểm tra serial, telemetry, ACK START/STOP và reconnect trước khi thu dữ liệu.
+
+Chi tiết xem [docs/wiring.md](docs/wiring.md),
+[firmware/esp32/README.md](firmware/esp32/README.md) và
+[docs/data-collection.md](docs/data-collection.md). Runtime vẫn hiển thị
+`threshold_verified_on_hardware=false` cho tới khi có bằng chứng đo thật.
+
+### 10. Testnet/public chain
+
+Hardhat local không phải Sepolia, Amoy hoặc production. Muốn triển khai testnet
+cần RPC, funded signer, private key riêng, deployment manifest riêng và số block
+confirmation phù hợp. Xem [docs/blockchain/contracts.md](docs/blockchain/contracts.md)
+và [docs/blockchain/integration.md](docs/blockchain/integration.md); không dùng
+private key hoặc địa chỉ contract local cho mạng công khai.
+
 ## Blockchain API và dashboard
 
 Demo hiện đã có cầu nối session giữa IoT và blockchain. Khi bật
