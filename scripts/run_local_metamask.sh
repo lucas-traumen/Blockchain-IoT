@@ -16,6 +16,7 @@ UI_PORT="${HRC_DASHBOARD_HOST_PORT:-8081}"
 APP_ORIGIN="http://localhost:$UI_PORT"
 APP_AUTH_MODE="${HRC_APP_AUTH_MODE:-siwe}"
 BLOCKCHAIN_ONLY=false
+STOP=false
 SMOKE=false
 SKIP_INSTALL=false
 TASK_REWARDS_V2=false
@@ -30,6 +31,7 @@ Usage: ./scripts/run_local_metamask.sh [options]
 Starts a fresh Hardhat chain, deploys both contracts and runs blockchain_api.
 By default it also starts MQTT, IoT/AI and the dashboard with Docker Compose.
 
+  --stop             Stop the stack recorded in .runtime/local-metamask/latest
   --blockchain-only  Start only Hardhat and blockchain_api
   --smoke            Verify the clean blockchain/API startup, then exit
   --task-rewards-v2  Deploy and select the isolated task-bound V2 reward contract
@@ -40,6 +42,7 @@ EOF
 
 for argument in "$@"; do
     case "$argument" in
+        --stop) STOP=true ;;
         --blockchain-only) BLOCKCHAIN_ONLY=true ;;
         --smoke) SMOKE=true; BLOCKCHAIN_ONLY=true ;;
         --skip-install) SKIP_INSTALL=true ;;
@@ -48,6 +51,67 @@ for argument in "$@"; do
         *) echo "Unknown option: $argument" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+# Stopping a recorded stack. Ports resolve with the same defaults as a start,
+# and a process is only signalled when both its command line and its working
+# directory belong to this repository, so an unrelated service that happens to
+# listen on the same port is never touched.
+listener_pid_on_port() {
+    ss -ltnpH "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n1
+}
+
+stop_verified_process() {
+    local pid="$1" expected_command="$2" expected_dir="$3" label="$4"
+    local command_line working_directory
+    if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
+        echo "  $label: not running"
+        return 0
+    fi
+    command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    working_directory="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [[ "$command_line" != *"$expected_command"* || "$working_directory" != "$ROOT_DIR/$expected_dir" ]]; then
+        echo "  $label: pid $pid is not this repository's process; left untouched" >&2
+        return 1
+    fi
+    kill "$pid" >/dev/null 2>&1 || true
+    for _ in $(seq 1 60); do
+        if ! kill -0 "$pid" >/dev/null 2>&1; then
+            echo "  $label: stopped (pid $pid)"
+            return 0
+        fi
+        sleep 0.25
+    done
+    kill -9 "$pid" >/dev/null 2>&1 || true
+    echo "  $label: force stopped (pid $pid)"
+}
+
+stop_recorded_stack() {
+    local latest="$RUNTIME_ROOT/latest" run_dir="" result=0
+    if [[ -L "$latest" ]]; then run_dir="$(readlink -f "$latest" 2>/dev/null || true)"; fi
+    echo "Stopping the local stack recorded in $RUNTIME_ROOT/latest${run_dir:+ (run $(basename "$run_dir"))}"
+    stop_verified_process "$(listener_pid_on_port "$API_PORT")" server.js blockchain_api "blockchain API on port $API_PORT" || result=1
+    stop_verified_process "$(listener_pid_on_port "$RPC_PORT")" hardhat smart_contracts "Hardhat chain on port $RPC_PORT" || result=1
+    if [[ -n "$run_dir" && -f "$run_dir/compose.env" ]]; then
+        if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+            if docker compose --env-file "$run_dir/compose.env" down --volumes >/dev/null 2>&1; then
+                echo "  docker compose project: stopped"
+            else
+                echo "  docker compose project: not running"
+            fi
+        else
+            echo "  docker compose: unavailable, containers were left running" >&2
+            result=1
+        fi
+    fi
+    if [[ "$result" == 0 ]]; then
+        echo "The recorded stack is stopped; the next start deploys a fresh chain."
+    fi
+    return "$result"
+}
+
+if [[ "$STOP" == true ]]; then
+    if stop_recorded_stack; then exit 0; else exit 1; fi
+fi
 
 if [[ "$APP_AUTH_MODE" != "siwe" ]]; then
     echo "This launcher only supports MetaMask SIWE authentication (HRC_APP_AUTH_MODE=siwe)" >&2
@@ -78,7 +142,7 @@ Promise.all(ports.map(value => new Promise((resolve, reject) => {
     const port = Number(value);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return reject(new Error(`Invalid port: ${value}`));
     const server = net.createServer();
-    server.once("error", () => reject(new Error(`Port ${port} is occupied; preserve the existing stack or choose an unused port.`)));
+    server.once("error", () => reject(new Error(`Port ${port} is occupied; preserve the existing stack or choose an unused port. Stop the recorded stack with: bash scripts/run_local_metamask.sh --stop`)));
     server.listen(port, "0.0.0.0", () => server.close(resolve));
 }))).catch(error => { console.error(error.message); process.exitCode = 1; });
 NODE
@@ -106,6 +170,13 @@ cleanup() {
     echo "Run logs and generated deployments: $RUN_DIR"
     exit "$exit_code"
 }
+record_stack() {
+    printf '{"runId":"%s","launcherPid":%s,"hardhatPid":%s,"apiPid":%s,"ports":{"rpc":%s,"api":%s,"ui":%s,"iot":%s,"mqtt":%s},"recordedAt":"%s"}\n' \
+        "$RUN_ID" "$$" "${HARDHAT_PID:-null}" "${API_PID:-null}" \
+        "$RPC_PORT" "$API_PORT" "$UI_PORT" "${HRC_API_HOST_PORT:-8002}" "${HRC_MQTT_HOST_PORT:-1886}" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$RUN_DIR/stack.json"
+}
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -160,6 +231,7 @@ echo "Starting a fresh Hardhat chain..."
     exec npx hardhat node --hostname 127.0.0.1 --port "$RPC_PORT" >"$LOG_DIR/hardhat.log" 2>&1
 ) &
 HARDHAT_PID=$!
+record_stack
 
 wait_for_rpc() {
     local response
@@ -266,6 +338,7 @@ echo "Starting blockchain API..."
     exec node server.js >"$LOG_DIR/blockchain-api.log" 2>&1
 ) &
 API_PID=$!
+record_stack
 
 wait_for_api() {
     for _ in $(seq 1 120); do
