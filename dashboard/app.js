@@ -74,6 +74,8 @@ let selectedTaskId = null;
 let walletTaskError = null;
 let ownerTasks = [];
 let ownerTaskSessions = [];
+let reportSessions = [];
+let reportMessage = "Sign in to view HRC session reports.";
 
 function randomId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -180,6 +182,48 @@ function walletResultLabel(session) {
     return ['REWARDED', 'DAILY LIMIT', 'POOL EMPTY', 'PENALTY', 'NO REWARD'][Number(session.settlementStatusCode)] || 'NO REWARD';
 }
 
+function walletOutcomeReason(session) {
+    const reasons = {
+        task_completion_evidence_missing: 'Operator did not approve completed cycles before End; stake refunded without reward',
+        task_completion_rule_not_met: 'Approved cycle count is below the task target; stake refunded without reward'
+    };
+    return reasons[session.outcomeReason] || session.outcomeReason || '';
+}
+
+function renderTaskCompletion(session) {
+    const element = byId('walletCompletionStatus');
+    if (!element) return;
+    const selected = walletAssignments.find(row => row.taskId === selectedTaskId && ['ASSIGNED', 'ACTIVE'].includes(row.status));
+    const rule = session?.taskSnapshot?.task?.completionRule || selected?.policySnapshot?.task?.completionRule;
+    const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
+    element.hidden = !taskMode || walletSession.user?.role !== 'customer';
+    if (element.hidden) return;
+    const completion = session?.taskCompletion;
+    if (session?.settled) {
+        element.textContent = walletOutcomeReason(session) || (completion?.status === 'APPROVED'
+            ? `Completion verified: ${completion.observedCycles}/${completion.requiredCycles} cycles. The settlement is final.`
+            : 'Session ended. The settlement is final.');
+    } else if (completion?.status === 'APPROVED') {
+        element.textContent = `Completion verified by the operator: ${completion.observedCycles}/${completion.requiredCycles} cycles. End settles the result using sensor evidence and the reward policy.`;
+    } else if (completion?.status === 'INSUFFICIENT') {
+        element.textContent = `Operator recorded ${completion.observedCycles}/${completion.requiredCycles} cycles. The task target was not met; ending a clear session returns the stake without reward.`;
+    } else {
+        element.textContent = `Completion approval required${rule ? `: ${rule.requiredCycles} cycles` : ''}. An operator/admin must verify observed cycles while the session is running, before End. Ending a clear session without approval returns the stake with no reward.`;
+    }
+}
+
+function renderHrcReports() {
+    const customer = walletSession.user?.role === 'customer';
+    const privileged = ['admin', 'operator'].includes(walletSession.user?.role);
+    const sessions = customer ? walletSessions : privileged ? reportSessions : [];
+    text('reportSessionsHeading', customer ? 'My HRC sessions' : privileged ? 'HRC sessions · all accounts' : 'HRC sessions');
+    text('reportRewardMessage', customer ? walletMessage : reportMessage);
+    renderWalletSessionRows('reportSessionsTableBody', sessions, true);
+    const section = byId('reportWalletTransactions');
+    if (section) section.hidden = !customer;
+    renderWalletTransactionRows('reportWalletTransactionsTableBody', customer ? walletTransactions : []);
+}
+
 function signedWalletAmount(session) {
     if (!session?.settled) return '--';
     if (Number(session.rewardPaid) > 0) return '+' + formatWalletAmount(session.rewardPaid);
@@ -203,7 +247,7 @@ function renderWalletSessionRows(target, sessions, includeUser = false) {
         const eventName = session.settled ? 'SessionSettled' : 'SessionStarted';
         const event = session.events?.find(item => item.name === eventName);
         const values = [session.sessionId, walletSessionStage(session), session.settled ? walletOutcomeName(session.outcomeCode) : '--',
-            session.settled ? walletResultLabel(session) + (session.outcomeReason ? ' · ' + session.outcomeReason : '') : session.lastError || 'Waiting for End Session', session.settled ? formatWalletAmount(session.stakeReturned) : formatWalletAmount(session.stakedAmount) + ' locked',
+            session.settled ? walletResultLabel(session) + (session.outcomeReason ? ' · ' + walletOutcomeReason(session) : '') : session.lastError || 'Waiting for End Session', session.settled ? formatWalletAmount(session.stakeReturned) : formatWalletAmount(session.stakedAmount) + ' locked',
             signedWalletAmount(session), event?.blockNumber ?? session.blockNumber ?? '--'];
         if (includeUser) values.unshift(session.userId);
         values.forEach(value => { const cell = document.createElement('td'); cell.textContent = String(value ?? '--'); row.appendChild(cell); });
@@ -235,7 +279,10 @@ function walletLedgerDescription(transaction) {
         return 'Stake returned +' + formatWalletAmount(returned) + ' · Reward +' + formatWalletAmount(reward)
             + (Number(status) === 1 ? ' · Daily reward limit reached' : Number(status) === 2 ? ' · Reward pool empty' : Number(status) === 4 ? ' · No reward' : '');
     }
-    if (start || transaction.action === 'STAKE') return 'Available −2 HRC · Locked +2 HRC · Live session started';
+    if (start || transaction.action === 'STAKE') {
+        const amount = formatWalletAmount(start?.amount ?? transaction.lockedDelta);
+        return `Available −${amount} · Locked +${amount} · Live session started`;
+    }
     if (transaction.action === 'APPROVE' || transaction.events?.some(event => event.name === 'Approval')) return 'Allowance granted · Balance unchanged';
     return 'Token transfer';
 }
@@ -259,11 +306,15 @@ function renderWalletTransactions() {
             entry.append(title, amount, detail, receipt); recent.appendChild(entry);
         });
     }
-    const table = byId('walletTransactionsTableBody');
+    renderWalletTransactionRows('walletTransactionsTableBody', walletTransactions);
+}
+
+function renderWalletTransactionRows(target, transactions) {
+    const table = byId(target);
     if (!table) return;
     table.replaceChildren();
-    if (!walletTransactions.length) { walletTableMessage(table, 'No transactions recorded yet.', 5); return; }
-    for (const transaction of walletTransactions) {
+    if (!transactions.length) { walletTableMessage(table, 'No transactions recorded yet.', 5); return; }
+    for (const transaction of transactions) {
         const row = document.createElement('tr');
         [walletTransactionEvents(transaction) + ' · ' + walletLedgerDescription(transaction), walletDelta(transaction.walletDelta), walletDelta(transaction.lockedDelta), transaction.blockNumber, transaction.transactionHash].forEach((value, index) => {
             const cell = document.createElement('td'); cell.textContent = String(value ?? '--');
@@ -338,6 +389,7 @@ function renderWalletTasks() {
     }
     for (const task of rows.values()) {
         const assignment = assigned.get(task.taskId);
+        const usableAssignment = assignment && ['ASSIGNED', 'ACTIVE'].includes(assignment.status);
         const row = document.createElement('div');
         row.className = 'wallet-task-row';
         const copy = document.createElement('div');
@@ -350,8 +402,9 @@ function renderWalletTasks() {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'view-all-btn' + (assignment ? ' primary-action' : '');
-        button.disabled = Boolean(walletBusy) || (!assignment && task.status !== 'OPEN');
-        button.textContent = assignment ? (selectedTaskId === task.taskId ? 'Selected' : 'Select task') : 'Accept task';
+        button.disabled = Boolean(walletBusy) || Boolean(assignment && !usableAssignment) || (!assignment && task.status !== 'OPEN');
+        button.textContent = usableAssignment ? (selectedTaskId === task.taskId ? 'Selected' : 'Select task')
+            : assignment ? `${assignment.status} · choose another task` : 'Accept task';
         button.addEventListener('click', () => assignment ? selectWalletTask(task.taskId) : acceptWalletTask(task.taskId));
         row.append(copy, button);
         list.appendChild(row);
@@ -409,13 +462,13 @@ function renderOwnerTasks() {
         copy.append(title, detail); row.appendChild(copy);
         const review = document.createElement('button');
         review.type = 'button'; review.className = 'view-all-btn'; review.textContent = session.completionEvidence ? 'Evidence recorded' : 'Review completion';
-        review.disabled = Boolean(session.completionEvidence) || Boolean(walletBusy);
+        review.disabled = session.stage !== 'RUNNING' || Boolean(session.completionEvidence) || Boolean(walletBusy);
         review.addEventListener('click', () => {
             const form = byId('completionApprovalForm');
             form.elements.sessionId.value = session.sessionId;
             form.elements.taskId.value = session.taskId;
-            form.elements.observedCycles.value = session.task.completionRule.requiredCycles;
-            form.elements.reason.focus();
+            form.elements.observedCycles.value = '';
+            form.elements.observedCycles.focus();
         });
         row.appendChild(review); list.appendChild(row);
     }
@@ -423,15 +476,18 @@ function renderOwnerTasks() {
 
 async function refreshOwnerTasks() {
     if (!walletSession.token || !['admin', 'operator'].includes(walletSession.user?.role)) return;
+    const ownerSession = walletSession;
     try {
         const [tasks, sessions] = await Promise.all([
             walletRequest('/api/admin/tasks', { token: walletSession.token }),
             walletRequest('/api/admin/task-sessions', { token: walletSession.token })
         ]);
+        if (ownerSession !== walletSession) return;
         ownerTasks = tasks.tasks || [];
         ownerTaskSessions = sessions.sessions || [];
         text('ownerTaskStatus', 'Task and session review data updated. Approve completion before the worker ends the session.');
     } catch (error) {
+        if (ownerSession !== walletSession) return;
         text('ownerTaskStatus', 'Owner task data unavailable: ' + error.message);
     }
     renderOwnerTasks();
@@ -602,24 +658,26 @@ function renderWallet() {
     const last = active || walletSessions[0];
     const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
     text('walletSessionState', last ? last.settled
-        ? `${walletResultLabel(last)} · Stake returned +${formatWalletAmount(last.stakeReturned)} · Reward +${formatWalletAmount(last.rewardPaid)} · Penalty ${formatWalletAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
+        ? `${walletResultLabel(last)} · Stake returned +${formatWalletAmount(last.stakeReturned)} · Reward +${formatWalletAmount(last.rewardPaid)} · Penalty ${formatWalletAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + walletOutcomeReason(last) : ''}`
         : `${walletSessionStage(last)} · ${formatWalletAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
         : taskMode && wallet && !wallet.canEarnSafeReward && wallet.canStartReason !== 'REWARD_POOL_EMPTY'
             ? 'No session yet. Daily reward cap reached; this task will not pay the safe reward.'
             : 'No session yet.');
     renderWalletSessionTimer();
+    renderTaskCompletion(active || last);
     const latest = [walletReceipt, walletTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
     text('walletTransactionStatus', walletReceipt?.stage
         ? `${walletReceipt.stage} · ${walletReceipt.sessionId || 'session'} · tx ${walletReceipt.transactionHash || 'awaiting receipt'}`
         : latest ? `${walletTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
     renderWalletSessions();
     renderWalletTransactions();
+    renderHrcReports();
 }
 
 function clearWalletSession() {
     walletSession = { token: null, user: null };
     wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletFunding = null; walletTasks = []; walletAssignments = []; selectedTaskId = null; walletTaskError = null; walletSessionRef = null;
-    ownerTasks = []; ownerTaskSessions = [];
+    ownerTasks = []; ownerTaskSessions = []; reportSessions = []; reportMessage = 'Sign in to view HRC session reports.';
 }
 
 function pendingWalletSession(userId) {
@@ -645,9 +703,20 @@ async function loadWalletAccountData({ fresh = false } = {}) {
     task.promise = (async () => {
         try {
             const token = session.token;
-            if (session.user.role === 'admin') {
+            if (['admin', 'operator'].includes(session.user.role)) {
                 wallet = null; walletSessions = []; walletTransactions = [];
-                walletMessage = 'This allowlisted admin wallet has read-only access.';
+                try {
+                    const reports = await walletRequest('/api/admin/wallet/sessions', { token });
+                    if (session !== walletSession) return false;
+                    reportSessions = reports.sessions || [];
+                    reportMessage = 'All accounts · ' + reportSessions.length + ' HRC sessions · Updated: ' + new Date().toLocaleString();
+                } catch (error) {
+                    if (session !== walletSession) return false;
+                    reportSessions = [];
+                    reportMessage = 'Unable to load HRC reports: ' + error.message;
+                    if (error.status === 401) throw error;
+                }
+                walletMessage = 'Task review and HRC reports are ready.';
             } else {
                 const [walletData, sessions, transactions] = await Promise.all([
                     walletRequest('/api/me/wallet', { token }), walletRequest('/api/me/sessions', { token }), walletRequest('/api/me/wallet/transactions', { token })
@@ -681,7 +750,7 @@ async function loadWalletAccountData({ fresh = false } = {}) {
                     selectedTaskId = selectedTaskId || (() => {
                         try { return sessionStorage.getItem('hrc-selected-task-' + session.user.userId); } catch { return null; }
                     })();
-                    if (!walletAssignments.some(row => row.taskId === selectedTaskId)) selectedTaskId = null;
+                    if (!walletAssignments.some(row => row.taskId === selectedTaskId && ['ASSIGNED', 'ACTIVE'].includes(row.status))) selectedTaskId = null;
                 } catch (error) {
                     if (session !== walletSession) return false;
                     walletTasks = [];
@@ -697,8 +766,9 @@ async function loadWalletAccountData({ fresh = false } = {}) {
                 walletTaskError = null;
             }
             if (session.user.role === 'admin' || session.user.role === 'operator') await refreshOwnerTasks();
+            if (session !== walletSession) return false;
             if (!walletBusy) {
-                walletMessage = session.user.role === 'admin' ? 'Admin account is read-only.'
+                walletMessage = ['admin', 'operator'].includes(session.user.role) ? 'Task review and HRC reports are ready.'
                     : walletSessions.some(row => row.stage === 'RUNNING') ? 'The sensor is measuring. End Session calculates the result.'
                     : walletStartBlockReason() || `Wallet loaded. Start locks ${formatWalletAmount(wallet.stakeAmount)} in a separate MetaMask transaction; End freezes the sensor evidence for settlement.`;
             }
@@ -1232,11 +1302,11 @@ function renderRuntimeConfig(config) {
         text('walletPolicyStake', 'Lock ' + stake);
         text('walletPolicySafeTitle', 'COMPLETED SAFE TASK');
         text('walletPolicySafe', 'Return ' + stake + ' + ' + reward);
-        text('walletPolicySafeDetail', `Task completion and at least ${policy.minimumSafeDuration || 30} seconds are required. Reward scales from ${formatPolicyWei(policy.baseReward)} to ${reward} at the task's full-reward duration, then stays capped. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
+        text('walletPolicySafeDetail', `Operator approval of completed cycles before End and at least ${policy.minimumSafeDuration || 30} seconds are required. Reward scales from ${formatPolicyWei(policy.baseReward)} to ${reward} at the task's full-reward duration, then stays capped. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
         text('walletPolicyPenalty', 'Return 0.190 HRC · route ' + penalty + ' to treasury');
         text('walletPolicyRefund', 'Return ' + stake + ' · no reward or penalty');
         text('walletPolicyNoteTitle', 'Task-bound settlement');
-        text('walletPolicyNote', 'A published task, completed cycle evidence, sensor coverage and frozen policy snapshot are required. Outcome and amounts are decided by backend evidence and contract policy.');
+        text('walletPolicyNote', 'Before End, an operator/admin must approve the observed cycle count. A published task, valid sensor coverage and frozen policy snapshot are also required. Outcome and amounts are decided by backend evidence and contract policy.');
         text('walletSessionTimerDetail', 'A completed task requires at least 30 seconds, its cycle target, and valid sensor evidence. Reward reaches its cap at the task full-reward duration and remains eligible beyond it.');
         text('walletSensorStatus', 'Sensor readiness is checked before the task stake is submitted.');
         const scale = byId('walletRewardScale'); if (scale) scale.hidden = true;

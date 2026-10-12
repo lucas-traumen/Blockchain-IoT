@@ -1765,7 +1765,7 @@ directory and a fresh V2 task-rewards deployment.
 Verification on the reset chain:
 
 - Rewards revision `task-rewards-v2-duration-curve-v1`, pool 1000 HRC.
-- `MIN_SAFE_DURATION = 30`; `rewardAmountForDuration(29,180)` reverts,
+- `MIN_SAFE_DURATION = 30`; `rewardAmountForDuration(29,180)` returns 0 (safe settlement below 30s reverts),
   `30s -> 0.001`, `105s -> 0.0015`, `180s/181s/3600s -> 0.002`.
 - Task create with `minimumDurationS: 30, maximumDurationS: 180` succeeds; this
   was the operation that failed with "duration must be between 120 seconds and
@@ -1778,3 +1778,39 @@ Verification on the reset chain:
 Note: the retired launcher `run_local_demo.sh` and its `.runtime/local-demo/`
 run directories are historical; the supported entrypoint is
 `scripts/run_local_metamask.sh`.
+
+## R31 — Task completion guidance and HRC reports (2026-10-13)
+
+Continue the authorized reward/dashboard fixes directly. Read-only inspection
+of the reported session confirmed 197.568s, 1,974 clear samples and all frozen
+telemetry checks passed; completion evidence was absent. Reports currently
+loads only safety logs and omits HRC sessions. No runtime evidence or chain
+records are to be modified to manufacture a reward.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R31:orchestrator | `dashboard/app.js`, `dashboard/index.html`, `blockchain_api/liveSessionService.js`, `blockchain_api/server.js`, focused API/dashboard tests, `PLAN.md`, `PROJECT_MEMORY.md` | Show current/frozen completion review state before End; preserve customer isolation and operator authority; Reports includes refunded/paid HRC sessions and customer transactions; stake subtitle uses receipt amounts; test API, race/error states, browser rendering | done |
+
+Implementation and verification:
+
+- `GET /api/admin/wallet/sessions` now exposes settled and active HRC sessions to
+  admin/operator wallets without creating approvals or settlements. Customer
+  reports remain limited to that wallet's `/api/me/sessions` and transactions.
+- Customer wallet guidance now reports missing, insufficient, approved and frozen
+  task-cycle evidence before End. End remains available so the sensor can stop;
+  missing completion evidence settles safely as an HRC refund with no reward.
+- The stake ledger derives its amount from the SessionStarted event instead of
+  displaying the stale 2 HRC V1 label. Settled assignments are no longer shown
+  as selectable task assignments.
+- API tests: **214/214**. Focused live/task/dashboard tests: **55/55**.
+  Hardhat tests: **122/122**. Existing wallet-first browser verifier: **15/15**;
+  custom report/completion Chrome checks passed on desktop and mobile with zero
+  broadcasts and no horizontal overflow.
+- The active local API was reloaded in place. Chain genesis, V2 deployment,
+  settlement transaction `0x4ad6a7db4a0bf008a22c6b19eb39c837fa370d6a950933e1342f2e027e9b796c`,
+  and all five session records were verified unchanged. The reported session
+  remains final: `INCOMPLETE`, stake returned `0.2 HRC`, reward `0 HRC`, reason
+  `task_completion_evidence_missing`.
+
+Checkpoint tool is unavailable in this Codex session; historical OpenCode state
+was read but remains unchanged.

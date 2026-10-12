@@ -335,3 +335,29 @@ test('a late duplicate confirm does not reopen the sensor or settle a running se
     assert.equal(again.stage, 'RUNNING'); assert.equal(again.duplicate, true);
     assert.equal(f.state.sensorStarts, 1); assert.equal(f.state.settlementCalls.length, 0);
 });
+
+
+test('completion review reads live evidence, preserves the frozen decision and isolates session owners', async t => {
+    const f = fixture(t);
+    const started = await f.start('user_1', { sessionRef: 'completion-status' });
+    const sessionId = started.sessionId;
+    let approved = null;
+    f.live.completionStore = { getCompletionEvidence: () => approved };
+    f.walletService.store.update(sessionId, { taskSnapshot: { task: { completionRule: { requiredCycles: 20 } } } });
+    assert.deepEqual((await f.live.session('user_1', sessionId)).session.taskCompletion,
+        { status: 'MISSING', requiredCycles: 20, observedCycles: null, approvedAt: null, reviewable: true });
+    approved = { achieved: false, observedCycles: 12, createdAt: '2026-10-11T10:00:20Z' };
+    assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.status, 'INSUFFICIENT');
+    approved = { ...approved, achieved: true, observedCycles: 20 };
+    const sessions = await f.live.sessions('user_1');
+    assert.equal(sessions.sessions[0].taskCompletion.status, 'APPROVED');
+    assert.equal(sessions.sessions[0].taskCompletion.observedCycles, 20);
+    assert.equal((await f.live.sessions('user_2')).sessions.length, 0);
+    await assert.rejects(f.live.session('user_2', sessionId), { code: 'SESSION_OWNER_MISMATCH' });
+    f.walletService.store.update(sessionId, { stage: 'SETTLEMENT_PENDING', evidence: { completionEvidence: null } });
+    const frozen = (await f.live.session('user_1', sessionId)).session.taskCompletion;
+    assert.equal(frozen.status, 'MISSING', 'later approval must not rewrite the frozen missing-evidence decision');
+    assert.equal(frozen.reviewable, false);
+    f.walletService.store.update(sessionId, { evidence: { completionEvidence: approved } });
+    assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.status, 'APPROVED');
+});

@@ -249,6 +249,19 @@ function createApp({ service, customerService, walletService, liveService, rewar
         const tasks = getCustomerService().store.listTasks(req.query.status || null, 200);
         res.json({ success: true, tasks });
     });
+    app.get("/api/admin/wallet/sessions", requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+        await respond(res, async () => {
+            const walletService = getWalletService();
+            const sessions = [];
+            for (const record of walletService.store.list()) {
+                try {
+                    const { session } = await walletService.getSession(record.userId, record.sessionId);
+                    sessions.push({ ...session, taskCompletion: getLiveService().taskCompletion(record) });
+                } catch (error) { if (error.code !== "SESSION_NOT_FOUND") throw error; }
+            }
+            return { success: true, count: sessions.length, sessions };
+        });
+    });
     app.get("/api/admin/task-sessions", requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
         const store = getWalletService().store;
         const sessions = store.list().filter(row => row.taskSnapshot?.task && !["SETTLED", "START_FAILED", "INTENT_EXPIRED"].includes(row.stage))

@@ -13,14 +13,20 @@ async function fixture(t) {
     const store = new SqliteCustomerStore(path.join(directory, "app.db"));
     const owner = ethers.Wallet.createRandom();
     const user = ethers.Wallet.createRandom();
-    const customerService = new CustomerService({ store, chainId: 31337, adminWallets: [owner.address], appOrigin: "http://localhost:8081" });
+    const operator = ethers.Wallet.createRandom();
+    const customerService = new CustomerService({ store, chainId: 31337, adminWallets: [owner.address], operatorWallets: [operator.address], appOrigin: "http://localhost:8081" });
     const walletService = {
         store: { list: () => [{ sessionId: "active-session", taskId: "task-1", assignmentId: "asg-1", userId: "usr_owner",
             stage: "RUNNING", taskSnapshot: { task: { taskId: "task-1", title: "Cycles", completionRule: { requiredCycles: 5 } } } }] },
         walletUser(address) { return { userId: "usr_" + address.toLowerCase(), walletAddress: address, role: "customer" }; },
         loginWithWallet(address) { return { user: this.walletUser(address) }; }
     };
-    const app = createApp({ service: {}, customerService, walletService, tokens: { HRC_APP_AUTH_MODE: "siwe", HRC_CORS_ORIGINS: "http://localhost:8081" } });
+    const records = walletService.store.list();
+    walletService.store.list = () => records;
+    walletService.getSession = async (userId, sessionId) => ({ success: true,
+        session: { ...records.find(row => row.userId === userId && row.sessionId === sessionId) } });
+    const liveService = { taskCompletion: row => ({ status: row.evidence?.completionEvidence ? 'APPROVED' : 'MISSING' }) };
+    const app = createApp({ service: {}, customerService, walletService, liveService, tokens: { HRC_APP_AUTH_MODE: "siwe", HRC_CORS_ORIGINS: "http://localhost:8081" } });
     const server = app.listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => { server.close(); store.close(); fs.rmSync(directory, { recursive: true, force: true }); });
@@ -37,7 +43,7 @@ async function fixture(t) {
         const result = await call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
         return result.body.token;
     };
-    return { owner, user, call, login, store };
+    return { owner, user, operator, call, login, store, records };
 }
 
 test("task routes enforce SIWE roles and preserve idempotent assignments with audit", async t => {
@@ -62,4 +68,27 @@ test("task routes enforce SIWE roles and preserve idempotent assignments with au
     assert.equal(adminSessions.body.sessions[0].sessionId, "active-session");
     const audit = f.store.listAudit(10).map(row => row.action);
     assert.deepEqual(audit, ["task.publish", "task.create"]);
+});
+
+
+test('HRC report route includes settled refunds and running sessions only for admin/operator roles', async t => {
+    const f = await fixture(t);
+    f.records.push({ sessionId: 'refunded-session', userId: 'usr_customer', stage: 'SETTLED', settled: true,
+        outcomeCode: 3, stakeReturned: '0.2', rewardPaid: '0', penaltyCollected: '0',
+        outcomeReason: 'task_completion_evidence_missing', evidence: { completionEvidence: null } });
+    const ownerToken = await f.login(f.owner);
+    const userToken = await f.login(f.user);
+    assert.equal((await f.call('/api/admin/wallet/sessions')).status, 401);
+    assert.equal((await f.call('/api/admin/wallet/sessions', { token: userToken })).status, 403);
+    const reports = await f.call('/api/admin/wallet/sessions', { token: ownerToken });
+    assert.equal(reports.status, 200);
+    assert.equal(reports.body.count, 2);
+    const refund = reports.body.sessions.find(row => row.sessionId === 'refunded-session');
+    assert.equal(refund.rewardPaid, '0');
+    assert.equal(refund.stakeReturned, '0.2');
+    assert.equal(refund.taskCompletion.status, 'MISSING');
+    assert.equal(refund.outcomeReason, 'task_completion_evidence_missing');
+    assert.equal(f.store.listAudit(100).length, 0, 'report reads must not create approvals or settlements');
+    const operatorToken = await f.login(f.operator);
+    assert.equal((await f.call('/api/admin/wallet/sessions', { token: operatorToken })).status, 200);
 });

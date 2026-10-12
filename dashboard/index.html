@@ -177,7 +177,7 @@
                 <div>
                     <span class="panel-kicker">USER TRANSACTION AREA</span>
                     <h3 id="walletHeading">My Wallet / My Sessions</h3>
-                    <p>1. Approve the displayed stake · 2. Select a task and start · 3. End the session to settle its evidence.</p>
+                    <p>1. Approve the stake and start a selected task · 2. Have the operator verify completed cycles · 3. End to settle.</p>
                 </div>
                 <div class="wallet-panel-controls"><button type="button" id="walletLogoutBtn" class="view-all-btn">Sign out</button><span id="walletRole" class="live-badge">WALLET NOT CONNECTED</span><button type="button" class="view-all-btn" data-wallet-refresh>Refresh wallet</button></div>
             </div>
@@ -211,6 +211,7 @@
                     </div>
                     <p id="walletApprovalStatus" class="wallet-session-state" role="status" aria-live="polite">Checking HRC allowance...</p>
                     <p id="walletStartStatus" class="wallet-session-state" role="status" aria-live="polite">Checking wallet and sensor readiness...</p>
+                    <p id="walletCompletionStatus" class="wallet-session-state" role="status" aria-live="polite" hidden></p>
                     <p id="walletFundingStatus" class="wallet-account-hint" role="status" aria-live="polite">Local test funding status will appear after SIWE sign-in.</p>
                     <div class="wallet-session-timer">
                         <span id="walletSessionTimerLabel" class="wallet-card-label">Session time</span>
@@ -803,6 +804,16 @@
         </section>
         <section id="view-reports" class="sidebar-view panel" hidden aria-labelledby="reportsHeading">
             <div class="panel-header"><div><h3 id="reportsHeading">Reports</h3><p id="transactionsDescription">Safety and reward transactions recorded on the configured network.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
+            <div class="view-body">
+                <h4 id="reportSessionsHeading">HRC sessions</h4>
+                <p id="reportRewardMessage" class="view-message" role="status" aria-live="polite">Sign in to view HRC session reports.</p>
+                <div class="table-wrapper"><table><thead><tr><th>ACCOUNT</th><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT / REASON</th><th>STAKE RETURNED / LOCKED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="reportSessionsTableBody"></tbody></table></div>
+                <div id="reportWalletTransactions" hidden>
+                    <h4>My HRC transactions</h4>
+                    <div class="table-wrapper"><table><thead><tr><th>EVENT / DETAIL</th><th>WALLET CHANGE</th><th>LOCKED CHANGE</th><th>BLOCK</th><th>TRANSACTION</th></tr></thead><tbody id="reportWalletTransactionsTableBody"></tbody></table></div>
+                </div>
+                <h4>Safety transactions</h4>
+            </div>
             <p class="view-message" id="transactionsMessage" role="status" aria-live="polite"></p>
             <div class="table-wrapper"><table><thead><tr><th>TRANSACTION HASH</th><th>TYPE</th><th>BLOCK</th><th>EVENT ID</th><th>DEVICE</th><th>RISK</th><th>ETHERSCAN</th></tr></thead><tbody id="transactionsTableBody"></tbody></table></div>
         </section>
@@ -885,6 +896,6 @@
 
     <script src="vendor/ethers.umd.min.js" defer></script>
     <script src="wallet.js?v=metamask-6" defer></script>
-    <script src="app.js?v=task-reward-curve-1" defer></script>
+    <script src="app.js?v=task-completion-reports-1" defer></script>
 </body>
 </html>

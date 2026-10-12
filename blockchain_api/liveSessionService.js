@@ -245,11 +245,25 @@ class LiveSessionService {
                 if (info) this.store.update(id, { iotSession: this.sensorInfo(info) });
             } catch { /* Last durable sensor state remains visible while the device API is down. */ }
         }
-        return this.walletService.getSession(userId, id);
+        const result = await this.walletService.getSession(userId, id);
+        return { ...result, session: { ...result.session, taskCompletion: this.taskCompletion(this.store.get(id)) } };
+    }
+    taskCompletion(record) {
+        const rule = record?.taskSnapshot?.task?.completionRule;
+        if (!rule) return null;
+        // Once End freezes evidence, later store changes cannot change the reported decision.
+        const evidence = record.evidence ? record.evidence.completionEvidence
+            : this.completionStore?.getCompletionEvidence?.(record.sessionId);
+        return { status: evidence ? (evidence.achieved ? 'APPROVED' : 'INSUFFICIENT') : 'MISSING',
+            requiredCycles: rule.requiredCycles, observedCycles: evidence?.observedCycles ?? null,
+            approvedAt: evidence?.createdAt ?? null,
+            reviewable: record.stage === 'RUNNING' && !record.evidence && !record.settlementPayload };
     }
     async sessions(userId) {
         for (const record of this.store.list(userId).filter(row => row.source === 'esp32' && !FINAL.has(row.stage))) await this.session(userId, record.sessionId);
-        return this.walletService.listSessions(userId);
+        const result = await this.walletService.listSessions(userId);
+        return { ...result, sessions: result.sessions.map(session => ({ ...session,
+            taskCompletion: this.taskCompletion(this.store.get(session.sessionId)) })) };
     }
     sensorInfo(info) {
         return { ...info, durationS: info.started_at ? Math.max(0, ((info.ended_at ? Date.parse(info.ended_at) : this.clock()) - Date.parse(info.started_at)) / 1000) : 0 };

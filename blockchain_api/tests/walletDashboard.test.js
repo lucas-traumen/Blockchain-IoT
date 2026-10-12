@@ -464,3 +464,91 @@ test('V2 pending retry keeps the same reference but cannot open a second active 
     assert.equal(f.elements.get('walletStartBtn').disabled, true);
     assert.match(f.elements.get('walletStartStatus').textContent, /already in progress/);
 });
+
+
+test('task completion is visible before End without preventing a sensor stop', () => {
+    const f = fixture(); f.select('user_1'); setTaskWallet(f);
+    f.run(`walletSessions = [{ sessionId: 'task-session', taskId: 'task-1', stage: 'RUNNING', settled: false,
+        stakedAmount: '0.2', taskSnapshot: { task: { completionRule: { requiredCycles: 20, minimumDurationS: 30 } } },
+        taskCompletion: { status: 'MISSING', requiredCycles: 20, observedCycles: null } }]; renderWallet()`);
+    const status = f.elements.get('walletCompletionStatus');
+    assert.equal(status.hidden, false);
+    assert.match(status.textContent, /20 cycles.*before End.*no reward/);
+    assert.equal(f.elements.get('walletEndBtn').disabled, false);
+    f.run("walletSessions[0].taskCompletion = {status:'APPROVED',requiredCycles:20,observedCycles:20}; renderWallet()");
+    assert.match(status.textContent, /verified by the operator: 20\/20 cycles/);
+    f.run("walletSessions[0].taskCompletion = {status:'INSUFFICIENT',requiredCycles:20,observedCycles:12}; renderWallet()");
+    assert.match(status.textContent, /12\/20 cycles.*without reward/);
+});
+
+test('HRC Reports displays refunded sessions and receipt-derived stake transactions even with no safety events', () => {
+    const f = fixture(); f.select('user_1'); setTaskWallet(f);
+    f.run(`walletSessions = [{ sessionId: 'missing-cycles', userId:'user_1', taskId:'task-1', stage:'SETTLED', settled:true,
+        outcomeCode:3, stakeReturned:'0.2', rewardPaid:'0', penaltyCollected:'0', blockNumber:29,
+        outcomeReason:'task_completion_evidence_missing' }];
+        walletTransactions = [{action:'STAKE',walletDelta:'-0.2',lockedDelta:'0.2',blockNumber:28,events:[{name:'SessionStarted',amount:'0.2'}]}];
+        renderWallet()`);
+    const rows = f.elements.get('reportSessionsTableBody').children;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].children.length, 9);
+    assert.equal(rows[0].children[1].textContent, 'missing-cycles');
+    assert.match(rows[0].children[4].textContent, /REFUNDED.*Operator did not approve.*before End/);
+    assert.equal(rows[0].children[5].textContent, '0.2 HRC');
+    assert.equal(f.elements.get('reportWalletTransactions').hidden, false);
+    const detail = f.elements.get('reportWalletTransactionsTableBody').children[0].children[0].textContent;
+    assert.match(detail, /Available −0.2 HRC · Locked \+0.2 HRC/);
+    assert.equal(f.run("walletLedgerDescription({action:'STAKE',lockedDelta:'2',events:[]})"), 'Available −2 HRC · Locked +2 HRC · Live session started');
+    assert.match(f.elements.get('walletCompletionStatus').textContent, /Operator did not approve/);
+    f.run("selectedTaskId = 'task-1'; renderWallet()");
+    assert.match(f.elements.get('walletCompletionStatus').textContent, /Operator did not approve/);
+    f.run('clearWalletSession(); renderWallet()');
+    assert.equal(f.elements.get('reportSessionsTableBody').children[0].children[0].textContent, 'No sessions recorded yet.');
+    assert.equal(f.elements.get('reportWalletTransactions').hidden, true);
+});
+
+test('admin HRC reports refresh independently of customer wallet routes and report failures visibly', async () => {
+    let fail = false;
+    const f = fixture(async url => {
+        if (url.endsWith('/api/admin/wallet/sessions')) return fail ? reply({success:false,error:'RPC unavailable'},503)
+            : reply({success:true,sessions:[{sessionId:'refund-all-accounts',userId:'user_2',settled:true,stage:'SETTLED',outcomeCode:3,stakeReturned:'0.2',rewardPaid:'0',penaltyCollected:'0'}]});
+        assert.ok(!url.endsWith('/api/me/wallet') && !url.endsWith('/api/me/sessions'));
+        return reply({success:true,tasks:[],sessions:[]});
+    });
+    f.select('admin'); await f.run('loadWalletAccountData()');
+    assert.equal(f.elements.get('reportSessionsTableBody').children[0].children[1].textContent, 'refund-all-accounts');
+    assert.match(f.elements.get('reportRewardMessage').textContent, /All accounts.*1 HRC sessions/);
+    fail = true; await f.run('loadWalletAccountData({fresh:true})');
+    assert.match(f.elements.get('reportRewardMessage').textContent, /Unable to load HRC reports: RPC unavailable/);
+    assert.equal(f.run('reportSessions.length'), 0);
+});
+
+test('switching accounts during an admin report request cannot expose earlier account reports', async () => {
+    const hold = deferred();
+    const f = fixture(async url => {
+        if (url.endsWith('/api/admin/wallet/sessions')) {
+            await hold.promise;
+            return reply({success:true,sessions:[{sessionId:'admin-only-session',userId:'user_2'}]});
+        }
+        return reply(url.endsWith('/wallet') ? wallet('user_1') : {success:true,sessions:[],transactions:[]});
+    });
+    f.select('admin'); const oldRead = f.run('loadWalletAccountData()');
+    f.run('clearWalletSession()'); f.select('user_1');
+    await f.run('loadWalletAccountData()'); hold.resolve(); await oldRead;
+    assert.equal(f.run('reportSessions.length'), 0);
+    assert.doesNotMatch(f.elements.get('reportSessionsTableBody').children[0].children[0].textContent, /admin-only-session/);
+});
+
+test('settled assignments stop presenting a stale selection and direct users to another task', async () => {
+    const f = fixture(async url => {
+        if (url.endsWith('/wallet')) return reply({...wallet('user_1'), rewardProtocolVersion:'task-rewards-v2'});
+        if (url.endsWith('/api/tasks')) return reply({success:true,tasks:[{taskId:'task-local',title:'Task',status:'OPEN'}]});
+        if (url.endsWith('/assignments')) return reply({success:true,assignments:[{taskId:'task-local',status:'SETTLED'}]});
+        return reply({success:true,sessions:[],transactions:[]});
+    });
+    f.select('user_1'); setTaskWallet(f); selectAssignedTask(f);
+    await f.run('loadWalletAccountData({fresh:true})');
+    assert.equal(f.run('selectedTaskId'), null);
+    assert.equal(f.elements.get('walletTaskList').children[0].children[1].textContent, 'SETTLED · choose another task');
+    assert.equal(f.elements.get('walletTaskList').children[0].children[1].disabled, true);
+    assert.equal(f.elements.get('walletStartBtn').disabled, true);
+});

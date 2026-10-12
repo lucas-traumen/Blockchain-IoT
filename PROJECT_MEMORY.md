@@ -1173,7 +1173,7 @@ safety outcome.
 - `scripts/run_local_metamask.sh --task-rewards-v2` is the supported entrypoint
   and was used for the reset. New run directory holds the V2 deployment,
   `wallet-sessions.db` and the API config; `.runtime/` stays gitignored.
-- Live verification: curve `29s` revert, `30s -> 0.001`, `105s -> 0.0015`,
+- Live verification: curve preview `29s -> 0` (safe settlement below 30s reverts), `30s -> 0.001`, `105s -> 0.0015`,
   `180s/181s/3600s -> 0.002`; a 30/180 task was created, published and accepted;
   Start calldata is the new four-argument form and the on-chain session froze
   `fullRewardDuration` equal to the task's `maximumDurationS`.
@@ -1182,3 +1182,27 @@ safety outcome.
   it could never catch the regression. It now asserts the 30-second floor, the
   `0.001 -> 0.002` curve, a 30/180 task rule and that the rule survives
   create/publish/accept.
+
+
+## Task completion evidence and HRC reports (R31, 2026-10-13)
+
+- A task V2 safe session needs an owner/operator completion approval while the
+  sensor stage is `RUNNING`, in addition to duration, cycle-independent safety and
+  telemetry evidence. Time beyond the task full-reward duration only caps the
+  reward; it cannot substitute for the required cycle evidence. Once End freezes
+  evidence and settlement, retry cannot add a reward retrospectively.
+- Customer UI now shows missing, insufficient, approved and frozen completion
+  states beside the wallet session controls. End remains available to stop the
+  sensor and safely refund incomplete evidence. The raw reason
+  `task_completion_evidence_missing` is translated into operator guidance.
+- Reports now include wallet HRC sessions and wallet transactions. Privileged
+  reports use a role-protected read-only endpoint; customer data remains scoped
+  to the signed-in wallet. Stake ledger text comes from the on-chain event amount.
+- The reported local session `hrc-eb610b55-wallet-0fe92ff4-e392-48dc-966b-6c30f6800049`
+  ran about 197.568 seconds with 1,974 valid samples and no violation, but had no
+  completion evidence. Its final settlement is therefore an immutable 0.2 HRC
+  refund with 0 HRC reward.
+- R31 verification: Blockchain API 214/214, focused live/task/dashboard 55/55,
+  Hardhat 122/122, wallet-first browser 15/15, custom Chrome report/completion
+  checks pass on desktop/mobile with zero broadcasts. The API was reloaded without
+  resetting the local chain or runtime databases.
