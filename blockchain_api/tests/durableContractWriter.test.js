@@ -4,18 +4,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ethers } = require('ethers');
-const { DemoSessionStore } = require('../demoSessionStore');
+const { JsonSessionStore } = require('../sessionStore');
 const { DurableContractWriter } = require('../durableContractWriter');
 
 function fixture(t) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(),'hrc-durable-writes-'));
     t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
     const file=path.join(directory,'sessions.json');
-    const store=new DemoSessionStore(file);
+    const store=new JsonSessionStore(file);
     const state={nonceReads:0,broadcasts:[],receipt:null,drop:true};
     const provider={getNetwork:async()=>({chainId:31337n}),getTransactionCount:async()=>{state.nonceReads++;return 0;},
         estimateGas:async()=>21000n,getFeeData:async()=>({gasPrice:1n,maxFeePerGas:null,maxPriorityFeePerGas:null}),getTransactionReceipt:async()=>state.receipt,
-        broadcastTransaction:async raw=>{assert.ok(new DemoSessionStore(file).listTransactions().some(record=>record.rawTransaction===raw),'signed bytes were persisted before send');state.broadcasts.push(raw);if(state.drop)throw new Error('Lost response');return{hash:ethers.keccak256(raw)};}};
+        broadcastTransaction:async raw=>{assert.ok(new JsonSessionStore(file).listTransactions().some(record=>record.rawTransaction===raw),'signed bytes were persisted before send');state.broadcasts.push(raw);if(state.drop)throw new Error('Lost response');return{hash:ethers.keccak256(raw)};}};
     const wallet=ethers.Wallet.createRandom().connect(provider);
     const contract={call:{populateTransaction:async value=>({to:'0x0000000000000000000000000000000000000044',data:'0x'+value.toString(16).padStart(2,'0')})}};
     return{file,store,state,provider,wallet,contract,writer:new DurableContractWriter({provider,store,waitMs:0})};
@@ -24,7 +24,7 @@ function fixture(t) {
 test('an uncertain broadcast and store reopen reuse exactly the same signature/hash/nonce',async t=>{
     const f=fixture(t);const pending=await f.writer.send('stake:one',f.wallet,f.contract,'call',[1]);
     assert.equal(pending.pending,true);assert.equal(f.state.nonceReads,1);
-    const reopened=new DurableContractWriter({provider:f.provider,store:new DemoSessionStore(f.file),waitMs:0});
+    const reopened=new DurableContractWriter({provider:f.provider,store:new JsonSessionStore(f.file),waitMs:0});
     await reopened.send('stake:one',f.wallet,f.contract,'call',[1]);
     assert.equal(f.state.broadcasts.length,2);assert.equal(f.state.broadcasts[0],f.state.broadcasts[1]);assert.equal(f.state.nonceReads,1);
     f.state.receipt={status:1,blockNumber:9};const confirmed=await reopened.send('stake:one',f.wallet,f.contract,'call',[1]);

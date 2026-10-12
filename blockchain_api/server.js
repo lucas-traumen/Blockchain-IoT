@@ -51,52 +51,37 @@ function rateLimit({ windowMs = 60000, max = 20 } = {}) {
     };
 }
 
-function requireDemoSession(demoService, role) {
+function requireWalletSession(customerService, rewardWalletService, role = "customer") {
     return (req, res, next) => {
-        const token = appToken(req);
-        let authenticated = demoService().authenticateToken(token);
-        if (!authenticated) {
-            const appAuth = requireUserSessionFromToken(req, token);
-            if (appAuth) {
-                const rewardUser = demoService().walletUser(appAuth.user.walletAddress);
-                authenticated = { user: rewardUser, session: appAuth.session };
-                req.appSession = appAuth.session;
-            }
-        }
-        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "Choose a demo account first" });
+        const authenticated = customerService().authenticateToken(appToken(req));
+        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "A valid SIWE wallet session is required" });
         if (role && authenticated.user.role !== role) {
-            return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This demo account is read-only for the requested operation" });
+            return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This wallet does not have the required application role" });
         }
-        req.demoUser = authenticated.user;
-        req.demoSession = authenticated.session;
+        req.appUser = authenticated.user;
+        req.appSession = authenticated.session;
+        req.walletUser = rewardWalletService().walletUser(authenticated.user.walletAddress);
         next();
     };
 }
 
-function requireUserSessionFromToken(req, token) {
-    const customerService = req.app.locals.customerService;
-    const authenticated = customerService?.authenticateToken(token);
-    if (!authenticated) return null;
-    req.appUser = authenticated.user;
-    return authenticated;
-}
-
-function createApp({ service, customerService, demoService, liveService, rewardService, auditLog, tokens = process.env } = {}) {
-    if (tokens.NODE_ENV === "production" && !["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) {
-        throw new Error("Production requires HRC_APP_AUTH_MODE=siwe or wallet for RBAC admin access");
+function createApp({ service, customerService, walletService, liveService, rewardService, auditLog, tokens = process.env } = {}) {
+    const authMode = tokens.HRC_APP_AUTH_MODE || "siwe";
+    if (authMode !== "siwe") {
+        throw new Error("HRC_APP_AUTH_MODE must be siwe; demo and legacy wallet login are disabled");
     }
     service ||= require("./safetyService");
     let resolvedCustomerService = customerService;
     const getCustomerService = () => resolvedCustomerService || (resolvedCustomerService = require("./customerService").getCustomerService(tokens));
-    let resolvedDemoService = demoService;
-    const getDemoService = () => resolvedDemoService || (resolvedDemoService = require("./demoWalletService").getDemoWalletService(tokens));
+    let resolvedWalletService = walletService;
+    const getWalletService = () => resolvedWalletService || (resolvedWalletService = require("./walletService").getWalletService(tokens, getCustomerService().store));
     let resolvedLiveService = liveService;
-    const getLiveService = () => resolvedLiveService || (resolvedLiveService = require('./liveSessionService').buildLiveSessionService(getDemoService(), tokens));
+    const getLiveService = () => resolvedLiveService || (resolvedLiveService = require('./liveSessionService').buildLiveSessionService(getWalletService(), tokens));
     let resolvedRewardService = rewardService || null;
     const getRewardService = () => resolvedRewardService || (resolvedRewardService = require("./rewardService").getRewardService(tokens));
     let resolvedWalletFirst = null;
     const getWalletFirstService = () => resolvedWalletFirst || (resolvedWalletFirst = require("./walletFirstService")
-        .buildWalletFirstService(getCustomerService(), () => { try { return getDemoService(); } catch { return null; } }));
+        .buildWalletFirstService(getCustomerService(), () => { try { return getWalletService(); } catch { return null; } }));
     let resolvedAuditLog = auditLog || null;
     const getAuditLog = () => resolvedAuditLog || (resolvedAuditLog = new (require("./auditLog").AuditLog)({ store: getCustomerService().store }));
     const prepareWalletStart = async (userId, input) => {
@@ -104,7 +89,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         await getLiveService().reserveWalletStart(userId, prepared.sessionId);
         return { ...prepared, stage: "PREPARED", intentTtlMs: 120000 };
     };
-    const adminActor = req => req.appUser?.walletAddress || "admin-api-token";
+    const adminActor = req => req.appUser.walletAddress;
     const requireExternalPolicyGovernance = (req, res, next) => {
         if (tokens.NODE_ENV === "production") {
             return res.status(501).json({ success: false, code: "POLICY_MULTISIG_REQUIRED",
@@ -112,16 +97,13 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         }
         next();
     };
-    const requireAdmin = (req, res, next) => {
-        if (["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) return requireUserRole(getCustomerService, "admin")(req, res, next);
-        return requireToken("admin", tokens)(req, res, next);
-    };
+    const requireAdmin = (req, res, next) => requireUserRole(getCustomerService, "admin")(req, res, next);
     const app = express();
     app.set("trust proxy", tokens.HRC_TRUST_PROXY === "true" ? 1 : false);
     app.locals.customerService = { authenticateToken: token => getCustomerService().authenticateToken(token) };
     app.locals.startLiveRecovery = () => getLiveService().startRecovery();
     app.locals.stopLiveRecovery = () => resolvedLiveService?.stopRecovery();
-    const allowedOrigins = String(tokens.HRC_CORS_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080")
+    const allowedOrigins = String(tokens.HRC_CORS_ORIGINS || "http://localhost:8081,http://127.0.0.1:8081")
         .split(",").map(value => value.trim().replace(/\/$/, "")).filter(Boolean);
     if (allowedOrigins.includes("*")) throw new Error("HRC_CORS_ORIGINS must be an explicit allowlist");
     app.use(cors({ origin(origin, callback) {
@@ -132,7 +114,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         const requestId = require("node:crypto").randomUUID();
         res.set("X-Request-ID", requestId);
         req.requestId = requestId;
-        if (/^\/api\/(auth|demo|me|behavior|customers|tasks)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
+        if (/^\/api\/(auth|me|behavior|customers|tasks)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
         next();
     });
     app.use((req, res, next) => {
@@ -170,84 +152,51 @@ function createApp({ service, customerService, demoService, liveService, rewardS
             walletChallenge: "POST /api/auth/challenge", walletLogin: "POST /api/auth/wallet", walletLogout: "POST /api/auth/logout",
             me: "GET /api/me", profile: "PATCH /api/me/profile", behavior: "POST /api/behavior",
             myBehavior: "GET /api/me/behavior", customers: "GET /api/customers (admin wallet)", customerBehavior: "GET /api/customers/:userId/behavior (admin wallet)",
-            demoAccounts: "GET /api/demo/accounts", demoLogin: "POST /api/demo/login", demoWallet: "GET /api/me/wallet",
-            demoEnd: "POST /api/me/sessions/:sessionId/end", demoApprove: "POST /api/me/wallet/approve", demoStart: "POST /api/me/sessions/start", walletStartConfirm: "POST /api/me/sessions/:sessionId/confirm-start", demoSessions: "GET /api/me/sessions",
-            demoAdminOverview: "GET /api/demo/admin/overview", demoWalletTransactions: "GET /api/me/wallet/transactions" }
+            wallet: "GET /api/me/wallet",
+            walletEnd: "POST /api/me/sessions/:sessionId/end", walletApprove: "GET /api/me/wallet/prepare/approve", walletStart: "POST /api/me/sessions/start", walletStartConfirm: "POST /api/me/sessions/:sessionId/confirm-start", walletSessions: "GET /api/me/sessions",
+            walletTransactions: "GET /api/me/wallet/transactions" }
     }));
     app.get("/api/config", async (req, res) => {
         const read = service.getPublicConfig || (() => require("./publicConfig").getPublicConfig(tokens));
         await respond(res, () => read());
     });
-    const requireWalletLogin = (req, res, next) => {
-        if (!["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) {
-            return res.status(403).json({ success: false, code: "WALLET_LOGIN_DISABLED",
-                error: "Wallet registration is disabled in the local demo. Choose admin, user_1 or user_2, or run with HRC_APP_AUTH_MODE=wallet|siwe." });
-        }
-        next();
-    };
-    app.post("/api/auth/challenge", authRateLimit, requireWalletLogin, async (req, res) => {
+    app.post("/api/auth/challenge", authRateLimit, async (req, res) => {
         await respond(res, () => getCustomerService().createChallenge(req.body));
     });
-    app.post("/api/auth/wallet", authRateLimit, requireWalletLogin, async (req, res) => {
+    app.post("/api/auth/wallet", authRateLimit, async (req, res) => {
         await respond(res, () => getWalletFirstService().login(req.body || {}), 401);
     });
-    app.get("/api/demo/accounts", async (req, res) => {
-        await respond(res, () => ({ success: true, accounts: getDemoService().listAccounts() }));
+    app.get("/api/me/wallet", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getLiveService().wallet(req.walletUser.userId));
     });
-    app.post("/api/demo/login", authRateLimit, async (req, res) => {
-        await respond(res, () => getDemoService().login(req.body?.userId), 401);
-    });
-    // Alias kept short for the dashboard and local smoke scripts.
-    app.post("/api/auth/demo", authRateLimit, async (req, res) => {
-        await respond(res, () => getDemoService().login(req.body?.userId), 401);
-    });
-    app.post("/api/demo/logout", requireDemoSession(getDemoService), async (req, res) => {
-        await respond(res, () => getDemoService().logout(appToken(req)));
-    });
-    app.get("/api/me/wallet", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getLiveService().wallet(req.demoUser.userId));
-    });
-    app.get("/api/me/wallet/transactions", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getDemoService().getTransactions(req.demoUser.userId));
-    });
-    app.post("/api/me/wallet/approve", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
-            ? getWalletFirstService().prepareApproval(req.demoUser.userId)
-            : getDemoService().approve(req.demoUser.userId));
+    app.get("/api/me/wallet/transactions", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getWalletService().getTransactions(req.walletUser.userId));
     });
     // Wallet-first: the user signs these locally. The backend only prepares them.
-    app.get("/api/me/wallet/prepare/approve", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getWalletFirstService().prepareApproval(req.demoUser.userId), 400);
+    app.get("/api/me/wallet/prepare/approve", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getWalletFirstService().prepareApproval(req.walletUser.userId), 400);
     });
-    app.get("/api/me/wallet/prepare/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => prepareWalletStart(req.demoUser.userId, req.query), 400);
+    app.get("/api/me/wallet/prepare/start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.query), 400);
     });
-    app.get("/api/me/wallet/prepare/end/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getWalletFirstService().prepareEndSession(req.demoUser.userId, req.params.sessionId), 400);
+    app.get("/api/me/wallet/prepare/end/:sessionId", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getWalletFirstService().prepareEndSession(req.walletUser.userId, req.params.sessionId), 400);
     });
-    app.get("/api/me/sessions", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getLiveService().sessions(req.demoUser.userId));
+    app.get("/api/me/sessions", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getLiveService().sessions(req.walletUser.userId));
     });
-    app.get("/api/me/sessions/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
+    app.get("/api/me/sessions/:sessionId", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         identifier(req.params.sessionId, "sessionId");
-        await respond(res, () => getLiveService().session(req.demoUser.userId, req.params.sessionId), 404);
+        await respond(res, () => getLiveService().session(req.walletUser.userId, req.params.sessionId), 404);
     });
-    app.post("/api/me/sessions/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
-            ? prepareWalletStart(req.demoUser.userId, req.body || {})
-            : getLiveService().start(req.demoUser.userId, req.body || {}));
+    app.post("/api/me/sessions/start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.body || {}));
     });
-    app.post("/api/me/sessions/:sessionId/confirm-start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        if (!getDemoService().isWalletFirst(req.demoUser.userId)) {
-            return res.status(400).json({ success: false, code: "NOT_WALLET_FIRST", error: "This route is only for wallet-first sessions" });
-        }
-        await respond(res, () => getLiveService().confirmWalletStart(req.demoUser.userId, req.params.sessionId, req.body || {}), 400);
+    app.post("/api/me/sessions/:sessionId/confirm-start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getLiveService().confirmWalletStart(req.walletUser.userId, req.params.sessionId, req.body || {}), 400);
     });
-    app.post('/api/me/sessions/:sessionId/end', requireDemoSession(getDemoService, 'customer'), async (req, res) => {
-        await respond(res, () => getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
-    });
-    app.get("/api/demo/admin/overview", requireDemoSession(getDemoService, "admin"), async (req, res) => {
-        await respond(res, () => getLiveService().overview());
+    app.post('/api/me/sessions/:sessionId/end', requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getLiveService().end(req.walletUser.userId, req.params.sessionId, req.body || {}));
     });
     app.post("/api/auth/logout", requireUserSession(getCustomerService), async (req, res) => {
         await respond(res, () => getCustomerService().logout(req.appSession));

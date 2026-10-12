@@ -107,7 +107,7 @@ class SqliteCustomerStore {
     close() { try { this.db.close(); } catch { /* already closed */ } }
 }
 
-class SqliteDemoSessionStore {
+class SqliteSessionStore {
     constructor(filePath) {
         this.filePath = path.resolve(filePath);
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
@@ -122,7 +122,7 @@ class SqliteDemoSessionStore {
 
     save(record) {
         const previous = this.get(record.sessionId);
-        if (previous && previous.userId !== record.userId) throw new Error("Cannot change the owner of a demo session");
+        if (previous && previous.userId !== record.userId) throw new Error("Cannot change the owner of a session");
         const next = { ...previous, ...record };
         this.db.prepare("INSERT INTO demo_sessions (sessionId, userId, createdAt, data) VALUES (?, ?, ?, ?) ON CONFLICT(sessionId) DO UPDATE SET userId = excluded.userId, createdAt = excluded.createdAt, data = excluded.data")
             .run(next.sessionId, next.userId, next.createdAt ?? null, JSON.stringify(next));
@@ -130,7 +130,7 @@ class SqliteDemoSessionStore {
     }
     update(sessionId, fields) {
         const record = this.get(sessionId);
-        if (!record) throw new Error("Demo session reference does not exist");
+        if (!record) throw new Error("Session reference does not exist");
         return this.save({ ...record, ...fields });
     }
     get(sessionId) { return parse(this.db.prepare("SELECT data FROM demo_sessions WHERE sessionId = ?").get(sessionId)?.data ?? null); }
@@ -173,7 +173,7 @@ function migrateJsonToSqlite({ customerJsonPath, sessionJsonPath, dbPath, sessio
     const database = path.resolve(dbPath);
     const sessionDatabase = path.resolve(sessionDbPath || dbPath);
     const store = new SqliteCustomerStore(database);
-    const sessions = new SqliteDemoSessionStore(sessionDatabase);
+    const sessions = new SqliteSessionStore(sessionDatabase);
     const report = { users: 0, challenges: 0, behavior: 0, sessions: 0, transactions: 0 };
     try {
         if (customerJsonPath && fs.existsSync(customerJsonPath)) {
@@ -194,4 +194,9 @@ function migrateJsonToSqlite({ customerJsonPath, sessionJsonPath, dbPath, sessio
     return { success: true, database, sessionDatabase, imported: report };
 }
 
-module.exports = { SqliteCustomerStore, SqliteDemoSessionStore, migrateJsonToSqlite };
+module.exports = {
+    SqliteCustomerStore,
+    SqliteSessionStore,
+    SqliteDemoSessionStore: SqliteSessionStore,
+    migrateJsonToSqlite
+};

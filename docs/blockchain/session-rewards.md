@@ -71,9 +71,9 @@ phạm.
 ## Địa chỉ local
 
 Hardhat local là chain tạm thời nên không có địa chỉ contract cố định trong Git.
-`./scripts/run_local_demo.sh` deploy lại và ghi hai manifest của đúng lần chạy vào
-`.runtime/local-demo/latest/deployments/`. RPC dùng `http://127.0.0.1:8545` và
-API dùng `http://127.0.0.1:3000`.
+`./scripts/run_local_metamask.sh` deploy chain local riêng và ghi manifest vào
+`.runtime/local-metamask/latest/deployments/`. RPC dùng `http://127.0.0.1:8545`,
+API dùng `http://127.0.0.1:3000`, dashboard mở tại `http://localhost:8081`.
 
 ## Kết quả triển khai
 

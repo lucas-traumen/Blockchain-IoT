@@ -14,7 +14,7 @@ async function fixture(t, { adminWallets = [], walletAuth = true } = {}) {
     const customerService = new CustomerService({ store, chainId: 31337, adminWallets });
     const server = createApp({ service: {}, customerService, tokens: {
         HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40),
-        ...(walletAuth ? { HRC_APP_AUTH_MODE: "wallet" } : {})
+        ...(walletAuth ? { HRC_APP_AUTH_MODE: "siwe" } : {})
     }}).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => {
@@ -156,14 +156,15 @@ test("profile update, logout and inactive accounts are enforced", async t => {
 });
 
 
-test("default demo mode blocks arbitrary wallet registration before creating customer data", async t => {
+test("default mode creates a wallet identity only after a valid SIWE signature", async t => {
     const f = await fixture(t, { walletAuth: false });
     const wallet = ethers.Wallet.createRandom();
     const body = { walletAddress: wallet.address, chainId: 31337 };
-    for (const route of ["/api/auth/challenge", "/api/auth/wallet"]) {
-        const response = await f.call(route, { method: "POST", body });
-        assert.equal(response.status, 403);
-        assert.equal(response.body.code, "WALLET_LOGIN_DISABLED");
-    }
+    const challenge = await f.call("/api/auth/challenge", { method: "POST", body });
+    assert.equal(challenge.body.mode, "siwe");
     assert.equal(f.customerService.store.listUsers().length, 0);
+    assert.equal((await f.call("/api/auth/wallet", { method: "POST", body })).status, 400);
+    const result = await login(f.call, wallet);
+    assert.equal(result.mode, "siwe");
+    assert.equal(f.customerService.store.listUsers().length, 1);
 });

@@ -7,16 +7,13 @@ const { ethers } = require("ethers");
 const { ApiError, identifier } = require("./eventPayload");
 const { createRpcProvider } = require("./rpcProvider");
 const { sessionKey } = require("./rewardPolicy");
-const { DemoSessionStore } = require("./demoSessionStore");
+const { JsonSessionStore } = require("./sessionStore");
 const { DurableContractWriter } = require("./durableContractWriter");
-const { withSignerWrite } = require("./signerQueue");
 const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
-const { DEMO_WALLETS, HARDHAT_MNEMONIC } = require("../demo_wallets");
 
 const DEFAULT_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
 const DEFAULT_TOKEN_ABI = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCRewardToken.sol/HRCRewardToken.json");
 const DEFAULT_REWARD_ABI = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCSessionRewards.sol/HRCSessionRewards.json");
-const ADMIN = Object.freeze({ userId: "admin", label: "Dashboard Admin", role: "admin" });
 const TOKEN_ABI = [
     "function balanceOf(address) view returns (uint256)",
     "function allowance(address,address) view returns (uint256)",
@@ -39,11 +36,6 @@ const REWARD_ABI = [
 
 function readJson(file) {
     try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
-}
-
-function deriveWallet(index, provider, env) {
-    const mnemonic = env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC;
-    return ethers.HDNodeWallet.fromPhrase(mnemonic, undefined, `m/44'/60'/0'/0/${index}`).connect(provider);
 }
 
 function positiveSafeInteger(value, name) {
@@ -70,7 +62,7 @@ function legacySessionOwner(sessionId) {
 }
 
 // Deterministic per (user, ref) so retries stay idempotent, but opaque: the
-// identifier no longer reveals which demo account owns the session.
+// identifier no longer reveals which wallet owns the session.
 function newSessionId(userId, sessionRef) {
     const ref = normalizeSessionRef(sessionRef);
     const digest = crypto.createHmac("sha256", SESSION_ID_SALT)
@@ -128,23 +120,23 @@ function formatEvent(parsed, log) {
     return result;
 }
 
-class DemoWalletService {
-    constructor({ provider, token, rewards, config, users, store, transactionSender = null, tokens = process.env } = {}) {
+class WalletService {
+    constructor({ provider, token, rewards, config, users, store, transactionSender = null, tokens = process.env, identityStore = null, legacyWallets = [] } = {}) {
         this.provider = provider;
         this.token = token;
         this.rewards = rewards;
         this.config = config;
-        this.users = users;
+        this.users = users || new Map();
+        this.identityStore = identityStore;
+        this.legacyWallets = legacyWallets;
         this.store = store;
         this.transactionSender = transactionSender;
         this.tokens = tokens;
         this.rewardInterface = new ethers.Interface(REWARD_ABI);
         this.tokenInterface = new ethers.Interface(TOKEN_ABI);
-        this.pendingWrites = new Map();
-        this.sessionsByToken = new Map();
     }
 
-    static fromEnv(env = process.env) {
+    static fromEnv(env = process.env, identityStore = null) {
         const deployment = readJson(env.HRC_REWARD_DEPLOYMENT || DEFAULT_DEPLOYMENT) || {};
         const tokenAddress = env.HRC_REWARD_TOKEN_ADDRESS || deployment.tokenAddress;
         const rewardAddress = env.HRC_REWARD_ADDRESS || deployment.rewardsAddress;
@@ -159,10 +151,7 @@ class DemoWalletService {
             throw new ApiError(503, "REWARD_NETWORK_MISMATCH", "Reward deployment chainId does not match HRC_BLOCKCHAIN_NETWORK");
         }
         const provider = createRpcProvider(env.RPC_URL || "http://127.0.0.1:8545", { cacheTimeout: -1 });
-        const users = new Map(DEMO_WALLETS.map(spec => {
-            const wallet = deriveWallet(spec.derivationIndex, provider, env);
-            return [spec.userId, { ...spec, role: "customer", wallet, walletAddress: wallet.address }];
-        }));
+        const users = new Map();
         const config = {
             tokenAddress, rewardAddress,
             chainId,
@@ -173,16 +162,20 @@ class DemoWalletService {
         };
         const token = new ethers.Contract(tokenAddress, config.tokenAbi, provider);
         const rewards = new ethers.Contract(rewardAddress, config.rewardAbi, provider);
-        const sessionFile = env.HRC_DEMO_SESSION_STORE_PATH || path.join(__dirname, "data", "demo-sessions.json");
+        // Preserve existing filenames on upgrade; new installations use wallet names.
+        const legacySessionFile = path.join(__dirname, "data", "demo-sessions.json");
+        const defaultSessionFile = path.join(__dirname, "data", "wallet-sessions.json");
+        const legacyExists = fs.existsSync(legacySessionFile) || fs.existsSync(legacySessionFile.replace(/\.json$/, ".db"));
+        const sessionFile = env.HRC_SESSION_STORE_PATH || env.HRC_DEMO_SESSION_STORE_PATH
+            || (legacyExists ? legacySessionFile : defaultSessionFile);
         const store = env.HRC_APP_STORE !== "json"
-            ? (() => { const { SqliteDemoSessionStore } = require("./sqliteStores"); return new SqliteDemoSessionStore(env.HRC_APP_SESSION_DB_PATH || sessionFile.replace(/\.json$/, ".db")); })()
-            : new DemoSessionStore(sessionFile);
+            ? (() => { const { SqliteSessionStore } = require("./sqliteStores"); return new SqliteSessionStore(env.HRC_APP_SESSION_DB_PATH || sessionFile.replace(/\.json$/, ".db")); })()
+            : new JsonSessionStore(sessionFile);
         const transactionSender = new DurableContractWriter({ provider, store });
-        return new DemoWalletService({ provider, token, rewards, config, users, store, transactionSender, tokens: env });
-    }
-
-    listAccounts() {
-        return [ADMIN, ...[...this.users.values()].map(user => ({ userId: user.userId, label: user.label, role: user.role, walletAddress: user.walletAddress }))];
+        const service = new WalletService({ provider, token, rewards, config, users, store, transactionSender, tokens: env,
+            identityStore, legacyWallets: deployment.demoWallets || [] });
+        for (const user of identityStore?.listUsers() || []) service.walletUser(user.walletAddress);
+        return service;
     }
 
     /// @notice Wallet-first onboarding. The user holds their own key, so the
@@ -193,6 +186,12 @@ class DemoWalletService {
         const userId = "usr_" + crypto.createHash("sha256").update(address.toLowerCase()).digest("hex").slice(0, 24);
         const legacyUserId = "wallet_" + address.slice(2).toLowerCase();
         this.store.reassignOwner?.(legacyUserId, userId);
+        // Old fixed-account ownership is transferred only to its manifest address.
+        for (const legacy of this.legacyWallets) {
+            if (ethers.isAddress(legacy.address) && legacy.address.toLowerCase() === address.toLowerCase()) {
+                this.store.reassignOwner?.(legacy.userId, userId);
+            }
+        }
         const existing = this.users.get(userId);
         if (existing) return existing;
         const user = {
@@ -212,26 +211,6 @@ class DemoWalletService {
         return { success: true, user: this.publicUser(user) };
     }
 
-    login(userId) {
-        if (userId !== ADMIN.userId && !this.users.has(userId)) throw new ApiError(401, "UNKNOWN_DEMO_ACCOUNT", "Choose admin, user_1 or user_2");
-        const user = userId === ADMIN.userId ? ADMIN : this.users.get(userId);
-        const token = crypto.randomBytes(32).toString("base64url");
-        this.sessionsByToken.set(token, { userId, createdAt: Date.now() });
-        return { success: true, token, user: this.publicUser(user) };
-    }
-
-    logout(token) {
-        this.sessionsByToken.delete(token);
-        return { success: true };
-    }
-
-    authenticateToken(token) {
-        const session = this.sessionsByToken.get(token);
-        if (!session) return null;
-        const user = session.userId === ADMIN.userId ? ADMIN : this.users.get(session.userId);
-        return user ? { user: this.publicUser(user), session } : null;
-    }
-
     publicUser(user) {
         return {
             userId: user.userId,
@@ -244,41 +223,29 @@ class DemoWalletService {
 
     _user(userId) {
         const user = this.users.get(userId);
-        if (!user) throw new ApiError(403, "DEMO_ACCOUNT_REQUIRED", "A demo user account is required");
+        if (!user) {
+            const identity = this.identityStore?.getUser(userId);
+            if (identity?.walletAddress) return this.walletUser(identity.walletAddress);
+            throw new ApiError(403, "WALLET_ACCOUNT_REQUIRED", "A verified wallet account is required");
+        }
         return user;
     }
 
-    _signer(user) {
-        if (!user.wallet) {
-            throw new ApiError(409, "WALLET_SIGNATURE_REQUIRED",
-                "This account is wallet-first. Sign the transaction in your own wallet.");
-        }
-        return user.wallet;
-    }
-
-    /// @notice True when the account signs its own transactions, so the backend
-    ///         must only prepare payloads instead of broadcasting them.
-    isWalletFirst(userId) {
-        return Boolean(this.users.get(userId)?.walletFirst);
-    }
+    isWalletFirst(userId) { return Boolean(this.users.get(userId)?.walletFirst); }
 
     async _requireConfiguredChain(userId) {
         let network;
         try { network = await this.provider.getNetwork(); }
         catch { throw new ApiError(503, "REWARD_CHAIN_UNAVAILABLE", "Configured reward RPC is unavailable. Transactions are paused; session references are preserved."); }
-        const walletFirst = userId ? this.isWalletFirst(userId) : false;
-        const expectedChainId = userId && !walletFirst ? 31337 : Number(this.config.chainId);
+        const expectedChainId = Number(this.config.chainId);
         if (Number(network.chainId) !== expectedChainId) {
-            throw new ApiError(503, walletFirst ? "WRONG_CHAIN" : "LOCAL_CHAIN_REQUIRED",
-                walletFirst ? `Wallet reward service requires configured chain ${expectedChainId}` : "Demo wallets require Hardhat local chain 31337");
+            throw new ApiError(503, "WRONG_CHAIN", `Wallet reward service requires configured chain ${expectedChainId}`);
         }
-        if (walletFirst) {
-            const [tokenCode, rewardCode] = await Promise.all([
-                this.provider.getCode(this.config.tokenAddress), this.provider.getCode(this.config.rewardAddress)
-            ]);
-            if (tokenCode === "0x" || rewardCode === "0x") {
-                throw new ApiError(503, "REWARD_DEPLOYMENT_MISSING", "Configured reward contracts are not deployed on this chain");
-            }
+        const [tokenCode, rewardCode] = await Promise.all([
+            this.provider.getCode(this.config.tokenAddress), this.provider.getCode(this.config.rewardAddress)
+        ]);
+        if (!tokenCode || tokenCode === "0x" || !rewardCode || rewardCode === "0x") {
+            throw new ApiError(503, "REWARD_DEPLOYMENT_MISSING", "Configured reward contracts are not deployed on this chain");
         }
         const anchors = Object.entries(this.config.deploymentTransactions || {}).map(([name, hash]) => ({ hash,
             address: name === "token" ? this.config.tokenAddress : this.config.rewardAddress }));
@@ -295,18 +262,6 @@ class DemoWalletService {
         return network;
     }
 
-    async _writeForUser(userId, operation) {
-        this._user(userId);
-        const previous = this.pendingWrites.get(userId) || Promise.resolve();
-        const current = previous.catch(() => {}).then(async () => {
-            await this._requireConfiguredChain(userId);
-            return withSignerWrite(this._user(userId).walletAddress, operation);
-        });
-        this.pendingWrites.set(userId, current);
-        try { return await current; }
-        finally { if (this.pendingWrites.get(userId) === current) this.pendingWrites.delete(userId); }
-    }
-
     async getWallet(userId) {
         const user = this._user(userId);
         const [network, balance, allowance, stakeAmount, symbol, decimals] = await Promise.all([
@@ -318,7 +273,7 @@ class DemoWalletService {
         const sessions = tuples.map(readTuple).filter(row => row.started && row.beneficiary.toLowerCase() === user.walletAddress.toLowerCase());
         const unsettled = sessions.filter(row => !row.settled);
         const locked = unsettled.reduce((sum, row) => sum + row.stakedAmount, 0n);
-        const pending = this.store.list(userId).find(row => row.stage && !['SETTLED', 'START_FAILED'].includes(row.stage));
+        const pending = this.store.list(userId).find(row => row.stage && !['SETTLED', 'START_FAILED', 'INTENT_EXPIRED'].includes(row.stage));
         const block = this.provider.getBlock ? await this.provider.getBlock('latest') : null;
         const day = Math.floor((block?.timestamp || Date.now() / 1000) / 86400);
         const rewardPaidToday = sessions.filter(row => row.settled && Math.floor(Number(row.settledAt) / 86400) === day).reduce((sum, row) => sum + row.rewardPaid, 0n);
@@ -335,30 +290,6 @@ class DemoWalletService {
         };
     }
 
-    approve(userId) { return this._writeForUser(userId, () => this._approve(userId)); }
-
-    async _approve(userId) {
-        const user = this._user(userId);
-        if (this.transactionSender) await this.transactionSender.assertSignerReady(user.walletAddress);
-        const stakeAmount = await this.rewards.stakeAmount();
-        const allowance = await this.token.allowance(user.walletAddress, this.config.rewardAddress);
-        if (allowance >= stakeAmount) {
-            return { ...(await this.getWallet(userId)), approved: true, skipped: true, transactionHash: null, blockNumber: null, event: null };
-        }
-        const signerToken = this.token.connect(user.wallet);
-        const transaction = await signerToken.approve(this.config.rewardAddress, stakeAmount);
-        const receipt = await transaction.wait(1);
-        const event = receipt.logs.map(log => {
-            try { return log.address.toLowerCase() === this.config.tokenAddress.toLowerCase() ? log : null; } catch { return null; }
-        }).filter(Boolean).map(log => {
-            try {
-                const parsed = signerToken.interface.parseLog({ topics: log.topics, data: log.data });
-                return parsed?.name === "Approval" ? { name: parsed.name, owner: parsed.args.owner ?? parsed.args[0], spender: parsed.args.spender ?? parsed.args[1], amount: ethers.formatEther(parsed.args.amount ?? parsed.args[2]) } : null;
-            } catch { return null; }
-        }).find(Boolean) || null;
-        return { ...(await this.getWallet(userId)), approved: true, skipped: false, transactionHash: transaction.hash, blockNumber: receipt.blockNumber, event };
-    }
-
     _sessionId(userId, input = {}) {
         const supplied = input.sessionId;
         if (supplied) {
@@ -373,8 +304,6 @@ class DemoWalletService {
         }
         return newSessionId(userId, input.sessionRef);
     }
-
-    legacySessionOwner(sessionId) { return legacySessionOwner(sessionId); }
 
     legacySessionOwner(sessionId) { return legacySessionOwner(sessionId); }
 
@@ -498,43 +427,6 @@ class DemoWalletService {
         return { success: true, session: this._formatSession(fallback, tuple, events) };
     }
 
-    startSession(userId, input = {}) { return this._writeForUser(userId, () => this._startSession(userId, input)); }
-
-    async _startSession(userId, input = {}) {
-        const user = this._user(userId);
-        const sessionId = this._sessionId(userId, input);
-        const key = sessionKey(sessionId);
-        const tuple = readTuple(await this.rewards.getSession(key));
-        if (tuple.started) {
-            if (tuple.beneficiary.toLowerCase() !== user.walletAddress.toLowerCase()) throw new ApiError(409, "BENEFICIARY_MISMATCH", "session beneficiary does not match this demo user");
-            const record = this.store.get(sessionId) || this.store.save({ sessionId, sessionRef: input.sessionRef || null, userId, createdAt: new Date().toISOString() });
-            const events = await this._events(key);
-            return { success: true, duplicate: true, ...this._formatSession(record, tuple, events), transactionHash: events.find(event => event.name === "SessionStarted")?.transactionHash || null };
-        }
-        const wallet = await this.getWallet(userId);
-        if (Number(wallet.balance) < Number(wallet.stakeAmount)) throw new ApiError(409, "INSUFFICIENT_HRC_BALANCE", "demo wallet does not have enough HRC for the stake");
-        if (Number(wallet.allowance) < Number(wallet.requiredAllowance)) throw new ApiError(409, "APPROVAL_REQUIRED", "approve the 2 HRC stake before starting a session");
-        const record = this.store.get(sessionId) || this.store.save({ sessionId, sessionRef: input.sessionRef || null, userId, createdAt: new Date().toISOString() });
-        let transaction;
-        try {
-            let receipt;
-            if (this.transactionSender) {
-                transaction = await this.transactionSender.send('stake:' + sessionId, user.wallet, this.rewards, 'startSession', [key]);
-                if (transaction.pending) return { success: true, httpStatus: 202, pending: true, sessionId, transactionHash: transaction.hash, stage: 'START_PENDING' };
-                receipt = transaction.receipt;
-            } else {
-                transaction = await this.rewards.connect(user.wallet).startSession(key);
-                receipt = await transaction.wait(1);
-            }
-            const events = await this._events(key);
-            const after = readTuple(await this.rewards.getSession(key));
-            return { success: true, duplicate: false, ...this._formatSession(record, after, events), transactionHash: transaction.hash, blockNumber: receipt.blockNumber, event: events.find(event => event.name === "SessionStarted") || null };
-        } catch (error) {
-            if (error instanceof ApiError) throw error;
-            throw new ApiError(503, "REWARD_SESSION_START_FAILED", error.shortMessage || error.message || "Reward session start failed");
-        }
-    }
-
     async listSessions(userId) {
         this._user(userId);
         const records = this.store.list(userId);
@@ -546,22 +438,14 @@ class DemoWalletService {
         return { success: true, count: sessions.length, sessions };
     }
 
-    async adminOverview() {
-        const users = [];
-        for (const spec of DEMO_WALLETS) {
-            const wallet = await this.getWallet(spec.userId);
-            const sessions = await this.listSessions(spec.userId);
-            users.push({ userId: spec.userId, label: spec.label, role: "customer", wallet: { ...wallet, privateKey: undefined }, sessions: sessions.sessions });
-        }
-        return { success: true, chainId: this.config.chainId, users };
-    }
+
 }
 
 let singleton;
-function getDemoWalletService(env = process.env) {
-    if (!singleton) singleton = DemoWalletService.fromEnv(env);
+function getWalletService(env = process.env, identityStore = null) {
+    if (!singleton) singleton = WalletService.fromEnv(env, identityStore);
     return singleton;
 }
-function resetDemoWalletServiceForTests() { singleton = undefined; }
+function resetWalletServiceForTests() { singleton = undefined; }
 
-module.exports = { DemoWalletService, getDemoWalletService, resetDemoWalletServiceForTests, normalizeSessionRef, legacySessionOwner, newSessionId };
+module.exports = { WalletService, getWalletService, resetWalletServiceForTests, normalizeSessionRef, legacySessionOwner, newSessionId };

@@ -3,7 +3,7 @@ const path = require("node:path");
 
 function emptyState() { return { sessions: {}, transactions: {} }; }
 
-class DemoSessionStore {
+class JsonSessionStore {
     constructor(filePath) {
         this.filePath = path.resolve(filePath);
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
@@ -13,7 +13,7 @@ class DemoSessionStore {
     _read() {
         if (!fs.existsSync(this.filePath)) return emptyState();
         const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-        if (!parsed || typeof parsed !== "object" || !parsed.sessions || typeof parsed.sessions !== "object") throw new Error("Invalid demo session store");
+        if (!parsed || typeof parsed !== "object" || !parsed.sessions || typeof parsed.sessions !== "object") throw new Error("Invalid session store");
         // Existing reference-only snapshots are compatible with the live workflow.
         parsed.transactions ||= {};
         return parsed;
@@ -31,7 +31,7 @@ class DemoSessionStore {
 
     save(record) {
         const previous = this.state.sessions[record.sessionId];
-        if (previous && previous.userId !== record.userId) throw new Error("Cannot change the owner of a demo session");
+        if (previous && previous.userId !== record.userId) throw new Error("Cannot change the owner of a session");
         this.state.sessions[record.sessionId] = { ...previous, ...record };
         this._write();
         return this.get(record.sessionId);
@@ -39,7 +39,7 @@ class DemoSessionStore {
 
     update(sessionId, fields) {
         const record = this.get(sessionId);
-        if (!record) throw new Error("Demo session reference does not exist");
+        if (!record) throw new Error("Session reference does not exist");
         return this.save({ ...record, ...fields });
     }
 
@@ -66,4 +66,4 @@ class DemoSessionStore {
     }
     listTransactions() { return Object.values(this.state.transactions).map(record => structuredClone(record)); }
 }
-module.exports = { DemoSessionStore };
+module.exports = { JsonSessionStore, DemoSessionStore: JsonSessionStore };

@@ -43,7 +43,7 @@ const configuredAddress =
 
 if (!ethers.isAddress(configuredAddress || "")) {
     throw new Error(
-        "Safety contract address is not configured. Run ./scripts/run_local_demo.sh or set HRC_SAFETY_DEPLOYMENT/CONTRACT_ADDRESS"
+        "Safety contract address is not configured. Run ./scripts/run_local_metamask.sh or set HRC_SAFETY_DEPLOYMENT/CONTRACT_ADDRESS"
     );
 }
 const CONTRACT_ADDRESS = ethers.getAddress(configuredAddress);

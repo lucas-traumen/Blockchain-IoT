@@ -38,9 +38,7 @@ let unlocking = false;
 let robotLocked = null;
 let sidebarEvents = [];
 let backendConnected = null;
-// "demo" keeps the fixed-account picker; "wallet"/"siwe" make the header trigger
-// connect a real wallet and sign the application login message instead.
-let appAuthMode = "demo";
+let appAuthMode = "siwe";
 let transactionRows = [];
 let transactionMessage = "Loading transactions...";
 let transactionsLoading = false;
@@ -52,7 +50,7 @@ let rewardsLoading = false;
 let appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
 // Local, dependency-free view of the wallet-first state so the reward panel can
 // be exercised in isolation.
-function walletFirstActive() { return Boolean(appSession.token) && (appAuthMode === "wallet" || appAuthMode === "siwe"); }
+function walletFirstActive() { return Boolean(appSession.token) && appAuthMode === "siwe"; }
 let appAuthGeneration = 0;
 let pendingBehavior = [];
 let behaviorFlushTimer = null;
@@ -60,18 +58,15 @@ let behaviorFlushInFlight = false;
 let userBehavior = [];
 let customerRows = [];
 let customerMessage = "Connect an admin wallet to view customers.";
-let demoAccounts = [];
-let demoSession = { token: null, user: null };
-let demoWallet = null;
-let demoSessions = [];
-let demoTransactions = [];
-let demoAdminOverview = null;
-let demoMessage = 'Choose user_1 or user_2 to open a local wallet.';
-let demoSessionRef = null;
-let demoBusy = null;
-let demoReadTask = null;
-let demoReceipt = null;
-let demoLoginMessage = '';
+let walletSession = { token: null, user: null };
+let wallet = null;
+let walletSessions = [];
+let walletTransactions = [];
+let walletMessage = 'Connect MetaMask to load your wallet.';
+let walletSessionRef = null;
+let walletBusy = null;
+let walletReadTask = null;
+let walletReceipt = null;
 
 function randomId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -87,7 +82,7 @@ async function readJsonResponse(response, serviceName) {
         const responseKind = contentType.toLowerCase().includes('text/html') ? 'HTML' : 'a non-JSON response';
         const error = new Error(
             `${serviceName} returned ${responseKind}${status}. `
-            + 'Restart the local demo with ./scripts/run_local_demo.sh and keep that terminal open.'
+            + 'Restart the local stack with ./scripts/run_local_metamask.sh and keep that terminal open.'
         );
         error.status = response?.status;
         error.code = 'INVALID_API_RESPONSE';
@@ -118,7 +113,7 @@ async function fetchChainJson(path, options) {
         if (cause.code === 'INVALID_API_RESPONSE') throw cause;
         const error = new Error(
             `Blockchain API is unreachable through the dashboard proxy and ${DIRECT_CHAIN_API_URL}. `
-            + 'Run ./scripts/run_local_demo.sh and keep that terminal open.'
+            + 'Run ./scripts/run_local_metamask.sh and keep that terminal open.'
         );
         error.code = 'CHAIN_API_UNAVAILABLE';
         error.cause = cause;
@@ -126,7 +121,7 @@ async function fetchChainJson(path, options) {
     }
 }
 
-async function demoRequest(path, { method = 'GET', body, token = demoSession.token } = {}) {
+async function walletRequest(path, { method = 'GET', body, token = walletSession.token } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers.Authorization = 'Bearer ' + token;
@@ -142,80 +137,80 @@ async function demoRequest(path, { method = 'GET', body, token = demoSession.tok
     return data;
 }
 
-function formatDemoAmount(value) {
+function formatWalletAmount(value) {
     if (value === undefined || value === null || value === '') return '-- HRC';
     const number = Number(value);
     return Number.isFinite(number) ? number.toFixed(2).replace(/\.00$/, '') + ' HRC' : '-- HRC';
 }
 
-function demoOutcomeName(code) {
+function walletOutcomeName(code) {
     return ['VALID / NO VIOLATION', 'VIOLATION CONFIRMED', 'SENSOR FAULT', 'INCOMPLETE'][Number(code)] || '--';
 }
 
-function demoSessionStage(session) {
+function walletSessionStage(session) {
     if (session.settled) return 'SETTLED';
     return ({ RUNNING: 'MEASURING', OPENING_SENSOR: 'OPENING SENSOR', START_PENDING: 'STAKE PENDING', STOPPING_SENSOR: 'ENDING SESSION',
         SETTLEMENT_PENDING: 'SETTLEMENT PENDING', COMPENSATING: 'CLOSING SENSOR', START_FAILED: 'START FAILED', RECOVERY_REQUIRED: 'NEEDS RECOVERY', LEGACY_UNLINKED: 'AWAITING RECOVERY' })[session.stage] || 'STAKE ACTIVE';
 }
 
-function demoResultLabel(session) {
+function walletResultLabel(session) {
     if (!session.settled) return 'PENDING SETTLEMENT';
     return ['REWARDED', 'DAILY LIMIT', 'POOL EMPTY', 'PENALTY', 'NO REWARD'][Number(session.settlementStatusCode)] || 'NO REWARD';
 }
 
-function signedDemoAmount(session) {
+function signedWalletAmount(session) {
     if (!session?.settled) return '--';
-    if (Number(session.rewardPaid) > 0) return '+' + formatDemoAmount(session.rewardPaid);
-    if (Number(session.penaltyCollected) > 0) return '-' + formatDemoAmount(session.penaltyCollected);
+    if (Number(session.rewardPaid) > 0) return '+' + formatWalletAmount(session.rewardPaid);
+    if (Number(session.penaltyCollected) > 0) return '-' + formatWalletAmount(session.penaltyCollected);
     return '0 HRC';
 }
 
-function demoTableMessage(table, message, columns) {
+function walletTableMessage(table, message, columns) {
     const row = document.createElement('tr'); row.className = 'empty-row';
     const cell = document.createElement('td'); cell.colSpan = columns; cell.textContent = message;
     row.appendChild(cell); table.appendChild(row);
 }
 
-function renderDemoSessionRows(target, sessions, includeUser = false) {
+function renderWalletSessionRows(target, sessions, includeUser = false) {
     const table = byId(target);
     if (!table) return;
     table.replaceChildren();
-    if (!sessions.length) { demoTableMessage(table, 'No sessions recorded yet.', includeUser ? 9 : 8); return; }
+    if (!sessions.length) { walletTableMessage(table, 'No sessions recorded yet.', includeUser ? 9 : 8); return; }
     for (const session of sessions) {
         const row = document.createElement('tr');
         const eventName = session.settled ? 'SessionSettled' : 'SessionStarted';
         const event = session.events?.find(item => item.name === eventName);
-        const values = [session.sessionId, demoSessionStage(session), session.settled ? demoOutcomeName(session.outcomeCode) : '--',
-            session.settled ? demoResultLabel(session) + (session.outcomeReason ? ' · ' + session.outcomeReason : '') : session.lastError || 'Waiting for End Session', session.settled ? formatDemoAmount(session.stakeReturned) : formatDemoAmount(session.stakedAmount) + ' locked',
-            signedDemoAmount(session), event?.blockNumber ?? session.blockNumber ?? '--'];
+        const values = [session.sessionId, walletSessionStage(session), session.settled ? walletOutcomeName(session.outcomeCode) : '--',
+            session.settled ? walletResultLabel(session) + (session.outcomeReason ? ' · ' + session.outcomeReason : '') : session.lastError || 'Waiting for End Session', session.settled ? formatWalletAmount(session.stakeReturned) : formatWalletAmount(session.stakedAmount) + ' locked',
+            signedWalletAmount(session), event?.blockNumber ?? session.blockNumber ?? '--'];
         if (includeUser) values.unshift(session.userId);
         values.forEach(value => { const cell = document.createElement('td'); cell.textContent = String(value ?? '--'); row.appendChild(cell); });
         const cell = document.createElement('td');
-        const label = document.createElement('span'); label.className = 'demo-event-label'; label.textContent = eventName;
+        const label = document.createElement('span'); label.className = 'wallet-event-label'; label.textContent = eventName;
         const hash = document.createElement('span'); hash.className = 'mono'; hash.textContent = event?.transactionHash || session.transactionHash || '--';
         cell.append(label, hash); row.appendChild(cell); table.appendChild(row);
     }
 }
 
-function renderDemoSessions() {
-    text('demoSessionCount', demoSessions.length);
-    renderDemoSessionRows('demoSessionsTableBody', demoSessions);
+function renderWalletSessions() {
+    text('walletSessionCount', walletSessions.length);
+    renderWalletSessionRows('walletSessionsTableBody', walletSessions);
 }
 
-function demoTransactionEvents(transaction) {
+function walletTransactionEvents(transaction) {
     return transaction.events?.map(event => event.name).join(' + ') || transaction.event?.name || 'Transaction';
 }
 
-function demoLedgerDescription(transaction) {
+function walletLedgerDescription(transaction) {
     const settled = transaction.events?.find(event => event.name === 'SessionSettled');
     const start = transaction.events?.find(event => event.name === 'SessionStarted');
     if (settled || transaction.action === 'SETTLEMENT') {
         const returned = transaction.stakeReturned ?? settled?.stakeReturned ?? '0';
         const reward = transaction.rewardPaid ?? settled?.rewardPaid ?? '0';
         const penalty = transaction.penaltyCollected ?? settled?.penaltyCollected ?? '0';
-        if (Number(penalty) > 0) return 'Penalty ' + formatDemoAmount(penalty) + ' from locked stake · no additional wallet charge';
+        if (Number(penalty) > 0) return 'Penalty ' + formatWalletAmount(penalty) + ' from locked stake · no additional wallet charge';
         const status = transaction.settlementStatusCode ?? settled?.settlementStatusCode;
-        return 'Stake returned +' + formatDemoAmount(returned) + ' · Reward +' + formatDemoAmount(reward)
+        return 'Stake returned +' + formatWalletAmount(returned) + ' · Reward +' + formatWalletAmount(reward)
             + (Number(status) === 1 ? ' · Daily reward limit reached' : Number(status) === 2 ? ' · Reward pool empty' : Number(status) === 4 ? ' · No reward' : '');
     }
     if (start || transaction.action === 'STAKE') return 'Available −2 HRC · Locked +2 HRC · Live session started';
@@ -223,32 +218,32 @@ function demoLedgerDescription(transaction) {
     return 'Token transfer';
 }
 
-function demoDelta(value) { return Number(value) > 0 ? '+' + formatDemoAmount(value) : formatDemoAmount(value ?? 0); }
+function walletDelta(value) { return Number(value) > 0 ? '+' + formatWalletAmount(value) : formatWalletAmount(value ?? 0); }
 
-function renderDemoTransactions() {
-    text('demoTransactionCount', demoTransactions.length);
-    const recent = byId('demoRecentActivity');
+function renderWalletTransactions() {
+    text('walletTransactionCount', walletTransactions.length);
+    const recent = byId('walletRecentActivity');
     if (recent) {
         recent.replaceChildren();
-        if (!demoTransactions.length) { const empty = document.createElement('p'); empty.textContent = 'No wallet activity yet.'; recent.appendChild(empty); }
-        demoTransactions.slice(0, 5).forEach(transaction => {
-            const entry = document.createElement('div'); entry.className = 'demo-ledger-entry';
-            const title = document.createElement('strong'); title.textContent = transaction.action || demoTransactionEvents(transaction);
-            const amount = document.createElement('span'); amount.textContent = demoDelta(transaction.walletDelta);
+        if (!walletTransactions.length) { const empty = document.createElement('p'); empty.textContent = 'No wallet activity yet.'; recent.appendChild(empty); }
+        walletTransactions.slice(0, 5).forEach(transaction => {
+            const entry = document.createElement('div'); entry.className = 'wallet-ledger-entry';
+            const title = document.createElement('strong'); title.textContent = transaction.action || walletTransactionEvents(transaction);
+            const amount = document.createElement('span'); amount.textContent = walletDelta(transaction.walletDelta);
             amount.className = Number(transaction.walletDelta) > 0 ? 'ledger-positive' : Number(transaction.walletDelta) < 0 ? 'ledger-negative' : '';
-            const detail = document.createElement('small'); detail.textContent = demoLedgerDescription(transaction);
+            const detail = document.createElement('small'); detail.textContent = walletLedgerDescription(transaction);
             const receipt = document.createElement('small'); receipt.className = 'mono';
             receipt.textContent = 'Block ' + transaction.blockNumber + ' · ' + transaction.transactionHash + (transaction.sessionId ? ' · ' + transaction.sessionId : '');
             entry.append(title, amount, detail, receipt); recent.appendChild(entry);
         });
     }
-    const table = byId('demoTransactionsTableBody');
+    const table = byId('walletTransactionsTableBody');
     if (!table) return;
     table.replaceChildren();
-    if (!demoTransactions.length) { demoTableMessage(table, 'No transactions recorded yet.', 5); return; }
-    for (const transaction of demoTransactions) {
+    if (!walletTransactions.length) { walletTableMessage(table, 'No transactions recorded yet.', 5); return; }
+    for (const transaction of walletTransactions) {
         const row = document.createElement('tr');
-        [demoTransactionEvents(transaction) + ' · ' + demoLedgerDescription(transaction), demoDelta(transaction.walletDelta), demoDelta(transaction.lockedDelta), transaction.blockNumber, transaction.transactionHash].forEach((value, index) => {
+        [walletTransactionEvents(transaction) + ' · ' + walletLedgerDescription(transaction), walletDelta(transaction.walletDelta), walletDelta(transaction.lockedDelta), transaction.blockNumber, transaction.transactionHash].forEach((value, index) => {
             const cell = document.createElement('td'); cell.textContent = String(value ?? '--');
             if (index === 4) cell.className = 'mono';
             row.appendChild(cell);
@@ -257,43 +252,7 @@ function renderDemoTransactions() {
     }
 }
 
-function renderDemoAdminOverview() {
-    const users = demoAdminOverview?.users || [];
-    const sessions = users.flatMap(user => (user.sessions || []).map(session => ({ ...session, userId: user.userId })))
-        .sort((a, b) => Number(b.startedAt) - Number(a.startedAt));
-    text('demoAdminMessage', demoAdminOverview ? 'Balances and session results read from the local chain. ' + demoMessage : demoMessage);
-    text('demoAdminBalance', demoAdminOverview ? formatDemoAmount(users.reduce((sum, user) => sum + Number(user.wallet?.balance || 0), 0)) : '-- HRC');
-    text('demoAdminSessionCount', demoAdminOverview ? sessions.filter(session => !session.settled).length + ' / ' + sessions.filter(session => session.settled).length : '-- / --');
-    text('demoAdminPayout', demoAdminOverview ? '+' + formatDemoAmount(sessions.reduce((sum, session) => sum + Number(session.rewardPaid || 0), 0)) + ' / -' + formatDemoAmount(sessions.reduce((sum, session) => sum + Number(session.penaltyCollected || 0), 0)) : '-- / -- HRC');
-    text('demoAdminHistoryCount', sessions.length);
-    renderDemoSessionRows('demoAdminSessionsTableBody', sessions, true);
-    const table = byId('demoAdminTableBody');
-    if (!table) return;
-    table.replaceChildren();
-    if (!users.length) { demoTableMessage(table, demoMessage, 6); return; }
-    users.forEach(user => {
-        const row = document.createElement('tr');
-        [user.userId, user.wallet?.address || '--', formatDemoAmount(user.wallet?.balance), formatDemoAmount(user.wallet?.allowance),
-            user.sessions?.length || 0, user.sessions?.[0] ? demoResultLabel(user.sessions[0]) : 'No session'].forEach(value => {
-            const cell = document.createElement('td'); cell.textContent = String(value ?? '--'); row.appendChild(cell);
-        });
-        table.appendChild(row);
-    });
-}
-
-function updateDemoAccountPicker() {
-    const busy = Boolean(demoBusy);
-    const select = byId('demoAccountSelect');
-    const button = byId('demoLoginBtn');
-    if (select) select.disabled = busy;
-    if (button) {
-        button.disabled = busy || !select?.value;
-        button.textContent = demoBusy === 'login' ? 'Opening...' : 'Open account';
-    }
-    text('demoAccountMessage', demoLoginMessage);
-}
-
-function demoSessionElapsedSeconds(session) {
+function walletSessionElapsedSeconds(session) {
     if (!session) return null;
     const sensor = session.iotSession;
     const started = Date.parse(sensor?.started_at);
@@ -306,196 +265,150 @@ function demoSessionElapsedSeconds(session) {
     return typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, duration) : null;
 }
 
-function renderDemoSessionTimer() {
-    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
-    const session = demoSession.user?.role === 'customer' ? active || demoSessions[0] : null;
-    const elapsed = demoSessionElapsedSeconds(session);
+function renderWalletSessionTimer() {
+    const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
+    const session = walletSession.user?.role === 'customer' ? active || walletSessions[0] : null;
+    const elapsed = walletSessionElapsedSeconds(session);
     const seconds = elapsed === null ? null : Math.floor(elapsed);
-    text('demoSessionTimer', seconds === null ? '--:--:--' : [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    text('walletSessionTimer', seconds === null ? '--:--:--' : [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
         .map(value => String(value).padStart(2, '0')).join(':'));
     const measuring = session?.stage === 'RUNNING' && !session.settled && !session.iotSession?.ended_at;
-    text('demoSessionTimerLabel', measuring ? 'Running time' : session ? 'Session duration' : 'Session time');
-    text('demoSessionTimerDetail', session
-        ? `${measuring ? 'Measuring' : 'Stopped'} · ${Number(session.sampleCount || 0).toLocaleString('en-US')} samples · Minimum 30s / 20 samples`
+    text('walletSessionTimerLabel', measuring ? 'Running time' : session ? 'Session duration' : 'Session time');
+    text('walletSessionTimerDetail', session
+        ? `${measuring ? 'Measuring' : 'Stopped'} · ${Number(session.sampleCount || 0).toLocaleString('en-US')} samples · Minimum 30s / about 270 samples at 10 Hz`
         : 'Start a session to measure elapsed time.');
 }
 
-function renderDemoWallet() {
-    const user = demoSession.user;
+function renderWallet() {
+    const user = walletSession.user;
     const customer = user?.role === 'customer';
     const admin = user?.role === 'admin';
-    const busy = Boolean(demoBusy);
-    const walletFirst = appAuthMode === "wallet" || appAuthMode === "siwe";
-    if (!walletFirst) text('demoAccountButtonLabel', user?.userId || 'Choose account');
-    text('demoAccountStatus', user
-        ? `${user.userId} · ${admin ? 'read-only report' : user.walletFirst ? 'your wallet · you sign every transaction' : 'local demo wallet'}`
-        : walletFirstActive() ? 'Connect your wallet to start a session.' : 'Admin views both users. User accounts can approve and start sessions.');
-    text('walletUserStatus', user ? `${user.role.toUpperCase()} · ${user.userId}` : 'Choose an account');
-    text('connectedWalletAddress', user?.walletAddress || (admin ? 'Admin · read-only' : (walletFirst ? (window.hrcWallet?.state.account || 'Not connected') : 'No demo account')));
-    text('walletRole', admin ? 'READ ONLY ADMIN' : customer ? (user?.walletFirst ? 'WALLET USER' : 'DEMO USER') : 'READ ONLY');
-    text('demoWalletRole', user?.userId.toUpperCase() || 'CHOOSE ACCOUNT');
-    text('demoWalletAddress', demoWallet?.address || user?.walletAddress || '--');
-    text('demoWalletBalance', demoWallet ? formatDemoAmount(demoWallet.balance) : '-- HRC');
-    text('demoWalletLocked', demoWallet ? formatDemoAmount(demoWallet.lockedBalance || 0) : '-- HRC');
-    text('demoWalletAllowance', demoWallet ? formatDemoAmount(demoWallet.allowance) : '-- HRC');
-    text('demoWalletChain', demoWallet ? 'CHAIN ' + demoWallet.chainId : 'CHAIN --');
-    text('rewardBalance', demoWallet ? formatDemoAmount(demoWallet.balance) : '-- HRC');
-    text('rewardSettlementStatus', demoSessions[0] ? demoResultLabel(demoSessions[0]) : 'No session');
-    text('demoWalletMessage', demoMessage);
-    for (const [id, visible] of [['demoWalletPanel', customer], ['demoAdminReport', admin], ['demoAccountEmpty', !user]]) {
+    const busy = Boolean(walletBusy);
+    text('walletUserStatus', user ? `${user.role.toUpperCase()} · ${user.userId}` : 'Connect MetaMask to sign in');
+    text('connectedWalletAddress', user?.walletAddress || window.hrcWallet?.state?.account || 'Not connected');
+    text('walletRole', admin ? 'READ ONLY ADMIN' : customer ? 'WALLET USER' : 'NOT CONNECTED');
+    text('walletRole', user?.userId.toUpperCase() || 'WALLET NOT CONNECTED');
+    text('walletAddress', wallet?.address || user?.walletAddress || '--');
+    text('walletBalance', wallet ? formatWalletAmount(wallet.balance) : '-- HRC');
+    text('walletLocked', wallet ? formatWalletAmount(wallet.lockedBalance || 0) : '-- HRC');
+    text('walletAllowance', wallet ? formatWalletAmount(wallet.allowance) : '-- HRC');
+    text('walletChain', wallet ? 'CHAIN ' + wallet.chainId : 'CHAIN --');
+    text('rewardBalance', wallet ? formatWalletAmount(wallet.balance) : '-- HRC');
+    text('rewardSettlementStatus', walletSessions[0] ? walletResultLabel(walletSessions[0]) : 'No session');
+    text('walletMessage', walletMessage);
+    for (const [id, visible] of [['walletPanel', customer], ['walletAccountEmpty', !user]]) {
         const element = byId(id); if (element) element.hidden = !visible;
     }
-    const trigger = byId('demoAccountTrigger');
-    if (trigger) trigger.disabled = busy || (walletFirst && Boolean(window.hrcWallet?.state.connecting || (appSession.inFlightKey && !appSession.key)));
-    const approve = byId('demoApproveBtn');
-    const start = byId('demoStartBtn');
-    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
-    const ready = demoWallet && Number(demoWallet.allowance) >= Number(demoWallet.requiredAllowance);
+    const trigger = byId('walletAccountTrigger');
+    if (trigger) trigger.disabled = busy || Boolean(window.hrcWallet?.state?.connecting || (appSession.inFlightKey && !appSession.key));
+    const approve = byId('walletApproveBtn');
+    const start = byId('walletStartBtn');
+    const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
+    const ready = wallet && Number(wallet.allowance) >= Number(wallet.requiredAllowance);
     if (approve) {
         approve.hidden = !customer;
-        approve.disabled = busy || !customer || !demoWallet || ready;
-        approve.textContent = demoBusy === 'approve' ? 'Approving...' : ready ? 'Approved 2 HRC' : 'Approve 2 HRC';
+        approve.disabled = busy || !customer || !wallet || ready;
+        approve.textContent = walletBusy === 'approve' ? 'Approving...' : ready ? 'Approved 2 HRC' : 'Approve 2 HRC';
     }
     if (start) {
         start.hidden = !customer;
-        start.disabled = busy || !customer || !demoWallet || ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage) || (!demoWallet.canStart && !demoSessionRef);
-        start.textContent = demoBusy === 'start' ? 'Starting...' : demoSessionRef ? 'Retry Start Session' : 'Start Session';
+        start.disabled = busy || !customer || !wallet || ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage) || (!wallet.canStart && !walletSessionRef);
+        start.textContent = walletBusy === 'start' ? 'Starting...' : walletSessionRef ? 'Retry Start Session' : 'Start Session';
     }
-    const end = byId('demoEndBtn');
+    const end = byId('walletEndBtn');
     if (end) {
         end.hidden = !customer || !active;
         end.disabled = busy || !active || !['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active.stage);
-        end.textContent = demoBusy === 'end' ? 'Ending...' : active?.stage === 'SETTLEMENT_PENDING' ? 'Retry Settlement' : 'End Session';
+        end.textContent = walletBusy === 'end' ? 'Ending...' : active?.stage === 'SETTLEMENT_PENDING' ? 'Retry Settlement' : 'End Session';
     }
-    const sensor = demoWallet?.device;
-    text('demoSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least 30 seconds / 270 samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
-    const last = active || demoSessions[0];
-    text('demoSessionState', last ? last.settled
-        ? `${demoResultLabel(last)} · Stake returned +${formatDemoAmount(last.stakeReturned)} · Reward +${formatDemoAmount(last.rewardPaid)} · Penalty ${formatDemoAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
-        : `${demoSessionStage(last)} · ${formatDemoAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
-        : demoWallet && !ready ? 'Step 1: approve 2 HRC. Approval does not change your balance.' : 'Ready to open a live sensor session and lock 2 HRC.');
-    renderDemoSessionTimer();
-    const latest = [demoReceipt, demoTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
-    text('demoTransactionStatus', demoReceipt?.stage
-        ? `${demoReceipt.stage} · ${demoReceipt.sessionId || 'session'} · tx ${demoReceipt.transactionHash || 'awaiting receipt'}`
-        : latest ? `${demoTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
-    updateDemoAccountPicker();
-    renderDemoSessions();
-    renderDemoTransactions();
-    renderDemoAdminOverview();
+    const sensor = wallet?.device;
+    text('walletSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least 30 seconds / 270 samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
+    const last = active || walletSessions[0];
+    text('walletSessionState', last ? last.settled
+        ? `${walletResultLabel(last)} · Stake returned +${formatWalletAmount(last.stakeReturned)} · Reward +${formatWalletAmount(last.rewardPaid)} · Penalty ${formatWalletAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
+        : `${walletSessionStage(last)} · ${formatWalletAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
+        : wallet && !ready ? 'Step 1: approve 2 HRC. Approval does not change your balance.' : 'Ready to open a live sensor session and lock 2 HRC.');
+    renderWalletSessionTimer();
+    const latest = [walletReceipt, walletTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
+    text('walletTransactionStatus', walletReceipt?.stage
+        ? `${walletReceipt.stage} · ${walletReceipt.sessionId || 'session'} · tx ${walletReceipt.transactionHash || 'awaiting receipt'}`
+        : latest ? `${walletTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
+    renderWalletSessions();
+    renderWalletTransactions();
 }
 
-async function loadDemoAccounts() {
-    try {
-        const data = await demoRequest('/api/demo/accounts', { token: null });
-        const accountIds = ['admin', 'user_1', 'user_2'];
-        demoAccounts = accountIds.map(id => (Array.isArray(data.accounts) ? data.accounts : []).find(account => account.userId === id)).filter(Boolean);
-        const select = byId('demoAccountSelect');
-        if (select) {
-            select.replaceChildren();
-            demoAccounts.forEach(account => {
-                const option = document.createElement('option'); option.value = account.userId;
-                option.textContent = account.userId; select.appendChild(option);
-            });
-            select.value = demoSession.user?.userId || 'admin';
-        }
-    } catch (error) { demoLoginMessage = 'Accounts unavailable: ' + error.message; }
-    updateDemoAccountPicker();
+function clearWalletSession() {
+    walletSession = { token: null, user: null };
+    wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletSessionRef = null;
 }
 
-function clearDemoSession() {
-    const token = demoSession.token;
-    if (token) void demoRequest('/api/demo/logout', { method: 'POST', token }).catch(() => {});
-    demoSession = { token: null, user: null };
-    demoWallet = null; demoSessions = []; demoTransactions = []; demoAdminOverview = null; demoReceipt = null; demoSessionRef = null;
-    try { sessionStorage.removeItem('hrc-demo-session'); } catch { /* memory-only fallback */ }
+function pendingWalletSession(userId) {
+    try { return sessionStorage.getItem('hrc-wallet-pending-' + userId) || null; } catch { return null; }
 }
 
-function pendingDemoSession(userId) {
-    try { return sessionStorage.getItem('hrc-demo-pending-' + userId) || null; } catch { return null; }
+function bindWalletSession(user, token) {
+    walletSession = { token, user: { userId: user.userId, role: user.role, walletAddress: user.walletAddress, walletFirst: true } };
+    walletSessionRef = pendingWalletSession(user.userId);
 }
 
-async function loginDemoAccount() {
-    if (demoBusy) return;
-    const userId = byId('demoAccountSelect')?.value;
-    if (!['admin', 'user_1', 'user_2'].includes(userId)) { demoLoginMessage = 'Choose admin, user_1 or user_2.'; updateDemoAccountPicker(); return; }
-    demoBusy = 'login'; demoLoginMessage = 'Opening ' + userId + '...'; renderDemoWallet();
-    try {
-        const data = await demoRequest('/api/demo/login', { method: 'POST', body: { userId }, token: null });
-        clearDemoSession();
-        demoSession = { token: data.token, user: data.user };
-        demoSessionRef = pendingDemoSession(userId);
-        try { sessionStorage.setItem('hrc-demo-session', JSON.stringify(demoSession)); } catch { /* memory-only fallback */ }
-        demoMessage = userId === 'admin' ? 'Admin account is read-only.' : 'Wallet loaded. Approve the stake, then start a session.';
-        renderDemoWallet();
-        demoLoginMessage = ''; closeDemoAccountModal();
-        await loadDemoAccountData();
-    } catch (error) { demoLoginMessage = 'Unable to open account: ' + error.message; }
-    finally { demoBusy = null; renderDemoWallet(); }
-}
-
-async function loadDemoAccountData({ fresh = false } = {}) {
-    const session = demoSession;
-    if (!session.token || !session.user) { renderDemoWallet(); return false; }
-    if (demoReadTask?.session === session) {
-        if (!fresh) return demoReadTask.promise;
-        await demoReadTask.promise;
-        if (session !== demoSession) return false;
+async function loadWalletAccountData({ fresh = false } = {}) {
+    const session = walletSession;
+    if (!session.token || !session.user) { renderWallet(); return false; }
+    if (walletReadTask?.session === session) {
+        if (!fresh) return walletReadTask.promise;
+        await walletReadTask.promise;
+        if (session !== walletSession) return false;
     }
     const task = { session, promise: null };
-    demoReadTask = task;
+    walletReadTask = task;
     task.promise = (async () => {
         try {
             const token = session.token;
             if (session.user.role === 'admin') {
-                const data = await demoRequest('/api/demo/admin/overview', { token });
-                if (session !== demoSession) return false;
-                demoAdminOverview = data; demoWallet = null; demoSessions = []; demoTransactions = [];
+                wallet = null; walletSessions = []; walletTransactions = [];
+                walletMessage = 'This allowlisted admin wallet has read-only access.';
             } else {
-                const [wallet, sessions, transactions] = await Promise.all([
-                    demoRequest('/api/me/wallet', { token }), demoRequest('/api/me/sessions', { token }), demoRequest('/api/me/wallet/transactions', { token })
+                const [walletData, sessions, transactions] = await Promise.all([
+                    walletRequest('/api/me/wallet', { token }), walletRequest('/api/me/sessions', { token }), walletRequest('/api/me/wallet/transactions', { token })
                 ]);
-                if (session !== demoSession) return false;
-                demoWallet = wallet; demoSessions = Array.isArray(sessions.sessions) ? sessions.sessions : [];
-                demoTransactions = Array.isArray(transactions.transactions) ? transactions.transactions : [];
-                const recoveredStart = demoSessionRef && demoSessions.find(row => row.sessionRef === demoSessionRef
+                if (session !== walletSession) return false;
+                wallet = walletData; walletSessions = Array.isArray(sessions.sessions) ? sessions.sessions : [];
+                walletTransactions = Array.isArray(transactions.transactions) ? transactions.transactions : [];
+                const recoveredStart = walletSessionRef && walletSessions.find(row => row.sessionRef === walletSessionRef
                     && ['RUNNING', 'SETTLED', 'START_FAILED'].includes(row.stage));
                 if (recoveredStart) {
-                    demoSessionRef = null;
-                    try { sessionStorage.removeItem('hrc-demo-pending-' + session.user.userId); } catch { /* in-memory reference is already cleared */ }
+                    walletSessionRef = null;
+                    try { sessionStorage.removeItem('hrc-wallet-pending-' + session.user.userId); } catch { /* in-memory reference is already cleared */ }
                 }
-                demoAdminOverview = null;
             }
-            if (!demoBusy) {
-                demoMessage = session.user.role === 'admin' ? 'Admin account is read-only.'
-                    : demoSessions.some(row => row.stage === 'RUNNING') ? 'The sensor is measuring. End Session calculates the result.'
+            if (!walletBusy) {
+                walletMessage = session.user.role === 'admin' ? 'Admin account is read-only.'
+                    : walletSessions.some(row => row.stage === 'RUNNING') ? 'The sensor is measuring. End Session calculates the result.'
                     : 'Wallet loaded. Approve 2 HRC, start a sensor session, then end it to settle.';
             }
-            renderDemoWallet(); return true;
+            renderWallet(); return true;
         } catch (error) {
-            if (session !== demoSession) return false;
-            demoMessage = error.status === 401 ? 'Your demo login expired. Choose your account again.' : 'Unable to refresh account: ' + error.message;
-            if (error.status === 401) clearDemoSession();
-            renderDemoWallet(); return false;
+            if (session !== walletSession) return false;
+            walletMessage = error.status === 401 ? 'Your wallet session expired. Connect MetaMask and sign in again.' : 'Unable to refresh wallet: ' + error.message;
+            if (error.status === 401) clearAppSession();
+            renderWallet(); return false;
         }
     })();
-    try { return await task.promise; } finally { if (demoReadTask === task) demoReadTask = null; }
+    try { return await task.promise; } finally { if (walletReadTask === task) walletReadTask = null; }
 }
 
-async function approveDemoWallet() {
-    if (demoBusy || !demoSession.token || demoSession.user?.role !== 'customer' || !demoWallet || Number(demoWallet.allowance) >= Number(demoWallet.requiredAllowance)) return;
-    const session = demoSession;
-    demoBusy = 'approve'; demoMessage = 'Submitting HRC approval...'; renderDemoWallet();
+async function approveWallet() {
+    if (walletBusy || !walletSession.token || walletSession.user?.role !== 'customer' || !wallet || Number(wallet.allowance) >= Number(wallet.requiredAllowance)) return;
+    const session = walletSession;
+    walletBusy = 'approve'; walletMessage = 'Submitting HRC approval...'; renderWallet();
     try {
-        const result = walletFirstActive()
-            ? await sendWalletPrepared(await demoRequest('/api/me/wallet/prepare/approve', { token: session.token }))
-            : await demoRequest('/api/me/wallet/approve', { method: 'POST', token: session.token });
-        if (session !== demoSession) return;
-        if (result.transactionHash) demoReceipt = result;
-        demoMessage = 'Approved ' + formatDemoAmount(demoWallet.requiredAllowance) + ' HRC allowance. Your balance is unchanged. Start opens the sensor session and locks ' + formatDemoAmount(demoWallet.stakeAmount) + ' HRC.';
-        await loadDemoAccountData({ fresh: true });
-    } catch (error) { if (session === demoSession) demoMessage = 'Approve failed: ' + error.message; }
-    finally { demoBusy = null; renderDemoWallet(); }
+        const result = await sendWalletPrepared(await walletRequest('/api/me/wallet/prepare/approve', { token: session.token }));
+        if (session !== walletSession) return;
+        if (result.transactionHash) walletReceipt = result;
+        walletMessage = 'Approved ' + formatWalletAmount(wallet.requiredAllowance) + ' HRC allowance. Your balance is unchanged. Start opens the sensor session and locks ' + formatWalletAmount(wallet.stakeAmount) + ' HRC.';
+        await loadWalletAccountData({ fresh: true });
+    } catch (error) { if (session === walletSession) walletMessage = 'Approve failed: ' + error.message; }
+    finally { walletBusy = null; renderWallet(); }
 }
 
 // The backend prepares the calldata; the user's own wallet signs and broadcasts it.
@@ -505,72 +418,46 @@ async function sendWalletPrepared(prepared) {
     return { ...prepared, transactionHash: hash, walletSigned: true };
 }
 
-async function startDemoSession() {
-    if (demoBusy || !demoSession.token || demoSession.user?.role !== 'customer' || !demoWallet || (!demoWallet.canStart && !demoSessionRef)) return;
-    const session = demoSession;
-    if (!demoSessionRef) demoSessionRef = 'demo-' + randomId();
-    try { sessionStorage.setItem('hrc-demo-pending-' + session.user.userId, demoSessionRef); } catch { /* same-page retries still keep their session id */ }
-    demoBusy = 'start'; demoMessage = 'Submitting the 2 HRC session stake...'; renderDemoWallet();
+async function startWalletSession() {
+    if (walletBusy || !walletSession.token || walletSession.user?.role !== 'customer' || !wallet || (!wallet.canStart && !walletSessionRef)) return;
+    const session = walletSession;
+    if (!walletSessionRef) walletSessionRef = 'wallet-' + randomId();
+    try { sessionStorage.setItem('hrc-wallet-pending-' + session.user.userId, walletSessionRef); } catch { /* same-page retries still keep their session id */ }
+    walletBusy = 'start'; walletMessage = 'Submitting the 2 HRC session stake...'; renderWallet();
     try {
-        const prepared = await demoRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: demoSessionRef } });
-        demoReceipt = { stage: 'PREPARED', sessionId: prepared.sessionId };
-        renderDemoWallet();
-        const signed = walletFirstActive() ? await sendWalletPrepared(prepared) : prepared;
-        const result = prepared.mode === 'wallet-first'
-            ? await demoRequest('/api/me/sessions/' + encodeURIComponent(prepared.sessionId) + '/confirm-start', {
-                method: 'POST', token: session.token, body: { transactionHash: signed.transactionHash }
-            })
-            : signed;
-        if (session !== demoSession) return;
-        demoReceipt = { ...result, stage: result.pending ? 'START_PENDING' : result.stage === 'RUNNING' ? 'RUNNING' : 'CONFIRMED' };
-        demoMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';
+        const prepared = await walletRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: walletSessionRef } });
+        walletReceipt = { stage: 'PREPARED', sessionId: prepared.sessionId };
+        renderWallet();
+        const signed = await sendWalletPrepared(prepared);
+        const result = await walletRequest('/api/me/sessions/' + encodeURIComponent(prepared.sessionId) + '/confirm-start', {
+            method: 'POST', token: session.token, body: { transactionHash: signed.transactionHash }
+        });
+        if (session !== walletSession) return;
+        walletReceipt = { ...result, stage: result.pending ? 'START_PENDING' : result.stage === 'RUNNING' ? 'RUNNING' : 'CONFIRMED' };
+        walletMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';
         if (!result.pending) {
-            demoSessionRef = null;
-            try { sessionStorage.removeItem('hrc-demo-pending-' + session.user.userId); } catch { /* ignore storage policy */ }
+            walletSessionRef = null;
+            try { sessionStorage.removeItem('hrc-wallet-pending-' + session.user.userId); } catch { /* ignore storage policy */ }
         }
-        await loadDemoAccountData({ fresh: true });
-    } catch (error) { if (session === demoSession) demoMessage = 'Start failed: ' + error.message + ' Retry uses the same session; it will not lock a second stake.'; }
-    finally { demoBusy = null; renderDemoWallet(); }
+        await loadWalletAccountData({ fresh: true });
+    } catch (error) { if (session === walletSession) walletMessage = 'Start failed: ' + error.message + ' Retry uses the same session; it will not lock a second stake.'; }
+    finally { walletBusy = null; renderWallet(); }
 }
 
-async function endDemoSession() {
-    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
-    if (demoBusy || demoSession.user?.role !== 'customer' || !active || !['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active.stage)) return;
-    const session = demoSession;
-    demoBusy = 'end'; demoMessage = 'Closing the sensor session and calculating its result...'; renderDemoWallet();
-    demoReceipt = { stage: 'SETTLING', sessionId: active.sessionId };
+async function endWalletSession() {
+    const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
+    if (walletBusy || walletSession.user?.role !== 'customer' || !active || !['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active.stage)) return;
+    const session = walletSession;
+    walletBusy = 'end'; walletMessage = 'Closing the sensor session and calculating its result...'; renderWallet();
+    walletReceipt = { stage: 'SETTLING', sessionId: active.sessionId };
     try {
-        const result = await demoRequest('/api/me/sessions/' + encodeURIComponent(active.sessionId) + '/end', { method: 'POST', token: session.token, body: {} });
-        if (session !== demoSession) return;
-        demoReceipt = { ...result, stage: result.settled ? 'SETTLED' : 'SETTLING' };
-        demoMessage = result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
-        await loadDemoAccountData({ fresh: true });
-    } catch (error) { if (session === demoSession) demoMessage = 'End failed: ' + error.message + ' Retry keeps the same session.'; }
-    finally { demoBusy = null; renderDemoWallet(); }
-}
-
-function setDemoAccountModal(open) {
-    const modal = byId('demoAccountModal');
-    const trigger = byId('demoAccountTrigger');
-    if (!modal) return;
-    const wasOpen = !modal.classList.contains('hidden');
-    modal.classList.toggle('hidden', !open);
-    document.body.classList.toggle('demo-picker-open', open);
-    if (trigger) trigger.setAttribute('aria-expanded', String(open));
-    if (open) { const select = byId('demoAccountSelect'); if (select) select.value = demoSession.user?.userId || 'admin'; updateDemoAccountPicker(); window.setTimeout(() => byId('demoAccountSelect')?.focus(), 0); }
-    else if (wasOpen) trigger?.focus();
-}
-
-function openDemoAccountModal() { if (!demoBusy) { demoLoginMessage = ''; setDemoAccountModal(true); } }
-function closeDemoAccountModal() { setDemoAccountModal(false); }
-
-function restoreDemoSession() {
-    try {
-        const stored = JSON.parse(sessionStorage.getItem('hrc-demo-session') || 'null');
-        if (stored?.token && ['admin', 'user_1', 'user_2'].includes(stored.user?.userId)) {
-            demoSession = stored; demoSessionRef = pendingDemoSession(stored.user.userId);
-        }
-    } catch { clearDemoSession(); }
+        const result = await walletRequest('/api/me/sessions/' + encodeURIComponent(active.sessionId) + '/end', { method: 'POST', token: session.token, body: {} });
+        if (session !== walletSession) return;
+        walletReceipt = { ...result, stage: result.settled ? 'SETTLED' : 'SETTLING' };
+        walletMessage = result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
+        await loadWalletAccountData({ fresh: true });
+    } catch (error) { if (session === walletSession) walletMessage = 'End failed: ' + error.message + ' Retry keeps the same session.'; }
+    finally { walletBusy = null; renderWallet(); }
 }
 
 async function appRequest(path, { method = "GET", body, token } = {}) {
@@ -622,6 +509,7 @@ function clearAppSession() {
     if (token) void appRequest('/api/auth/logout', { method: 'POST', token }).catch(() => {});
     appAuthGeneration++;
     appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
+    clearWalletSession();
     userBehavior = [];
     customerRows = [];
     customerMessage = "Connect an admin wallet to view customers.";
@@ -639,7 +527,7 @@ function restoreAppSession() {
 }
 
 function currentWalletAddress() {
-    return window.hrcWallet?.state.account?.toLowerCase() || null;
+    return window.hrcWallet?.state?.account?.toLowerCase() || null;
 }
 
 function scheduleBehaviorRetry() {
@@ -734,8 +622,10 @@ async function syncWalletApplication(state) {
                     appSession.user = current.user;
                     appSession.key = key;
                     appSession.error = null;
+                    bindWalletSession(current.user, appSession.token);
                     saveAppSession();
                     renderAppIdentity();
+                    await loadWalletAccountData({ fresh: true });
                     await flushBehavior();
                     return;
                 }
@@ -759,19 +649,12 @@ async function syncWalletApplication(state) {
         }});
         if (!authFlowIsCurrent(run, key)) return;
         appSession = { token: login.token, user: login.user, key, inFlightKey: key, error: null };
+        bindWalletSession(login.user, login.token);
         saveAppSession();
         renderAppIdentity();
-        if (walletFirstActive()) {
-            // The SIWE session authorizes both application and reward-session routes.
-            demoSession = {
-                token: appSession.token,
-                user: { userId: login.user.userId, role: "customer", walletAddress: login.user.walletAddress, walletFirst: true }
-            };
-            demoSessionRef = pendingDemoSession(login.user.userId);
-        }
         await trackBehavior("wallet_connected", { chainId: state.chainId });
         await flushBehavior();
-        if (walletFirstActive()) await loadDemoAccountData({ fresh: true });
+        await loadWalletAccountData({ fresh: true });
         await loadRewards();
     } catch (error) {
         if (!authFlowIsCurrent(run, key)) return;
@@ -1023,13 +906,14 @@ async function loadRuntimeConfig() {
     try {
         const config = await request("/api/config");
         window.hrcRuntimeConfig = config;
-        appAuthMode = config?.app?.authMode || "demo";
+        if (config?.app?.authMode !== "siwe") throw new Error("API is not configured for SIWE wallet login");
+        appAuthMode = "siwe";
         applyAuthMode();
         renderRuntimeConfig(config);
         return config;
     } catch (error) {
         window.hrcRuntimeConfig = {};
-        appAuthMode = "demo";
+        appAuthMode = "siwe";
         applyAuthMode();
         renderRuntimeConfig({ network: "unavailable" });
         text("dashboardMessage", "Blockchain config unavailable: " + error.message);
@@ -1037,34 +921,15 @@ async function loadRuntimeConfig() {
     }
 }
 
-function walletFirstMode() { return appAuthMode === "wallet" || appAuthMode === "siwe"; }
+function walletFirstMode() { return true; }
 
-// Adapt the header entry point to the configured auth mode. The demo picker stays
-// available in demo mode and is removed from the flow when the deployment is
-// wallet-first.
 function applyAuthMode() {
-    const walletFirst = walletFirstMode();
-    text("accountTriggerLabel", walletFirst ? (appAuthMode === "siwe" ? "SIWE LOGIN" : "WALLET") : "DEMO ACCOUNT");
-    document.querySelectorAll("[data-demo-account-open]").forEach(button => {
-        button.hidden = walletFirst;
-        button.disabled = walletFirst;
-    });
-    const modal = byId("demoAccountModal");
-    if (walletFirst && modal && !modal.classList.contains("hidden")) closeDemoAccountModal();
-    if (walletFirst) {
-        text("demoAccountButtonLabel", "Connect wallet");
-        text("walletAccessMessage", appAuthMode === "siwe"
-            ? "Connect a wallet and sign the SIWE message to start a session. The backend operator settles rewards."
-            : "Connect a wallet and sign the login message to start a session. The backend operator settles rewards.");
-        text("demoAccountEmptyHint", appAuthMode === "siwe"
-            ? "Connect MetaMask and sign in. Then approve your HRC stake and start a sensor session."
-            : "Connect MetaMask and sign in. Then approve your HRC stake and start a sensor session.");
-    }
-    // The main panel owns the visible CTA in wallet-first mode; the demo picker is hidden.
+    text("accountTriggerLabel", "SIWE LOGIN");
+    text("walletAccountButtonLabel", "Connect MetaMask");
+    text("walletAccessMessage", "Connect MetaMask and sign the SIWE message. The backend operator settles rewards.");
+    text("walletAccountEmptyHint", "Connect MetaMask and sign in. Your wallet signs HRC approval and session transactions.");
     const connectBtn = byId("walletFirstConnectBtn");
-    if (connectBtn) connectBtn.hidden = !walletFirst;
-    const status = byId("walletFirstStatus");
-    if (status && !walletFirst) status.hidden = true;
+    if (connectBtn) connectBtn.hidden = false;
 }
 
 // Keep wallet errors beside the connect action in the account panel.
@@ -1083,8 +948,8 @@ function renderWalletConnection() {
         && appSession.key === state.account?.toLowerCase() + ":" + state.chainId;
     const signing = Boolean(appSession.inFlightKey && !appSession.key);
     const short = state.account ? state.account.slice(0, 6) + "..." + state.account.slice(-4) : null;
-    text("demoAccountButtonLabel", state.connecting ? "Connecting..." : short || "Connect wallet");
-    text("accountTriggerLabel", authenticated ? "SIGNED IN" : "WALLET LOGIN");
+    text("walletAccountButtonLabel", state.connecting ? "Connecting..." : short || "Connect wallet");
+    text("accountTriggerLabel", authenticated ? "SIGNED IN" : "SIWE LOGIN");
     const message = state.connecting ? "Open MetaMask to connect or switch network."
         : !state.account || !state.networkMatches ? state.message
         : appSession.error || (authenticated ? "Signed in. Your HRC wallet and sessions are ready." : "Wallet connected. Sign the login message in MetaMask.");
@@ -1097,8 +962,8 @@ function renderWalletConnection() {
             : state.account && !state.networkMatches ? "Switch network"
             : state.account ? "Retry sign in" : "Connect wallet";
     }
-    const trigger = byId("demoAccountTrigger");
-    if (trigger) trigger.disabled = Boolean(demoBusy || state.connecting || signing);
+    const trigger = byId("walletAccountTrigger");
+    if (trigger) trigger.disabled = Boolean(walletBusy || state.connecting || signing);
 }
 async function connectWalletFirst() {
     if (!window.hrcWallet || typeof window.hrcWallet.connect !== "function") {
@@ -1109,10 +974,7 @@ async function connectWalletFirst() {
     catch (error) { setWalletFirstStatus(error?.message || "Could not connect the wallet."); }
 }
 
-function onAccountTrigger() {
-    if (!walletFirstMode()) { openDemoAccountModal(); return; }
-    connectWalletFirst();
-}
+function onAccountTrigger() { connectWalletFirst(); }
 function svgElement(name, attributes = {}) {
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
     Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
@@ -1407,10 +1269,10 @@ function renderRewardRows(targetId, rows, compact = false) {
     }
 }
 function renderRewards() {
-    renderDemoWallet();
+    renderWallet();
 }
 async function loadRewards() {
-    await loadDemoAccountData();
+    await loadWalletAccountData();
 }
 async function loadDashboard() {
     if (loading || unlocking) return;
@@ -1426,7 +1288,7 @@ async function loadDashboard() {
     syncSidebarViews();
     if (typeof loadLiveRuntime === "function") void loadLiveRuntime();
     void loadTransactions();
-    if (typeof loadDemoAccountData === "function") void loadDemoAccountData();
+    if (typeof loadWalletAccountData === "function") void loadWalletAccountData();
     const [robotResult] = await Promise.allSettled([
         request(`/api/robots/${encodeURIComponent(ROBOT_ID)}/status`)
     ]);
@@ -1521,22 +1383,8 @@ function initWallet() {
 }
 unlockBtn?.addEventListener("click", unlockRobot);
 byId("lockRobotBtn")?.addEventListener("click", lockRobot);
-byId("demoAccountTrigger")?.addEventListener("click", onAccountTrigger);
+byId("walletAccountTrigger")?.addEventListener("click", onAccountTrigger);
 byId("walletFirstConnectBtn")?.addEventListener("click", connectWalletFirst);
-byId("demoAccountCloseBtn")?.addEventListener("click", closeDemoAccountModal);
-byId("demoAccountCancelBtn")?.addEventListener("click", closeDemoAccountModal);
-byId("demoAccountModal")?.querySelector("[data-demo-account-close]")?.addEventListener("click", closeDemoAccountModal);
-document.addEventListener("keydown", event => {
-    if (event.key !== "Escape") return;
-    if (!byId("demoAccountModal")?.classList.contains("hidden")) closeDemoAccountModal();
-});
-byId("demoAccountModal")?.addEventListener("keydown", event => {
-    if (event.key !== "Tab") return;
-    const controls = Array.from(byId("demoAccountModal").querySelectorAll("button:not([disabled]), select:not([disabled])"));
-    const first = controls[0], last = controls[controls.length - 1];
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-});
 const viewTitles = {
     dashboard: "Safety Control Center", "live-monitoring": "Live Monitoring", reports: "Reports"
 };
@@ -1574,7 +1422,7 @@ function syncSidebarViews() {
     renderAppIdentity();
     renderUserPortal();
     renderCustomers();
-    renderDemoWallet();
+    renderWallet();
 }
 async function loadTransactions() {
     if (transactionsLoading) return;
@@ -1642,35 +1490,25 @@ document.querySelectorAll("[data-user-refresh]").forEach(button => {
 document.querySelectorAll("[data-customer-refresh]").forEach(button => {
     button.addEventListener("click", () => { void loadCustomers(); });
 });
-byId("demoAccountForm")?.addEventListener("submit", event => { event.preventDefault(); void loginDemoAccount(); });
-byId("demoAccountSelect")?.addEventListener("change", updateDemoAccountPicker);
-    document.querySelectorAll("[data-demo-account-open]").forEach(button => button.addEventListener("click", openDemoAccountModal));
-document.querySelectorAll("[data-demo-refresh]").forEach(button => button.addEventListener("click", () => { void loadDemoAccountData(); }));
-byId("demoApproveBtn")?.addEventListener("click", () => { void approveDemoWallet(); });
-byId("demoStartBtn")?.addEventListener("click", () => { void startDemoSession(); });
-byId('demoEndBtn')?.addEventListener('click', () => { void endDemoSession(); });
+document.querySelectorAll("[data-wallet-refresh]").forEach(button => button.addEventListener("click", () => { void loadWalletAccountData(); }));
+byId("walletApproveBtn")?.addEventListener("click", () => { void approveWallet(); });
+byId("walletStartBtn")?.addEventListener("click", () => { void startWalletSession(); });
+byId('walletLogoutBtn')?.addEventListener('click', () => { clearAppSession(); renderWallet(); });
+byId('walletEndBtn')?.addEventListener('click', () => { void endWalletSession(); });
 window.addEventListener("hashchange", navigate);
 navigate();
 async function bootstrap() {
     await loadRuntimeConfig();
-    if (walletFirstMode()) {
-        // Wallet-first: the header trigger connects a real wallet and signs the
-        // application login message. The demo picker is not part of this flow.
-        initWallet();
-        await Promise.allSettled([loadDashboard(), loadLiveRuntime()]);
-        connectLiveStream();
-        return;
-    }
-    restoreDemoSession();
-    await loadDemoAccounts();
-    renderDemoWallet();
-    await Promise.allSettled([loadDashboard(), loadLiveRuntime(), loadDemoAccountData()]);
+    restoreAppSession();
+    initWallet();
+    renderWallet();
+    await Promise.allSettled([loadDashboard(), loadLiveRuntime()]);
     connectLiveStream();
 }
 window.setInterval(() => {
-    if (!document.hidden) renderDemoSessionTimer();
+    if (!document.hidden) renderWalletSessionTimer();
 }, 1000);
 window.setInterval(() => {
-    if (!document.hidden && !demoBusy && demoSession.token) void loadDemoAccountData();
+    if (!document.hidden && !walletBusy && walletSession.token) void loadWalletAccountData();
 }, 5000);
 void bootstrap();

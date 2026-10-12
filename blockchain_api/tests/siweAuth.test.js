@@ -116,17 +116,9 @@ test("siwe rejects a non-SIWE message and a wrong field version", async t => {
     assert.equal(badVersionAttempt.status, 401);
 });
 
-test("wallet mode keeps the legacy EIP-191 message shape", async t => {
-    const f = await fixture(t, { authMode: "wallet" });
-    const wallet = ethers.Wallet.createRandom();
-    const challenge = await f.call("/api/auth/challenge", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337 } });
-    assert.equal(challenge.body.mode, "wallet");
-    assert.match(challenge.body.message, /^HRC Safety Log at http:\/\/localhost:8080 wants to verify ownership of this wallet\.$/m);
-    const signature = await wallet.signMessage(challenge.body.message);
-    const login = await f.call("/api/auth/wallet", { method: "POST", body: {
-        walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature
-    }});
-    assert.equal(login.status, 200);
+test("legacy EIP-191 login mode cannot be enabled", () => {
+    assert.throws(() => new CustomerService({ authMode: "wallet" }), /must be siwe/);
+    assert.throws(() => new CustomerService({ authMode: "demo" }), /must be siwe/);
 });
 
 test("buildSiweMessage rejects an invalid domain, uri, chain id and nonce", () => {

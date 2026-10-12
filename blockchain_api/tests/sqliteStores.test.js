@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { SqliteCustomerStore, SqliteDemoSessionStore, migrateJsonToSqlite } = require("../sqliteStores");
+const { SqliteCustomerStore, SqliteSessionStore, migrateJsonToSqlite } = require("../sqliteStores");
 
 function tempDir(t) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hrc-sqlite-"));
@@ -43,7 +43,7 @@ test("sqlite customer store keeps users, challenges, sessions and behavior", t =
 
 test("sqlite session store keeps session ownership and transaction snapshots", t => {
     const directory = tempDir(t);
-    const store = new SqliteDemoSessionStore(path.join(directory, "sessions.db"));
+    const store = new SqliteSessionStore(path.join(directory, "sessions.db"));
     t.after(() => store.close());
 
     store.save({ sessionId: "hrc-abc-demo", userId: "user_1", sessionRef: "demo", createdAt: "2026-01-01T00:00:00.000Z" });
@@ -88,7 +88,7 @@ test("migration imports the JSON snapshots once", t => {
     assert.equal(store.getUser("user_1").walletAddress, "0xabc");
     assert.equal(store.listBehavior("user_1").length, 1);
     store.close();
-    const sessionStore = new SqliteDemoSessionStore(db);
+    const sessionStore = new SqliteSessionStore(db);
     assert.equal(sessionStore.get("hrc-abc-demo").userId, "user_1");
     assert.equal(sessionStore.getTransaction("stake:hrc-abc-demo").transactionHash, "0x1");
     sessionStore.close();

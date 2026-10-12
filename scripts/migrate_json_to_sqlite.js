@@ -13,9 +13,9 @@ const dataDir = path.join(__dirname, "..", "blockchain_api", "data");
 try {
     const report = migrateJsonToSqlite({
         customerJsonPath: readFlag("customers", process.env.HRC_CUSTOMER_STORE_PATH || path.join(dataDir, "customers.json")),
-        sessionJsonPath: readFlag("sessions", process.env.HRC_DEMO_SESSION_STORE_PATH || path.join(dataDir, "demo-sessions.json")),
+        sessionJsonPath: readFlag("sessions", process.env.HRC_SESSION_STORE_PATH || process.env.HRC_DEMO_SESSION_STORE_PATH || path.join(dataDir, "demo-sessions.json")),
         dbPath: readFlag("db", process.env.HRC_APP_DB_PATH || path.join(dataDir, "customers.db")),
-        sessionDbPath: readFlag("session-db", process.env.HRC_APP_SESSION_DB_PATH || path.join(dataDir, "demo-sessions.db"))
+        sessionDbPath: readFlag("session-db", process.env.HRC_APP_SESSION_DB_PATH || path.join(dataDir, "wallet-sessions.db"))
     });
     console.log(JSON.stringify(report, null, 2));
 } catch (error) {

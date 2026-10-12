@@ -16,9 +16,9 @@ function getPublicConfig(env = process.env) {
         chainId,
         rpcUrl: RPC_URL,
         app: {
-            authMode: env.HRC_APP_AUTH_MODE === "siwe" ? "siwe" : env.HRC_APP_AUTH_MODE === "wallet" ? "wallet" : "demo",
-            origin: env.HRC_APP_ORIGIN || "http://localhost:8080",
-            store: env.HRC_APP_STORE === "sqlite" ? "sqlite" : "json"
+            authMode: "siwe",
+            origin: env.HRC_APP_ORIGIN || "http://localhost:8081",
+            store: env.HRC_APP_STORE === "json" ? "json" : "sqlite"
         },
         safety: { address: CONTRACT_ADDRESS, deploymentBlock: DEPLOYMENT_BLOCK },
         rewards: {

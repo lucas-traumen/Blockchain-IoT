@@ -1,5 +1,5 @@
 const { ethers } = require("ethers");
-const { HARDHAT_MNEMONIC } = require("../demo_wallets");
+const { localChainMnemonic } = require("./localChainMnemonic");
 
 function operatorPrivateKey(env = process.env, network = "localhost") {
     const explicit = typeof env.PRIVATE_KEY === "string" ? env.PRIVATE_KEY.trim() : "";
@@ -10,11 +10,10 @@ function operatorPrivateKey(env = process.env, network = "localhost") {
         return explicit;
     }
     if (network !== "localhost") {
-        throw new Error("PRIVATE_KEY is required outside the Hardhat local demo");
+        throw new Error("PRIVATE_KEY is required for a live network");
     }
-    const mnemonic = env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC;
     return ethers.HDNodeWallet.fromPhrase(
-        mnemonic,
+        localChainMnemonic(env),
         undefined,
         "m/44'/60'/0'/0/0"
     ).privateKey;

@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ethers } = require('ethers');
-const { DemoWalletService } = require('../demoWalletService');
-const { DemoSessionStore } = require('../demoSessionStore');
+const { WalletService } = require('../walletService');
+const { JsonSessionStore } = require('../sessionStore');
 const { sessionKey } = require('../rewardPolicy');
 
 const USER1 = '0x0000000000000000000000000000000000000011';
@@ -24,7 +24,7 @@ const log = (iface, name, args, address, transactionHash, blockNumber, index = 0
 function fixture(t) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hrc-demo-service-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-    const store = new DemoSessionStore(path.join(directory, 'sessions.json'));
+    const store = new JsonSessionStore(path.join(directory, 'sessions.json'));
     const state = { chainId: 31337, starts: 0, approvals: 0, tuples: new Map(), logs: [], allowance: ethers.parseEther('2') };
     const users = new Map([['user_1', { userId: 'user_1', role: 'customer', walletAddress: USER1, wallet: {} }], ['user_2', { userId: 'user_2', role: 'customer', walletAddress: USER2, wallet: {} }]]);
     const provider = {
@@ -49,26 +49,24 @@ function fixture(t) {
             } };
         } }; }
     };
-    const service = new DemoWalletService({ provider, token, rewards, config: { tokenAddress: TOKEN, rewardAddress: REWARDS, chainId: 31337, deploymentBlock: 1 }, users, store });
+    const service = new WalletService({ provider, token, rewards, config: { tokenAddress: TOKEN, rewardAddress: REWARDS, chainId: 31337, deploymentBlock: 1 }, users, store });
     return { service, state, directory };
 }
 
-test('concurrent retries stake once and reopened API reads the same session from contract events', async t => {
+test('API reads an externally staked session after reopening and isolates its owner', async t => {
     const f = fixture(t);
-    const input = { sessionRef: 'retry-test' };
-    const result = await Promise.all([f.service.startSession('user_1', input), f.service.startSession('user_1', input)]);
-    assert.equal(f.state.starts, 1);
-    assert.deepEqual(result.map(row => row.duplicate), [false, true]);
-    const id = result[0].sessionId;
-    assert.match(id, /^hrc-[0-9a-f]{8}-retry-test$/);
-    assert.equal(result[1].sessionId, id);
-    f.service.store = new DemoSessionStore(path.join(f.directory, 'sessions.json'));
+    const id = f.service._sessionId('user_1', { sessionRef: 'retry-test' });
+    const key = sessionKey(id);
+    f.state.tuples.set(key, { beneficiary: USER1, startedAt: 100n, settledAt: 0n, stakedAmount: ethers.parseEther('2'),
+        rewardPaid: 0n, penaltyCollected: 0n, outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash, outcomeTimestamp: 0n, started: true, settled: false });
+    f.state.logs.push(log(rewardEvents, 'SessionStarted', [key, USER1, ethers.parseEther('2'), 100], REWARDS, hash('b'), 11));
+    f.service.store.save({sessionId:id, userId:'user_1'});
+    f.service.store = new JsonSessionStore(path.join(f.directory, 'sessions.json'));
     const after = await f.service.getSession('user_1', id);
-    assert.equal(after.session.stakedAmount, '2.0');
-    assert.equal(after.session.events[0].name, 'SessionStarted');
-    assert.equal(after.session.transactionHash, hash('b'));
+    assert.equal(after.session.stakedAmount, '2.0'); assert.equal(after.session.events[0].name, 'SessionStarted');
     assert.equal((await f.service.listSessions('user_2')).count, 0);
     await assert.rejects(f.service.getSession('user_2', id), { code: 'SESSION_OWNER_MISMATCH' });
+    assert.equal(f.service.approve, undefined); assert.equal(f.service.startSession, undefined);
 });
 
 test('wallet history includes approvals, start and settlement events belonging only to the signed-in user', async t => {
@@ -89,52 +87,48 @@ test('wallet history includes approvals, start and settlement events belonging o
     assert.equal(history.transactions[0].events.find(event => event.name === 'SessionSettled').rewardPaid, '3.0');
     assert.equal(history.transactions[0].events.find(event => event.name === 'SessionSettled').endedAt, 105);
     assert.equal((await f.service.getTransactions('user_2')).count, 1);
-    await assert.rejects(f.service.getTransactions('unknown'), { code: 'DEMO_ACCOUNT_REQUIRED' });
+    await assert.rejects(f.service.getTransactions('unknown'), { code: 'WALLET_ACCOUNT_REQUIRED' });
 });
 
-test('demo signing fails closed on a network other than local chain 31337', async t => {
-    const f = fixture(t); f.state.chainId = 11155111;
-    await assert.rejects(f.service.approve('user_1'), { code: 'LOCAL_CHAIN_REQUIRED' });
-    await assert.rejects(f.service.startSession('user_1', { sessionRef: 'wrong-chain' }), { code: 'LOCAL_CHAIN_REQUIRED' });
-    assert.equal(f.state.starts, 0); assert.equal(f.state.approvals, 0);
-});
-
-test('wallet-first reads use configured Sepolia or Amoy chain while fixed demo signers stay local-only', async t => {
+test('wallet reads require the configured network and deployed contract code', async t => {
     const f = fixture(t);
-    const walletUser = f.service.walletUser('0x0000000000000000000000000000000000000099');
-    f.service.config.chainId = 80002;
-    f.state.chainId = 80002;
-    await f.service._requireConfiguredChain(walletUser.userId);
-    await assert.rejects(f.service._requireConfiguredChain('user_1'), { code: 'LOCAL_CHAIN_REQUIRED' });
     f.state.chainId = 11155111;
-    await assert.rejects(f.service._requireConfiguredChain(walletUser.userId), { code: 'WRONG_CHAIN' });
+    await assert.rejects(f.service.getWallet('user_1'), { code: 'WRONG_CHAIN' });
+    for (const chainId of [11155111, 80002]) {
+        f.service.config.chainId = chainId; f.state.chainId = chainId;
+        assert.equal((await f.service.getWallet('user_1')).chainId, chainId);
+    }
+    f.service.provider.getCode = async () => '0x';
+    await assert.rejects(f.service.getWallet('user_1'), { code: 'REWARD_DEPLOYMENT_MISSING' });
 });
 
-test('fixed user wallet mapping survives service recreation and exposes no private keys', t => {
+test('service recreation creates no fixed accounts, keys or demo login tokens', t => {
     const f = fixture(t);
-    const deploymentPath = path.join(f.directory, 'reward-localhost.json');
-    fs.writeFileSync(deploymentPath, JSON.stringify({
-        network: 'localhost', chainId: 31337,
-        tokenAddress: TOKEN, rewardsAddress: REWARDS
-    }));
-    const options = {
-        HRC_DEMO_SESSION_STORE_PATH: path.join(f.directory, 'fixed-sessions.json'),
-        HRC_REWARD_DEPLOYMENT: deploymentPath
-    };
-    const first = DemoWalletService.fromEnv(options), second = DemoWalletService.fromEnv(options);
-    assert.deepEqual(first.listAccounts(), second.listAccounts());
-    assert.deepEqual(first.listAccounts().map(row => row.userId), ['admin', 'user_1', 'user_2']);
-    const user = first.login('user_1').user;
-    assert.equal(user.walletAddress, '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC');
-    assert.equal(Object.hasOwn(user, 'privateKey'), false);
-    assert.throws(() => first.login('0x0000000000000000000000000000000000000099'), { code: 'UNKNOWN_DEMO_ACCOUNT' });
+    const file = path.join(f.directory, 'reward-localhost.json');
+    fs.writeFileSync(file, JSON.stringify({network:'localhost',chainId:31337,tokenAddress:TOKEN,rewardsAddress:REWARDS}));
+    const options = {HRC_APP_STORE:'json', HRC_SESSION_STORE_PATH:path.join(f.directory,'persistent.json'),HRC_REWARD_DEPLOYMENT:file};
+    const first=WalletService.fromEnv(options), second=WalletService.fromEnv(options);
+    assert.equal(first.users.size,0); assert.equal(second.users.size,0);
+    const user=first.walletUser(USER1);
+    assert.equal(user.wallet,null); assert.equal(user.walletFirst,true);
+    assert.equal(first.login,undefined); assert.equal(first.authenticateToken,undefined);
+    assert.equal(second.walletUser(USER1).userId,user.userId);
 });
 
+test('legacy fixed sessions migrate only when the verified address matches the deployment manifest', t => {
+    const f=fixture(t);
+    f.service.store.save({sessionId:'legacy-fixed',userId:'user_1'});
+    f.service.store.save({sessionId:'unproven',userId:'user_2'});
+    f.service.legacyWallets=[{userId:'user_1',address:USER1}];
+    f.service.walletUser(USER2);
+    assert.equal(f.service.store.get('legacy-fixed').userId,'user_1');
+    const user=f.service.walletUser(USER1);
+    assert.equal(f.service.store.get('legacy-fixed').userId,user.userId);
+    assert.equal(f.service.store.get('unproven').userId,'user_2');
+});
 
-test('a replacement empty chain cannot accept approval or a new stake using the saved deployment',async t=>{
-    const f=fixture(t);f.service.config.deploymentTransactions={token:hash('1'),rewards:hash('2')};
+test('a replacement empty chain is rejected when saved deployment receipts disappear',async t=>{
+    const f=fixture(t); f.service.config.deploymentTransactions={token:hash('1'),rewards:hash('2')};
     f.service.provider.getTransactionReceipt=async()=>null;
-    await assert.rejects(f.service.approve('user_1'),{code:'CHAIN_HISTORY_MISMATCH'});
-    await assert.rejects(f.service.startSession('user_1',{sessionRef:'new-chain'}),{code:'CHAIN_HISTORY_MISMATCH'});
-    assert.equal(f.state.approvals,0);assert.equal(f.state.starts,0);
+    await assert.rejects(f.service.getWallet('user_1'),{code:'CHAIN_HISTORY_MISMATCH'});
 });

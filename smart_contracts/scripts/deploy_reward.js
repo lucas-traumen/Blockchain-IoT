@@ -1,7 +1,6 @@
 const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
-const { DEMO_WALLETS, HARDHAT_MNEMONIC } = require("../../demo_wallets");
 
 async function main() {
     const [deployer, defaultPenaltyTreasury] = await hre.ethers.getSigners();
@@ -39,24 +38,14 @@ async function main() {
     await (await token.approve(await rewards.getAddress(), rewardPoolAmount)).wait();
     await (await rewards.fundRewardPool(rewardPoolAmount)).wait();
 
-    // Fund exactly the two local demo users. Their addresses are derived from
-    // Hardhat's deterministic mnemonic and are exposed as public identities;
-    // their private keys remain backend-only.
-    const demoInitialBalance = hre.ethers.parseUnits(
-        process.env.HRC_DEMO_INITIAL_BALANCE || "20",
-        tokenDecimals
-    );
-    const demoWallets = DEMO_WALLETS.map(spec => ({
-        ...spec,
-        address: hre.ethers.HDNodeWallet.fromPhrase(
-            process.env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC,
-            undefined,
-            `m/44'/60'/0'/0/${spec.derivationIndex}`
-        ).address
-    }));
-    for (const demo of demoWallets) {
-        await (await token.transfer(demo.address, demoInitialBalance)).wait();
-        console.log(`Seeded ${demo.userId}: ${demo.address}`);
+    // Local funding is explicit and independent of application identity/SIWE.
+    const localTestWallet = process.env.HRC_LOCAL_TEST_WALLET_ADDRESS;
+    const localTestBalance = hre.ethers.parseUnits(process.env.HRC_LOCAL_TEST_HRC || "20", tokenDecimals);
+    if (localTestWallet) {
+        if (hre.network.name !== "localhost") throw new Error("Local test wallet funding is only allowed on localhost");
+        if (!hre.ethers.isAddress(localTestWallet)) throw new Error("Invalid HRC_LOCAL_TEST_WALLET_ADDRESS");
+        await (await token.transfer(localTestWallet, localTestBalance)).wait();
+        console.log(`Funded local MetaMask test wallet: ${localTestWallet}`);
     }
 
     const [network, tokenAddress, rewardsAddress] = await Promise.all([
@@ -94,11 +83,7 @@ async function main() {
             owner: deployer.address,
             totalSupply: totalSupply.toString(),
             rewardPoolBalance: rewardPoolAmount.toString(),
-            demoWallets: demoWallets.map(demo => ({
-                userId: demo.userId,
-                address: demo.address,
-                initialBalance: demoInitialBalance.toString()
-            })),
+            localTestWallet: localTestWallet ? { address: localTestWallet, initialBalance: localTestBalance.toString() } : null,
             deployTxHashes: {
                 token: token.deploymentTransaction()?.hash || null,
                 rewards: rewards.deploymentTransaction()?.hash || null

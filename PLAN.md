@@ -1596,3 +1596,18 @@ settlement. Earlier-than-start and future end timestamps revert. Preview and
 settlement match; retry preserves the original `endedAt` and cannot settle
 twice. Existing deployments retain their old ABI and settlement-time duration
 until a new deployment and manifest switch are explicitly verified.
+
+## R24 — MetaMask + SIWE only — 2026-10-12
+
+| Task | Scope | Acceptance | Status |
+| --- | --- | --- | --- |
+| R24a:auth/UI | blockchain API auth/routes, dashboard and tests | Remove demo-account login and fixed-account UI; wallet address is the single application/reward identity; SIWE is the only app login | source/tests present |
+| R24b:local runtime | launcher, local chain funding, operator config | Local launcher uses ports 8081/3000/8545/8002/1886, exact SIWE origin `http://localhost:8081`, local-only funded wallet/key file mode 0600, and refuses occupied ports before deploy | source present; do not run while an existing stack is active |
+| R24c:compat/docs | session persistence, README and integration docs | Store module naming is wallet-neutral while legacy JSON paths and SQLite schema remain readable; active docs contain no demo launcher/verifier path | done |
+
+Verification: blockchain API **147/147**, Hardhat **88/88**, dashboard/API JS
+syntax, local launcher shell syntax, active-doc stale-reference scan and
+`git diff --check` pass. Read-only GETs confirm the already-running dashboard/API
+use chain `31337` and SIWE origin `http://localhost:8081`. No live-stack restart,
+chain deployment, data reset, or write-producing smoke request was performed.
+Preserve the user-owned ESP32 VS Code port change and exclude it from staging.

@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../dashboard/app.js"), "utf8");
 const configSource = source.slice(0, source.indexOf("window.hrcRuntimeConfig"));
 const nginxConfig = fs.readFileSync(path.join(__dirname, "../../docker/nginx/dashboard.conf"), "utf8");
-const demoScript = fs.readFileSync(path.join(__dirname, "../../scripts/run_local_demo.sh"), "utf8");
+const walletScript = fs.readFileSync(path.join(__dirname, "../../scripts/run_local_metamask.sh"), "utf8");
 
 function urls(location, overrides = {}) {
     const context = vm.createContext({ URL, window: { location, ...overrides } });
@@ -49,8 +49,12 @@ test("dashboard proxy sets CSP and browser security headers", () => {
     assert.match(nginxConfig, /Referrer-Policy "no-referrer"/);
 });
 
-test("local demo validates proxy JSON before announcing readiness", () => {
-    assert.match(demoScript, /wait_for_dashboard_chain_proxy/);
-    assert.match(demoScript, /JSON\.parse\(fs\.readFileSync/);
-    assert.match(demoScript, /value\.success !== true/);
+test("local MetaMask launcher validates proxy JSON and defaults to the supported stack ports", () => {
+    assert.match(walletScript, /wait_for_dashboard_chain_proxy/);
+    assert.match(walletScript, /JSON\.parse\(fs\.readFileSync/);
+    assert.match(walletScript, /value\.success !== true/);
+    assert.match(walletScript, /HRC_DASHBOARD_HOST_PORT:-8081/);
+    assert.match(walletScript, /HRC_API_HOST_PORT:-8002/);
+    assert.match(walletScript, /HRC_MQTT_HOST_PORT:-1886/);
+    assert.match(walletScript, /HRC_APP_AUTH_MODE=siwe/);
 });

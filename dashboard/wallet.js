@@ -49,7 +49,6 @@ function createWalletAccess(ethereum, ethers, changed = () => {}, runtimeConfig 
             notify();
             return;
         }
-        notify();
         try {
             const accounts = await ethereum.request({ method: "eth_accounts" });
             if (version !== generation) return;

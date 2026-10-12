@@ -9,8 +9,6 @@ on-chain events and hashes are not rewritten or reconstructed.
 Set these environment variables in the **blockchain_api process**, before starting it:
 
 - `HRC_INGEST_API_TOKEN`: random secret of at least 32 characters, for the gateway.
-- `HRC_ADMIN_API_TOKEN`: a different random secret of at least 32 characters,
-  retained for local demo and robot integrations.
 - `HRC_EVENT_STORE_PATH`: optional directory; default `blockchain_api/data/events`.
 - `HRC_APP_STORE`: `sqlite` by default; set `json` only for legacy local runs.
   Application users, hashed sessions and behavior use `HRC_APP_DB_PATH` (default
@@ -23,7 +21,7 @@ Set these environment variables in the **blockchain_api process**, before starti
 - `HRC_APP_ADMIN_WALLETS`: comma-separated wallet addresses allowed to read the
   customer directory.
 - `HRC_APP_ORIGIN`: HTTP(S) origin included in the signed challenge text; default
-  `http://localhost:8080`. Keep it aligned with the dashboard origin.
+  `http://localhost:8081`. Keep it aligned exactly with the dashboard origin.
 
 No ingest/admin token is generated, printed, or embedded in the frontend. Missing/short tokens
 disable their protected routes with HTTP 503. Send `Authorization: Bearer <token>`.
@@ -31,74 +29,62 @@ Tokens are bearer credentials; use a trusted local connection or HTTPS when expo
 the API. Ingestion token does not grant admin access, and admin token does not grant
 ingestion access. Keep tokens distinct and outside source control.
 
-`POST /api/safety-event` requires ingestion token.
-In local `demo` mode, `POST /api/robots/:deviceId/unlock` and
-`GET /api/events/:eventId/payload` require the admin token. In production, set
+`POST /api/safety-event` requires the ingestion token. Set
 `NODE_ENV=production`, `HRC_APP_AUTH_MODE=siwe`, an explicit
 `HRC_APP_ADMIN_WALLETS` allowlist and `HRC_TRUST_PROXY=true` behind the TLS
-terminator. Production refuses demo auth and plaintext HTTP. HSTS is emitted for
+terminator. Non-SIWE auth modes and plaintext production HTTP are refused. HSTS is emitted for
 HTTPS API requests. The dashboard Nginx config adds CSP, frame, MIME, referrer
 and permissions headers. Rate limits are per process/IP; multi-instance setups
 must also enforce limits at their shared ingress.
 Existing public event and robot status GET routes do not need a token.
 
 The dashboard does **not** send an admin or ingest token. Robot API clients still
-use those protected routes. The default local dashboard signs into a fixed demo
-account with a separate app session. Default `HRC_APP_AUTH_MODE=demo` also blocks
-legacy EIP-191 wallet registration before creating customer data. The separate
-legacy application requires explicit `HRC_APP_AUTH_MODE=wallet`. Never embed an operator token in frontend JavaScript.
+use their configured protected routes. Dashboard login is MetaMask + SIWE only;
+the verified wallet address determines the single application/reward identity.
+Never embed an operator token in frontend JavaScript.
 
-## Local demo accounts and session transactions
+## MetaMask and session transactions
 
-Open `http://127.0.0.1:8080/` and click **DEMO ACCOUNT**. The compact picker
-contains exactly `admin`, `user_1`, and `user_2`; it selects the current account,
-or admin on first opening. **Open account** logs in and closes the picker; RPC
-read errors appear in the wallet workspace. **My Wallet / My Sessions** lives
-inside Dashboard and Reports. Navigation remains Dashboard, Live Monitoring,
-Safety Events and Reports.
+Open `http://localhost:8081/`, connect MetaMask and sign the SIWE message. Keep
+`localhost` in the browser URL so its origin matches the SIWE configuration;
+do not substitute `127.0.0.1:8081`.
 
-The two local demo wallets derive from fixed Hardhat indexes in `demo_wallets.js`. The
-backend keeps their private keys; the whitelist does not register arbitrary
-wallets as demo customers. New deployments seed 20 HRC per user. Restarting the
-API preserves identity, session references and transactions. SIWE sessions are
-SQLite-backed; fixed demo login tokens remain in memory and require another
-login. Admin sees both users with no transaction
-controls and cannot call customer Approve/Start/End routes.
+MetaMask local network: RPC `http://127.0.0.1:8545`, chain ID `31337`, currency
+`ETH`. The local launcher serves the dashboard on `8081`, IoT API on `8002`,
+MQTT on `1886` and Blockchain API on `3000`. The user's private key remains in
+MetaMask. Local Hardhat test keys are for development only. Provide ETH for gas
+and HRC test balance before Approve/Start.
 
 Configuration:
 
-- `HRC_APP_AUTH_MODE`: one of `demo` (default, fixed accounts only; arbitrary
-  wallet registration is disabled), `wallet` (EIP-191 challenge text) or `siwe`
-  (strict EIP-4361/SIWE message).
+- `HRC_APP_AUTH_MODE`: must be `siwe` (strict EIP-4361/SIWE message); demo and
+  legacy EIP-191 login are disabled.
 - `RPC_URL`: RPC endpoint matching the selected deployment.
 - `HRC_REWARD_DEPLOYMENT`: manifest for that node's token/reward deployment.
   Set `HRC_BLOCKCHAIN_NETWORK=sepolia` or `amoy`, `RPC_URL`, and the matching
   deployment manifest for wallet-first reads/transaction preparation on chain
-  IDs 11155111 or 80002. Fixed mnemonic-backed demo accounts stay on 31337.
-- `HRC_DEMO_MNEMONIC`: local Hardhat mnemonic, retained on the backend.
-- `HRC_DEMO_INITIAL_BALANCE`: initial funding for a new deployment, default 20.
-- `HRC_DEMO_SESSION_STORE_PATH`: durable reference/evidence/transaction store,
-  default `blockchain_api/data/demo-sessions.json`; retain it on API restart.
-- `HRC_IOT_API_URL`: the actual IoT API, normally `http://127.0.0.1:8001`.
-- `HRC_DEMO_DEVICE_ID`: the shared sensor, default `esp32_01`.
+  IDs 11155111 or 80002; deployment configuration determines supported wallets.
+- `HRC_LOCAL_CHAIN_MNEMONIC`: optional local Hardhat development mnemonic only.
+- `HRC_LOCAL_TEST_WALLET_ADDRESS`: optional local-only test funding recipient.
+- `HRC_SESSION_STORE_PATH`: durable reference/evidence/transaction store; retain
+  it across restarts and do not reassign old sessions to another wallet.
+- `HRC_IOT_API_URL`: IoT API, normally `http://127.0.0.1:8002` in the local
+  MetaMask stack.
+- `HRC_DEVICE_ID`: shared sensor, default `esp32_01`.
 - IoT: `HRC_SOURCE_MODE=esp32`, `HRC_REWARD_AUTO_START=false`, and
   `HRC_REWARD_AUTO_SETTLE=false`. Disable the fixed-beneficiary bridge while
-  the Node coordinator binds sensor sessions to individual demo accounts.
+  the Node coordinator binds sensor sessions to the authenticated wallet.
 
 | Route | Access and behavior |
 | --- | --- |
-| `GET /api/demo/accounts` | Fixed whitelist and public addresses |
-| `POST /api/demo/login` | `{userId}`; returns a separate demo app token |
-| `POST /api/demo/logout` | Revokes the authenticated demo token |
 | `GET /api/me/wallet` | Available balance, locked stake, allowance, device readiness, active/pending ID |
-| `POST /api/me/wallet/approve` | Signs ERC-20 allowance for 2 HRC; balance does not change |
-| `POST /api/me/sessions/start` | Stable `{sessionRef}`; opens matching IoT session, then stakes 2 HRC |
+| `GET /api/me/wallet/prepare/approve` | Prepares ERC-20 approval calldata for MetaMask to sign |
+| `POST /api/me/sessions/start` | Reserves a sensor lease and returns unsigned stake calldata |
 | `POST /api/me/sessions/:sessionId/confirm-start` | Wallet-first only; reconciles the user's signed stake, persists the session and opens the matching IoT session |
 | `POST /api/me/sessions/:sessionId/end` | Owner only; closes sensor session, freezes outcome and operator settlement |
 | `GET /api/me/sessions` | Only this user's sessions, including sensor progress and outcome reason |
 | `GET /api/me/sessions/:sessionId` | Owned contract state, sensor metadata and events |
 | `GET /api/me/wallet/transactions` | Wallet-filtered Approval, Transfer and reward events with amounts |
-| `GET /api/demo/admin/overview` | Read-only balances and sessions for both users |
 
 The Start preflight requires local chain 31337, an authorized operator, the
 configured ESP32 source, recent telemetry (at most five seconds), an idle
@@ -168,43 +154,34 @@ retain settlement-time duration semantics; deploy the updated contract and
 update its deployment manifest/address and deployment block before enabling the
 new API against a live chain.
 
-From the repo root, run `node scripts/verify_demo_wallet_ui.mjs` for read-only
-Chrome input/click, isolation, refresh, admin/report and desktop/mobile checks.
-`--transact` uses one real ESP32 session, including at least 31 seconds of samples,
-then verifies End, the measured outcome, balance, token ledger and repeated End.
-It resumes a user's existing active session, or the ID in `HRC_UI_SESSION_ID`,
-instead of opening another stake on retry. It needs no operator token and injects
-no simulated outcome. `HRC_CHAIN_API_URL` can select a separate test API in both
-the browser and verifier. Evidence is written to
+From the repo root, run `node scripts/verify_wallet_first_ui.mjs` for read-only
+browser checks of connection/login states, isolation, refresh, admin/report and
+desktop/mobile layout. It does not approve, stake, settle or require an installed
+MetaMask extension; transaction signing must be exercised by the user in the
+dashboard. `HRC_CHAIN_API_URL` can select a separate test API in both the browser
+and verifier. Evidence is written to
 `data/results/live-wallet-sessions-20261011/` or `HRC_UI_EVIDENCE_DIR`.
 
-To exercise real ESP32 data on a disposable chain without touching the live
-manifests, store or RPC, keep the IoT API and dashboard running with an idle
-sensor, then run from the repo root:
+Run the wallet/session API integration tests against an isolated in-process
+Hardhat chain and explicitly simulated sensor fixtures:
 
 ```bash
-(cd smart_contracts && npx hardhat run scripts/verify_live_wallet.js --network hardhat)
+npm --prefix smart_contracts test -- --grep "Account sensor session API"
 ```
 
-This deploys actual test contracts in process, verifies Approve/Start/End through
-Chromium, and then resumes the same settled session to check browser retry.
-It uses the real IoT HTTP endpoints, not sensor fixtures. Evidence is written
-under `isolated-chain/` and `isolated-chain/resume/`; it does not restore a stopped
-original Hardhat node or complete a pending session on that original chain.
-
-`smart_contracts/test/DemoLiveSessions.js` independently tests the HTTP API and
+`smart_contracts/test/WalletLiveSessions.js` independently tests the HTTP API and
 real contracts on an isolated in-process Hardhat chain. Its sensor HTTP fixtures
 are explicitly simulated and cover valid, daily limit, violation, fault,
 incomplete, offline sensor, signed-transaction restart, orphan recovery and roles.
-These checks do not establish hardware behavior; live verification records its
-own measured session and receipts.
+These checks do not establish hardware behavior. The browser verifier checks
+MetaMask-compatible UI states, but does not control an installed MetaMask
+extension or broadcast a user's transactions.
 
 ## Application wallet login and behavior
 
-With explicit `HRC_APP_AUTH_MODE=wallet` or `HRC_APP_AUTH_MODE=siwe`, the MetaMask client supports
-owner-only robot controls and application login that binds a wallet to a customer
-record. The default demo blocks the challenge and login endpoints with 403. This is separate from the default
-demo account chooser. A client requests a challenge, signs the exact message with
+With `HRC_APP_AUTH_MODE=siwe`, the MetaMask client supports owner-only robot
+controls and application login that binds a wallet to a customer record. Demo
+and legacy wallet login routes are removed. A client requests a challenge, signs the exact message with
 `personal_sign`, and sends the signature to the API. The API verifies the recovered
 address before issuing an app session token. No private key leaves the wallet and
 no wallet address is accepted from an unsigned request.
@@ -229,8 +206,7 @@ Routes:
 - `GET /api/customers` — admin-wallet-only customer directory.
 - `GET /api/customers/:userId/behavior` — admin-wallet-only customer activity.
 
-Admin reward operations use SIWE admin-wallet RBAC in `wallet`/`siwe` modes;
-local demo mode retains the admin API token. Calls are written to the audit
+Admin reward operations use SIWE admin-wallet RBAC. Calls are written to the audit
 trail with actor, action, transaction hash and status. The actor is the verified
 wallet or a fixed token principal; `x-hrc-actor` is ignored:
 

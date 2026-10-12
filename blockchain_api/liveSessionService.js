@@ -60,12 +60,14 @@ class LiveSessionService {
             const user = this.walletService._user(userId);
             if (!user.walletFirst) throw new ApiError(400, 'NOT_WALLET_FIRST', 'Wallet intent is only for wallet-first users');
             const id = identifier(sessionId, 'sessionId');
+            if (id.length > 63) throw new ApiError(400, 'INVALID_SESSION_REF', 'Sensor session identifier must fit within 63 characters');
             const existing = this.store.get(id);
             if (existing) {
                 if (existing.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
                 if (existing.stage === 'WALLET_INTENT' && existing.intentExpiresAt > this.clock()) return existing;
                 if (existing.stage === 'WALLET_INTENT') throw new ApiError(409, 'SESSION_INTENT_EXPIRED', 'This session intent expired; prepare a new session reference');
-                if (!FINAL.has(existing.stage)) throw new ApiError(409, 'SESSION_IN_PROGRESS', 'This session is already being processed');
+                if (existing.transactionHash || ['RUNNING', 'SETTLED', 'START_FAILED'].includes(existing.stage)) return existing;
+                throw new ApiError(409, 'SESSION_INTENT_EXPIRED', 'Prepare a new session reference');
             }
 
             await this.checkOperator(userId);
@@ -73,6 +75,7 @@ class LiveSessionService {
                 this.walletService.getWallet(userId), this.deviceState({ fresh: true })
             ]);
             if (!device.ready) throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason);
+            if (wallet.activeSessionCount) throw new ApiError(409, 'SESSION_IN_PROGRESS', 'Your wallet already has a staked session');
             const lease = this.store.list().find(row => {
                 if (row.sessionId === id || FINAL.has(row.stage)) return false;
                 if (row.stage === 'WALLET_INTENT') return row.intentExpiresAt > this.clock();
@@ -203,14 +206,6 @@ class LiveSessionService {
         for (const record of this.store.list(userId).filter(row => row.source === 'esp32' && !FINAL.has(row.stage))) await this.session(userId, record.sessionId);
         return this.walletService.listSessions(userId);
     }
-    async overview() {
-        const users = [];
-        for (const account of this.walletService.listAccounts().filter(row => row.role === 'customer')) {
-            const [wallet, sessions] = await Promise.all([this.wallet(account.userId), this.sessions(account.userId)]);
-            users.push({ ...account, wallet, sessions: sessions.sessions });
-        }
-        return { success: true, chainId: 31337, users };
-    }
     sensorInfo(info) {
         return { ...info, durationS: info.started_at ? Math.max(0, ((info.ended_at ? Date.parse(info.ended_at) : this.clock()) - Date.parse(info.started_at)) / 1000) : 0 };
     }
@@ -228,37 +223,6 @@ class LiveSessionService {
         this.log('SESSION_RETRY', updated, { errorCode: error.code || 'UNAVAILABLE' });
         return updated;
     }
-    start(userId, body = {}) {
-        this.validateBody(body, ['sessionRef', 'sessionId']);
-        return this.serial(async () => {
-            const user = this.walletService._user(userId);
-            const id = this.walletService._sessionId(userId, body);
-            if (id.length > 63) throw new ApiError(400, 'INVALID_SESSION_REF', 'The sensor session identifier must fit within 63 characters');
-            let record = this.store.get(id);
-            if (record) {
-                this.owner(userId, id);
-                if (FINAL.has(record.stage) || record.stage === 'RUNNING') return this.response(record, { duplicate: true });
-                if (!record.source) { await this.recoverLegacy(record); return this.response(this.store.get(id), { duplicate: true }); }
-                if (record.stage === 'RECOVERY_REQUIRED') return this.response(record, { duplicate: true });
-                if (record.endRequested) return this.advanceEnd(record);
-                return this.advanceStart(record);
-            }
-            await this.checkOperator(userId);
-            const [wallet, device] = await Promise.all([this.walletService.getWallet(userId), this.deviceState({ fresh: true })]);
-            if (!device.ready) throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason);
-            if (device.busySessionId || this.store.list().some(row => row.source === 'esp32' && ['OPENING_SENSOR', 'START_PENDING', 'RUNNING', 'STOPPING_SENSOR', 'COMPENSATING'].includes(row.stage))) {
-                throw new ApiError(409, 'DEVICE_BUSY', 'The sensor is measuring another session. End that session before starting a new one.');
-            }
-            if (wallet.activeSessionCount || this.store.list(userId).some(row => row.stage && !FINAL.has(row.stage))) throw new ApiError(409, 'SESSION_IN_PROGRESS', 'Your previous session is still being processed');
-            if (Number(wallet.balance) < Number(wallet.stakeAmount)) throw new ApiError(409, 'INSUFFICIENT_HRC_BALANCE', 'Not enough available HRC for the stake');
-            if (Number(wallet.allowance) < Number(wallet.requiredAllowance)) throw new ApiError(409, 'APPROVAL_REQUIRED', 'Approve 2 HRC before starting');
-            record = this.store.save({ sessionId: id, sessionRef: body.sessionRef || body.sessionId || null, userId, beneficiary: user.walletAddress,
-                createdAt: new Date(this.clock()).toISOString(), source: 'esp32', deviceId: this.deviceId, stage: 'OPENING_SENSOR' });
-            this.log('SESSION_RESERVED', record);
-            return this.advanceStart(record);
-        });
-    }
-
     // Wallet-first users sign the stake transaction in MetaMask. The backend
     // must still own the sensor reservation and persist the session after the
     // wallet confirms that on-chain start succeeded.
@@ -267,7 +231,9 @@ class LiveSessionService {
         if (!/^0x[0-9a-fA-F]{64}$/.test(String(body.transactionHash || ''))) {
             throw new ApiError(400, 'INVALID_PAYLOAD', 'transactionHash must be a 32-byte transaction hash');
         }
-        return this.serial(async () => {
+        return this.serial(() => this.confirmWalletStartNow(userId, sessionId, body));
+    }
+    async confirmWalletStartNow(userId, sessionId, body) {
             const user = this.walletService._user(userId);
             const id = identifier(sessionId, 'sessionId');
             let record = this.store.get(id);
@@ -276,6 +242,7 @@ class LiveSessionService {
             if (record.transactionHash && record.transactionHash.toLowerCase() !== body.transactionHash.toLowerCase()) {
                 throw new ApiError(409, 'SESSION_TRANSACTION_CONFLICT', 'A different start transaction is already linked to this session');
             }
+            if (['RUNNING', 'SETTLED', 'SETTLEMENT_PENDING', 'STOPPING_SENSOR'].includes(record.stage)) return this.response(record, { duplicate: true });
             const verified = await this.verifyWalletStartReceipt(user, id, body.transactionHash, record);
             if (!verified) {
                 record = this.store.update(id, { transactionHash: body.transactionHash, stage: 'WALLET_INTENT' });
@@ -333,7 +300,6 @@ class LiveSessionService {
                 record = this.store.update(id, { source: 'esp32', stage: 'RUNNING', lastError: error.message });
                 return this.freezeIncomplete(record, 'wallet_session_sensor_start_failed');
             }
-        });
     }
     async advanceStart(record) {
         const id = record.sessionId;
@@ -352,23 +318,11 @@ class LiveSessionService {
                 if (info.status === 'closed' || record.endRequested) return this.advanceEnd(record);
                 return this.response(record, { duplicate: true });
             }
-            if (!info) { info = await this.iot.start(id); this.invalidateDeviceState(); }
-            if (info.device_id !== this.deviceId || info.session_id !== id) throw new ApiError(409, 'IOT_SESSION_MISMATCH', 'Sensor session identity does not match the user session');
-            if (info.status === 'closed' && !this.store.getTransaction('stake:' + id)) {
-                record = this.store.update(id, { stage: 'START_FAILED', lastError: 'Sensor session closed before the stake was confirmed', iotSession: this.sensorInfo(info) });
-                return this.response(record);
-            }
-            if (!this.store.getTransaction('stake:' + id)) {
-                const device = await this.deviceState({ fresh: true });
-                if (!device.ready) throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason);
-            }
-            record = this.store.update(id, { stage: 'START_PENDING', iotSession: this.sensorInfo(info) });
-            const started = await this.walletService.startSession(record.userId, { sessionId: id, sessionRef: record.sessionRef });
-            if (started.pending) return this.response(record, { transactionHash: started.transactionHash });
-            record = this.store.update(id, { stage: 'RUNNING', lastError: null, nextRetryAt: null });
-            this.log('SESSION_STARTED', record, { transactionHash: started.transactionHash });
-            if (info.status === 'closed' || record.endRequested) return this.advanceEnd(record);
-            return this.response(record, { duplicate: Boolean(started.duplicate), transactionHash: started.transactionHash });
+            // Recovery never signs a customer stake. Only a verified wallet receipt can start a sensor.
+            if (record.transactionHash) return this.confirmWalletStartNow(record.userId, id, { transactionHash: record.transactionHash });
+            if (info?.status === 'running') { await this.iot.stop(id); this.invalidateDeviceState(); }
+            record = this.store.update(id, { stage: 'START_FAILED', lastError: 'Wallet-signed stake was not confirmed' });
+            return this.response(record);
         } catch (error) {
             if (NO_STAKE_ERRORS.has(error.code)) {
                 this.store.update(id, { stage: 'COMPENSATING', lastError: error.message });
@@ -473,8 +427,10 @@ class LiveSessionService {
             for (let record of this.store.list()) {
                 if (FINAL.has(record.stage) || record.stage === 'RECOVERY_REQUIRED' || (record.nextRetryAt && record.nextRetryAt > this.clock())) continue;
                 try {
+                    // Unmapped historical fixed accounts remain archived until ownership is proven.
+                    try { this.walletService._user(record.userId); } catch { continue; }
                     if (record.stage === 'WALLET_INTENT') {
-                        if (record.transactionHash) continue;
+                        if (record.transactionHash) { await this.confirmWalletStartNow(record.userId, record.sessionId, { transactionHash: record.transactionHash }); continue; }
                         if (record.intentExpiresAt <= this.clock()) this.store.update(record.sessionId, { stage: 'INTENT_EXPIRED', expiredAt: this.clock() });
                         continue;
                     }
@@ -505,7 +461,7 @@ class LiveSessionService {
 }
 function buildLiveSessionService(walletService, env = process.env) {
     const { getRewardService } = require('./rewardService');
-    return new LiveSessionService({ walletService, settler: getRewardService(), deviceId: env.HRC_DEMO_DEVICE_ID || 'esp32_01',
-        iot: new IotSessionClient({ baseUrl: env.HRC_IOT_API_URL || 'http://127.0.0.1:8001' }) });
+    return new LiveSessionService({ walletService, settler: getRewardService(), deviceId: env.HRC_DEVICE_ID || 'esp32_01',
+        iot: new IotSessionClient({ baseUrl: env.HRC_IOT_API_URL || 'http://127.0.0.1:8002' }) });
 }
 module.exports = { LiveSessionService, buildLiveSessionService, unixSecondsFromIso };

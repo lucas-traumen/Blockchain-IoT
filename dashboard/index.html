@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=session-end-5">
+    <link rel="stylesheet" href="style.css?v=metamask-6">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -124,18 +124,15 @@
 
                 <button
                     type="button"
-                    id="demoAccountTrigger"
+                    id="walletAccountTrigger"
                     class="account-trigger"
-                    aria-haspopup="dialog"
-                    aria-controls="demoAccountModal"
-                    aria-expanded="false"
+                    aria-label="Connect MetaMask or sign in"
                 >
                     <span class="account-trigger-icon">◉</span>
                     <span class="account-trigger-copy">
-                        <small id="accountTriggerLabel">DEMO ACCOUNT</small>
-                        <strong id="demoAccountButtonLabel">Choose account</strong>
+                        <small id="accountTriggerLabel">WALLET LOGIN</small>
+                        <strong id="walletAccountButtonLabel">Connect MetaMask</strong>
                     </span>
-                    <span class="account-trigger-chevron">⌄</span>
                 </button>
 
             </div>
@@ -144,93 +141,92 @@
 
 
         <div id="view-dashboard" class="sidebar-view">
-        <div id="demoDashboardSlot">
-        <div id="demoAccountWorkspace">
-        <section id="demoAccountEmpty" class="panel demo-account-empty">
-            <div><h3>Your account &amp; HRC sessions</h3><p id="demoAccountEmptyHint">Open user_1 or user_2 to approve a stake and start a session, or admin to view both users.</p></div>
-            <div class="demo-account-actions">
-                <button type="button" class="wallet-btn" data-demo-account-open>Choose account</button>
-                <button type="button" class="wallet-btn" id="walletFirstConnectBtn" hidden>Connect wallet</button>
+        <div id="walletDashboardSlot">
+        <div id="walletAccountWorkspace">
+        <section id="walletAccountEmpty" class="panel wallet-account-empty">
+            <div><h3>Your wallet &amp; HRC sessions</h3><p id="walletAccountEmptyHint">Connect MetaMask and sign in to view your wallet and start a sensor session.</p></div>
+            <div class="wallet-account-actions">
+                <button type="button" class="wallet-btn" id="walletFirstConnectBtn">Connect MetaMask</button>
             </div>
-            <p id="walletFirstStatus" class="demo-account-hint" role="status" aria-live="polite" hidden></p>
+            <p id="walletFirstStatus" class="wallet-account-hint" role="status" aria-live="polite" hidden></p>
         </section>
-        <section id="demoWalletPanel" class="panel demo-wallet-panel" hidden aria-labelledby="demoWalletHeading">
+        <section id="walletPanel" class="panel wallet-wallet-panel" hidden aria-labelledby="walletHeading">
             <div class="panel-header compact-panel-header">
                 <div>
                     <span class="panel-kicker">USER TRANSACTION AREA</span>
-                    <h3 id="demoWalletHeading">My Wallet / My Sessions</h3>
+                    <h3 id="walletHeading">My Wallet / My Sessions</h3>
                     <p>1. Approve 2 HRC · 2. Start sensor session · 3. End session to settle.</p>
                 </div>
-                <div class="demo-panel-controls"><span id="demoWalletRole" class="live-badge">CHOOSE ACCOUNT</span><button type="button" class="view-all-btn" data-demo-refresh>Refresh wallet</button></div>
+                <div class="wallet-panel-controls"><button type="button" id="walletLogoutBtn" class="view-all-btn">Sign out</button><span id="walletRole" class="live-badge">WALLET NOT CONNECTED</span><button type="button" class="view-all-btn" data-wallet-refresh>Refresh wallet</button></div>
             </div>
 
-            <p id="demoWalletMessage" class="view-message" role="status" aria-live="polite">Choose user_1 or user_2 from the account button above.</p>
+            <p id="walletMessage" class="view-message" role="status" aria-live="polite">Connect MetaMask to load this wallet.</p>
 
-            <div class="demo-wallet-layout">
-                <section class="demo-wallet-card" aria-labelledby="walletCardHeading">
-                    <div class="demo-wallet-card-header">
+            <div class="wallet-wallet-layout">
+                <section class="wallet-wallet-card" aria-labelledby="walletCardHeading">
+                    <div class="wallet-wallet-card-header">
                         <div>
-                            <span class="demo-card-label">WALLET</span>
-                            <h4 id="walletCardHeading">HRC test balance</h4>
+                            <span class="wallet-card-label">WALLET</span>
+                            <h4 id="walletCardHeading">HRC balance</h4>
                         </div>
-                        <span id="demoWalletChain" class="demo-chain-badge">CHAIN --</span>
+                        <span id="walletChain" class="wallet-chain-badge">CHAIN --</span>
                     </div>
-                    <strong id="demoWalletAddress" class="demo-wallet-address mono">--</strong>
-                    <div class="demo-wallet-stats">
-                        <div><span>Available balance</span><strong id="demoWalletBalance">-- HRC</strong></div>
-                        <div><span>Locked stake</span><strong id="demoWalletLocked">-- HRC</strong></div>
-                        <div><span>Allowance</span><strong id="demoWalletAllowance">-- HRC</strong></div>
+                    <strong id="walletAddress" class="wallet-wallet-address mono">--</strong>
+                    <div class="wallet-wallet-stats">
+                        <div><span>Available balance</span><strong id="walletBalance">-- HRC</strong></div>
+                        <div><span>Locked stake</span><strong id="walletLocked">-- HRC</strong></div>
+                        <div><span>Allowance</span><strong id="walletAllowance">-- HRC</strong></div>
                     </div>
-                    <div class="demo-wallet-actions">
-                        <button type="button" id="demoApproveBtn" class="view-all-btn" disabled>Approve 2 HRC</button>
-                        <button type="button" id="demoStartBtn" class="view-all-btn primary-action" disabled>Start Session</button>
-                        <button type="button" id="demoEndBtn" class="view-all-btn primary-action" hidden disabled>End Session</button>
+                    <div class="wallet-wallet-actions">
+                        <button type="button" id="walletApproveBtn" class="view-all-btn" disabled>Approve 2 HRC</button>
+                        <button type="button" id="walletStartBtn" class="view-all-btn primary-action" disabled>Start Session</button>
+                        <button type="button" id="walletEndBtn" class="view-all-btn primary-action" hidden disabled>End Session</button>
                     </div>
-                    <div class="demo-session-timer">
-                        <span id="demoSessionTimerLabel" class="demo-card-label">Session time</span>
-                        <strong id="demoSessionTimer" class="mono">--:--:--</strong>
-                        <span id="demoSessionTimerDetail">Start a session to measure elapsed time.</span>
+                    <div class="wallet-session-timer">
+                        <span id="walletSessionTimerLabel" class="wallet-card-label">Session time</span>
+                        <strong id="walletSessionTimer" class="mono">--:--:--</strong>
+                        <span id="walletSessionTimerDetail">Start a session to measure elapsed time.</span>
                     </div>
-                    <p id="demoSensorStatus" class="demo-sensor-status" role="status">Checking live sensor...</p>
-                    <p id="demoSessionState" class="demo-session-state" role="status">No session yet.</p>
-                    <p id="demoTransactionStatus" class="demo-transaction-status" role="status" aria-live="polite">No transaction submitted.</p>
+                    <p id="walletSensorStatus" class="wallet-sensor-status" role="status">Checking live sensor...</p>
+                    <p id="walletSessionState" class="wallet-session-state" role="status">No session yet.</p>
+                    <p id="walletTransactionStatus" class="wallet-transaction-status" role="status" aria-live="polite">No transaction submitted.</p>
                 </section>
 
-                <section class="demo-policy-card" aria-labelledby="policyHeading">
-                    <div class="demo-wallet-card-header">
+                <section class="wallet-policy-card" aria-labelledby="policyHeading">
+                    <div class="wallet-wallet-card-header">
                         <div>
-                            <span class="demo-card-label">AUTOMATIC SETTLEMENT</span>
+                            <span class="wallet-card-label">AUTOMATIC SETTLEMENT</span>
                             <h4 id="policyHeading">How reward &amp; penalty works</h4>
                         </div>
-                        <span class="demo-policy-contract">HRCSessionRewards</span>
+                        <span class="wallet-policy-contract">HRCSessionRewards</span>
                     </div>
-                    <div class="demo-policy-list">
-                        <div class="demo-policy-row stake-policy"><span>START SESSION</span><strong>Lock 2 HRC</strong><small>Approve again whenever allowance is below 2 HRC.</small></div>
-                        <div class="demo-policy-row reward-policy"><span>VALID / NO VIOLATION</span><strong>Return 2 + reward up to 6 HRC</strong><small>Base reward is 3 HRC at 30s. The bonus rises to 100% at 60s, then caps.</small></div>
-                        <div class="demo-policy-row penalty-policy"><span>VIOLATION CONFIRMED</span><strong>Forfeit the 2 HRC stake</strong><small>The stake goes to the configured penalty treasury.</small></div>
-                        <div class="demo-policy-row neutral-policy"><span>SENSOR FAULT / INCOMPLETE</span><strong>Return 2 HRC · no reward</strong><small>Sensor faults and incomplete data receive no reward or penalty.</small></div>
+                    <div class="wallet-policy-list">
+                        <div class="wallet-policy-row stake-policy"><span>START SESSION</span><strong>Lock 2 HRC</strong><small>Approve again whenever allowance is below 2 HRC.</small></div>
+                        <div class="wallet-policy-row reward-policy"><span>VALID / NO VIOLATION</span><strong>Return 2 + reward up to 6 HRC</strong><small>Base reward is 3 HRC at 30s. The bonus rises to 100% at 60s, then caps.</small></div>
+                        <div class="wallet-policy-row penalty-policy"><span>VIOLATION CONFIRMED</span><strong>Forfeit the 2 HRC stake</strong><small>The stake goes to the configured penalty treasury.</small></div>
+                        <div class="wallet-policy-row neutral-policy"><span>SENSOR FAULT / INCOMPLETE</span><strong>Return 2 HRC · no reward</strong><small>Sensor faults and incomplete data receive no reward or penalty.</small></div>
                     </div>
                 </section>
             </div>
 
-            <div class="demo-reward-scale" aria-label="Duration reward scale">
-                <div class="demo-reward-scale-heading"><strong>Duration reward</strong><span>Longer clear sessions earn more</span></div>
-                <div class="demo-reward-scale-track" aria-hidden="true"><span></span></div>
-                <div class="demo-reward-scale-points"><span><b>30s</b><small>3 HRC</small></span><span><b>45s</b><small>4.5 HRC</small></span><span><b>60s+</b><small>6 HRC max</small></span></div>
+            <div class="wallet-reward-scale" aria-label="Duration reward scale">
+                <div class="wallet-reward-scale-heading"><strong>Duration reward</strong><span>Longer clear sessions earn more</span></div>
+                <div class="wallet-reward-scale-track" aria-hidden="true"><span></span></div>
+                <div class="wallet-reward-scale-points"><span><b>30s</b><small>3 HRC</small></span><span><b>45s</b><small>4.5 HRC</small></span><span><b>60s+</b><small>6 HRC max</small></span></div>
             </div>
-            <div class="demo-settlement-note"><strong>End to receive the result</strong><span><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and 20 samples. Confirmed violations never receive the duration bonus.</span></div>
+            <div class="wallet-settlement-note"><strong>End to receive the result</strong><span><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and approximately 270 samples at 10 Hz. Confirmed violations never receive the duration bonus.</span></div>
 
-            <section class="demo-ledger" aria-labelledby="demoLedgerHeading">
-                <div class="demo-ledger-header"><h4 id="demoLedgerHeading">Recent wallet activity</h4><span>Amounts verified from contract events and token transfers</span></div>
-                <div id="demoRecentActivity" class="demo-recent-activity"><p>No wallet activity yet.</p></div>
+            <section class="wallet-ledger" aria-labelledby="walletLedgerHeading">
+                <div class="wallet-ledger-header"><h4 id="walletLedgerHeading">Recent wallet activity</h4><span>Amounts verified from contract events and token transfers</span></div>
+                <div id="walletRecentActivity" class="wallet-recent-activity"><p>No wallet activity yet.</p></div>
             </section>
-            <details class="demo-history" open>
-                <summary>My Sessions <span id="demoSessionCount">0</span></summary>
-                <div class="table-wrapper demo-session-table"><table><thead><tr><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT</th><th>STAKE RETURNED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="demoSessionsTableBody"><tr class="empty-row"><td colspan="8">No session started yet.</td></tr></tbody></table></div>
+            <details class="wallet-history" open>
+                <summary>My Sessions <span id="walletSessionCount">0</span></summary>
+                <div class="table-wrapper wallet-session-table"><table><thead><tr><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT</th><th>STAKE RETURNED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="walletSessionsTableBody"><tr class="empty-row"><td colspan="8">No session started yet.</td></tr></tbody></table></div>
             </details>
-            <details class="demo-history">
-                <summary>Transaction history <span id="demoTransactionCount">0</span></summary>
-                <div class="table-wrapper demo-transaction-table"><table><thead><tr><th>ACTION / AMOUNTS</th><th>AVAILABLE Δ</th><th>LOCKED Δ</th><th>BLOCK</th><th>TRANSACTION HASH</th></tr></thead><tbody id="demoTransactionsTableBody"><tr class="empty-row"><td colspan="5">No transactions recorded yet.</td></tr></tbody></table></div>
+            <details class="wallet-history">
+                <summary>Transaction history <span id="walletTransactionCount">0</span></summary>
+                <div class="table-wrapper wallet-transaction-table"><table><thead><tr><th>ACTION / AMOUNTS</th><th>AVAILABLE Δ</th><th>LOCKED Δ</th><th>BLOCK</th><th>TRANSACTION HASH</th></tr></thead><tbody id="walletTransactionsTableBody"><tr class="empty-row"><td colspan="5">No transactions recorded yet.</td></tr></tbody></table></div>
             </details>
         </section>
         </div>
@@ -335,7 +331,7 @@
             </div>
 
             <!-- HRC REWARD BALANCE -->
-            <div id="demoBalanceOverview" class="overview-card reward-overview-card" hidden>
+            <div id="walletBalanceOverview" class="overview-card reward-overview-card" hidden>
                 <div class="card-top">
                     <div class="card-icon reward-icon">◎</div>
                     <span class="card-label">HRC BALANCE</span>
@@ -641,7 +637,7 @@
 
                 <p id="walletAccessMessage" role="status">Admin dashboard is read-only. Contract actions are handled by the backend operator.</p>
                 <dl class="view-info wallet-identity">
-                    <div><dt>Selected account</dt><dd id="connectedWalletAddress">No demo account</dd></div>
+                    <div><dt>Connected wallet</dt><dd id="connectedWalletAddress">Not connected</dd></div>
                     <div><dt>Contract owner</dt><dd id="contractOwnerAddress">Backend operator</dd></div>
                     <div><dt>Role</dt><dd id="walletRole">READ ONLY</dd></div>
                     <div><dt>Network</dt><dd id="walletNetworkState">Local chain 31337</dd></div>
@@ -777,17 +773,6 @@
         </section>
         <section id="view-reports" class="sidebar-view panel" hidden aria-labelledby="reportsHeading">
             <div class="panel-header"><div><h3 id="reportsHeading">Reports</h3><p id="transactionsDescription">Safety and reward transactions recorded on the configured network.</p></div><button type="button" class="view-all-btn" data-refresh>Refresh Data</button></div>
-            <section id="demoAdminReport" class="panel admin-demo-report" hidden aria-labelledby="demoAdminHeading">
-                <div class="panel-header compact-panel-header"><div><span class="panel-kicker">READ-ONLY REPORT</span><h3 id="demoAdminHeading">Demo user overview</h3><p>Wallets, stakes and settlement results for user_1 and user_2.</p></div><button type="button" class="view-all-btn" data-demo-refresh>Refresh report</button></div>
-                <p id="demoAdminMessage" class="view-message" role="status" aria-live="polite">Loading both users...</p>
-                <div class="demo-admin-summary">
-                    <div><span>Total user balance</span><strong id="demoAdminBalance">-- HRC</strong></div>
-                    <div><span>Active / settled</span><strong id="demoAdminSessionCount">-- / --</strong></div>
-                    <div><span>Rewards / penalties</span><strong id="demoAdminPayout">-- / -- HRC</strong></div>
-                </div>
-                <div class="table-wrapper demo-admin-table"><table><thead><tr><th>USER</th><th>WALLET</th><th>BALANCE</th><th>ALLOWANCE</th><th>SESSIONS</th><th>LAST RESULT</th></tr></thead><tbody id="demoAdminTableBody"><tr class="empty-row"><td colspan="6">Loading both users...</td></tr></tbody></table></div>
-                <details class="demo-history"><summary>All user sessions <span id="demoAdminHistoryCount">0</span></summary><div class="table-wrapper demo-session-table"><table><thead><tr><th>USER</th><th>SESSION</th><th>STATE</th><th>OUTCOME</th><th>SETTLEMENT</th><th>STAKE RETURNED</th><th>REWARD / PENALTY</th><th>BLOCK</th><th>TRANSACTION / EVENT</th></tr></thead><tbody id="demoAdminSessionsTableBody"><tr class="empty-row"><td colspan="9">No sessions recorded yet.</td></tr></tbody></table></div></details>
-            </section>
             <p class="view-message" id="transactionsMessage" role="status" aria-live="polite"></p>
             <div class="table-wrapper"><table><thead><tr><th>TRANSACTION HASH</th><th>TYPE</th><th>BLOCK</th><th>EVENT ID</th><th>DEVICE</th><th>RISK</th><th>ETHERSCAN</th></tr></thead><tbody id="transactionsTableBody"></tbody></table></div>
         </section>
@@ -868,49 +853,8 @@
 </div>
 
 
-<!-- =========================================================
-     DEMO ACCOUNT PICKER
-========================================================== -->
-
-<div
-    id="demoAccountModal"
-    class="modal demo-account-modal hidden"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="demoAccountModalHeading"
->
-    <div class="modal-overlay" data-demo-account-close></div>
-    <div class="modal-content demo-account-modal-content">
-        <div class="modal-header">
-            <div>
-                <span class="modal-label">LOCAL DEMO ACCESS</span>
-                <h3 id="demoAccountModalHeading">Choose an account</h3>
-            </div>
-            <button id="demoAccountCloseBtn" class="modal-close" type="button" aria-label="Close account picker">×</button>
-        </div>
-        <form id="demoAccountForm">
-        <div class="demo-account-picker">
-            <p>Pick a fixed local account to view its own wallet and sessions.</p>
-            <label for="demoAccountSelect">Account</label>
-            <select id="demoAccountSelect" aria-label="Choose demo account" required>
-                <option value="admin">admin</option>
-                <option value="user_1">user_1</option>
-                <option value="user_2">user_2</option>
-            </select>
-            <p id="demoAccountMessage" role="status" aria-live="polite"></p>
-            <small id="demoAccountStatus" class="demo-account-status">Admin can view both users; a user account can submit wallet transactions.</small>
-        </div>
-        <div class="modal-actions demo-account-modal-actions">
-            <button id="demoAccountCancelBtn" class="modal-secondary" type="button">Cancel</button>
-            <button type="submit" id="demoLoginBtn" class="wallet-btn">Open account</button>
-        </div>
-        </form>
-    </div>
-</div>
-
-
     <script src="vendor/ethers.umd.min.js" defer></script>
-    <script src="wallet.js?v=session-end-5" defer></script>
-    <script src="app.js?v=session-end-5" defer></script>
+    <script src="wallet.js?v=metamask-6" defer></script>
+    <script src="app.js?v=metamask-6" defer></script>
 </body>
 </html>

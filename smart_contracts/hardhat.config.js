@@ -1,6 +1,11 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
-const { HARDHAT_MNEMONIC } = require("../demo_wallets");
+
+// Publicly known Hardhat development mnemonic. Local chain only: these accounts
+// are funded by the in-process chain and must never be used on a live network.
+const LOCAL_HARDHAT_MNEMONIC =
+    process.env.HRC_LOCAL_CHAIN_MNEMONIC ||
+    "test test test test test test test test test test test junk";
 
 const {
     SEPOLIA_RPC_URL,
@@ -15,7 +20,7 @@ const accounts = DEPLOYER_PRIVATE_KEY ? [DEPLOYER_PRIVATE_KEY] : [];
 const networks = {
     hardhat: {
         chainId: 31337,
-        accounts: { mnemonic: process.env.HRC_DEMO_MNEMONIC || HARDHAT_MNEMONIC }
+        accounts: { mnemonic: LOCAL_HARDHAT_MNEMONIC }
     },
     localhost: {
         url: process.env.HRC_HARDHAT_RPC_URL || "http://127.0.0.1:8545",

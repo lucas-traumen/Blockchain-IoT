@@ -7,8 +7,8 @@ const { ethers } = require("ethers");
 const { createApp } = require("../server");
 const { CustomerStore } = require("../customerStore");
 const { CustomerService } = require("../customerService");
-const { DemoWalletService } = require("../demoWalletService");
-const { DemoSessionStore } = require("../demoSessionStore");
+const { WalletService } = require("../walletService");
+const { JsonSessionStore } = require("../sessionStore");
 const { buildWalletFirstService } = require("../walletFirstService");
 const { LiveSessionService } = require("../liveSessionService");
 
@@ -18,27 +18,27 @@ async function fixture(t, { authMode = "siwe" } = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hrc-wallet-first-"));
     const store = new CustomerStore(path.join(directory, "customers.json"));
     const customerService = new CustomerService({ store, chainId: 31337, authMode, appOrigin: "http://localhost:8080" });
-    const demoService = new DemoWalletService({
-        users: new Map([["user_1", { userId: "user_1", label: "Demo user 1", role: "customer", wallet: null, walletAddress: "0x90F79bf6EB2c4f870365E785982E1f101E93b906" }]]),
-        store: new DemoSessionStore(path.join(directory, "demo-sessions.json")),
+    const walletService = new WalletService({
+        users: new Map(),
+        store: new JsonSessionStore(path.join(directory, "sessions.json")),
         config: { chainId: 31337 },
         tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode }
     });
     // Keep the wallet chain reads deterministic and offline for this test.
-    demoService.getWallet = async () => ({
+    walletService.getWallet = async () => ({
         walletAddress: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", chainId: 31337,
         rewardsAddress: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0", tokenAddress: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
         symbol: "HRC", decimals: 18, stakeAmount: "2.0", requiredAllowance: "2.0"
     });
-    const walletFirst = buildWalletFirstService(customerService, () => demoService);
+    const walletFirst = buildWalletFirstService(customerService, () => walletService);
     const endCalls = [];
     // Exercise the real End guards, ownership and duplicate handling at the HTTP seam.
     // Sensor/chain settlement itself is covered by liveSessionService.test.js.
-    const lifecycle = new LiveSessionService({ walletService: demoService, iot: {}, settler: {}, logger: () => {} });
+    const lifecycle = new LiveSessionService({ walletService: walletService, iot: {}, settler: {}, logger: () => {} });
     lifecycle.response = async (record, extra = {}) => ({ success: true, sessionId: record.sessionId, stage: record.stage, settled: record.stage === "SETTLED", ...extra });
     lifecycle.advanceEnd = async record => {
         endCalls.push(record.sessionId);
-        return lifecycle.response(demoService.store.update(record.sessionId, { stage: "SETTLED" }));
+        return lifecycle.response(walletService.store.update(record.sessionId, { stage: "SETTLED" }));
     };
     const liveService = {
         async wallet(userId) { return { success: true, userId }; },
@@ -46,15 +46,15 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         async session(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
         async start() { return { success: true, mode: "backend" }; },
         async confirmWalletStart(userId, sessionId, body) {
-            demoService.store.save({ sessionId, userId, source: "esp32", stage: "RUNNING", createdAt: new Date().toISOString() });
+            walletService.store.save({ sessionId, userId, source: "esp32", stage: "RUNNING", createdAt: new Date().toISOString() });
             return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash };
         },
         async reserveWalletStart(userId, sessionId) {
-            demoService.store.save({ sessionId, userId, source: "esp32", stage: "WALLET_INTENT", intentExpiresAt: Date.now() + 120000, createdAt: new Date().toISOString() });
+            walletService.store.save({ sessionId, userId, source: "esp32", stage: "WALLET_INTENT", intentExpiresAt: Date.now() + 120000, createdAt: new Date().toISOString() });
         },
         end: lifecycle.end.bind(lifecycle)
     };
-    const server = createApp({ service: {}, customerService, demoService, liveService, walletFirst, tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode } }).listen(0, "127.0.0.1");
+    const server = createApp({ service: {}, customerService, walletService, liveService, tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode } }).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => { server.close(); store.close(); fs.rmSync(directory, { recursive: true, force: true }); });
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -72,7 +72,7 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         const result = await call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
         return { wallet, ...result };
     };
-    return { call, login, demoService, endCalls };
+    return { call, login, walletService, endCalls };
 }
 
 test("wallet login issues one durable app token for both application and reward routes", async t => {
@@ -97,11 +97,11 @@ test("wallet login migrates legacy reward session ownership to the verified cano
     const f = await fixture(t);
     const wallet = ethers.Wallet.createRandom();
     const legacyUserId = "wallet_" + wallet.address.slice(2).toLowerCase();
-    f.demoService.store.save({ sessionId: "legacy-session", userId: legacyUserId, stage: "SETTLED", createdAt: new Date().toISOString() });
+    f.walletService.store.save({ sessionId: "legacy-session", userId: legacyUserId, stage: "SETTLED", createdAt: new Date().toISOString() });
     const challenge = await f.call("/api/auth/challenge", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337 } });
     const signature = await wallet.signMessage(challenge.body.message);
     const login = await f.call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
-    assert.equal(f.demoService.store.get("legacy-session").userId, login.body.user.userId);
+    assert.equal(f.walletService.store.get("legacy-session").userId, login.body.user.userId);
 });
 
 test("wallet-first Approve and Start prepare signatures; End executes the operator lifecycle", async t => {
@@ -149,7 +149,7 @@ test("a wallet cannot End another wallet's session", async t => {
     const second = await f.login();
     const start = await f.call("/api/me/sessions/start", { method: "POST", token: first.body.token, body: { sessionRef: "mine" } });
     // Record the session for the first wallet through the live session service path.
-    f.demoService.store.save({
+    f.walletService.store.save({
         sessionId: start.body.sessionId, userId: first.body.user.userId, sessionRef: "mine",
         createdAt: new Date().toISOString(), stage: "RUNNING"
     });
@@ -159,21 +159,10 @@ test("a wallet cannot End another wallet's session", async t => {
     assert.equal(f.endCalls.length, 0);
 });
 
-test("wallet mode keeps the same prepared-transaction flow", async t => {
-    const f = await fixture(t, { authMode: "wallet" });
-    const login = await f.login();
-    assert.equal(login.body.mode, "wallet");
-    const start = await f.call("/api/me/sessions/start", { method: "POST", token: login.body.token, body: { sessionRef: "legacy-mode" } });
-    assert.equal(start.status, 200);
-    assert.equal(start.body.mode, "wallet-first");
+test("fixed demo users and legacy wallet mode are unavailable", () => {
+    assert.throws(() => createApp({ service: {}, tokens: { HRC_APP_AUTH_MODE: "demo" } }), /must be siwe/);
+    assert.throws(() => createApp({ service: {}, tokens: { HRC_APP_AUTH_MODE: "wallet" } }), /must be siwe/);
 });
-
-test("the backend-managed demo users still broadcast their own transactions", async t => {
-    const f = await fixture(t);
-    assert.equal(f.demoService.isWalletFirst("user_1"), false);
-    assert.equal(f.demoService.isWalletFirst("wallet_deadbeef"), false);
-});
-
 
 test("wallet-first End rejects user-chosen outcomes and rewards", async t => {
     const f = await fixture(t);

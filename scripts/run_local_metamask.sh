@@ -2,14 +2,19 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME_ROOT="$ROOT_DIR/.runtime/local-demo"
+RUNTIME_ROOT="$ROOT_DIR/.runtime/local-metamask"
 RUN_ID="$(date -u +%Y%m%d%H%M%S)-$$"
 RUN_DIR="$RUNTIME_ROOT/$RUN_ID"
 DEPLOYMENT_DIR="$RUN_DIR/deployments"
 LOG_DIR="$RUN_DIR/logs"
 IOT_DATA_DIR="$RUN_DIR/iot-data"
-RPC_URL="http://127.0.0.1:8545"
-API_URL="http://127.0.0.1:3000"
+RPC_PORT="${HRC_RPC_HOST_PORT:-8545}"
+API_PORT="${HRC_BLOCKCHAIN_API_HOST_PORT:-3000}"
+RPC_URL="http://127.0.0.1:$RPC_PORT"
+API_URL="http://127.0.0.1:$API_PORT"
+UI_PORT="${HRC_DASHBOARD_HOST_PORT:-8081}"
+APP_ORIGIN="http://localhost:$UI_PORT"
+APP_AUTH_MODE="${HRC_APP_AUTH_MODE:-siwe}"
 BLOCKCHAIN_ONLY=false
 SMOKE=false
 SKIP_INSTALL=false
@@ -19,7 +24,7 @@ API_PID=""
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/run_local_demo.sh [options]
+Usage: ./scripts/run_local_metamask.sh [options]
 
 Starts a fresh Hardhat chain, deploys both contracts and runs blockchain_api.
 By default it also starts MQTT, IoT/AI and the dashboard with Docker Compose.
@@ -41,6 +46,11 @@ for argument in "$@"; do
     esac
 done
 
+if [[ "$APP_AUTH_MODE" != "siwe" ]]; then
+    echo "This launcher only supports MetaMask SIWE authentication (HRC_APP_AUTH_MODE=siwe)" >&2
+    exit 2
+fi
+
 for command_name in node npm curl; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Missing required command: $command_name" >&2
@@ -49,12 +59,27 @@ for command_name in node npm curl; do
 done
 if [[ "$BLOCKCHAIN_ONLY" == false ]]; then
     if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-        echo "Docker Compose is required for the full demo. Use --blockchain-only to run just the chain and API." >&2
+        echo "Docker Compose is required for the full local stack. Use --blockchain-only to run just the chain and API." >&2
         exit 1
     fi
 fi
 
+# Refuse occupied ports before deploying: an existing chain must never receive
+# deployments intended for a new run.
+node - "$RPC_PORT" "$API_PORT" "$BLOCKCHAIN_ONLY" "$UI_PORT" "${HRC_API_HOST_PORT:-8002}" "${HRC_MQTT_HOST_PORT:-1886}" <<'NODE'
+const net = require("node:net");
+const [rpc, api, blockchainOnly, ui, iot, mqtt] = process.argv.slice(2);
+const ports = blockchainOnly === "true" ? [rpc, api] : [rpc, api, ui, iot, mqtt];
+Promise.all(ports.map(value => new Promise((resolve, reject) => {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return reject(new Error(`Invalid port: ${value}`));
+    const server = net.createServer();
+    server.once("error", () => reject(new Error(`Port ${port} is occupied; preserve the existing stack or choose an unused port.`)));
+    server.listen(port, "0.0.0.0", () => server.close(resolve));
+}))).catch(error => { console.error(error.message); process.exitCode = 1; });
+NODE
 mkdir -p "$DEPLOYMENT_DIR" "$LOG_DIR" "$IOT_DATA_DIR"
+chmod 0700 "$RUN_DIR"
 chmod 0777 "$IOT_DATA_DIR"
 ln -sfn "$RUN_ID" "$RUNTIME_ROOT/latest"
 
@@ -97,13 +122,31 @@ if [[ ! -x "$ROOT_DIR/smart_contracts/node_modules/.bin/hardhat" || ! -d "$ROOT_
     exit 1
 fi
 
-DEMO_MNEMONIC="${HRC_DEMO_MNEMONIC:-test test test test test test test test test test test junk}"
+LOCAL_MNEMONIC="${HRC_LOCAL_CHAIN_MNEMONIC:-test test test test test test test test test test test junk}"
+
+HRC_LOCAL_TEST_WALLET_ADDRESS="$(cd "$ROOT_DIR"; HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node <<'NODE'
+const fs = require("node:fs");
+const { ethers } = require("./blockchain_api/node_modules/ethers");
+const wallet = ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44'/60'/0'/0/2");
+console.log(wallet.address);
+NODE
+)"
+export HRC_LOCAL_TEST_WALLET_ADDRESS
+HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node - "$RUN_DIR/metamask-local-import.txt" <<'NODE'
+const fs = require("node:fs");
+const { ethers } = require("./blockchain_api/node_modules/ethers");
+const wallet = ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44'/60'/0'/0/2");
+fs.writeFileSync(process.argv[2], `Local Hardhat only (31337) - never use for real funds.\nAddress: ${wallet.address}\nPrivate key for MetaMask import: ${wallet.privateKey}\n`, { mode: 0o600 });
+NODE
+chmod 0600 "$RUN_DIR/metamask-local-import.txt"
+echo "Local MetaMask test wallet: $HRC_LOCAL_TEST_WALLET_ADDRESS (20 HRC, funded Hardhat ETH)"
+echo "Import instructions/key file: $RUN_DIR/metamask-local-import.txt"
 
 echo "Starting a fresh Hardhat chain..."
 (
     cd "$ROOT_DIR/smart_contracts"
-    export HRC_DEMO_MNEMONIC="$DEMO_MNEMONIC"
-    exec npx hardhat node --hostname 127.0.0.1 >"$LOG_DIR/hardhat.log" 2>&1
+    export HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC"
+    exec npx hardhat node --hostname 127.0.0.1 --port "$RPC_PORT" >"$LOG_DIR/hardhat.log" 2>&1
 ) &
 HARDHAT_PID=$!
 
@@ -129,7 +172,7 @@ wait_for_rpc
 echo "Deploying safety and reward contracts..."
 (
     cd "$ROOT_DIR/smart_contracts"
-    export HRC_DEMO_MNEMONIC="$DEMO_MNEMONIC"
+    export HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC"
     export HRC_HARDHAT_RPC_URL="$RPC_URL"
     export HRC_DEPLOYMENT_DIR="$DEPLOYMENT_DIR"
     npx hardhat run scripts/deploy.js --network localhost
@@ -144,9 +187,9 @@ fi
 
 mapfile -t WALLET_VALUES < <(
     cd "$ROOT_DIR"
-    HRC_DEMO_MNEMONIC="$DEMO_MNEMONIC" node <<'NODE'
+    HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node <<'NODE'
 const { ethers } = require("./blockchain_api/node_modules/ethers");
-const mnemonic = process.env.HRC_DEMO_MNEMONIC;
+const mnemonic = process.env.HRC_LOCAL_CHAIN_MNEMONIC;
 const derive = index => ethers.HDNodeWallet.fromPhrase(
     mnemonic, undefined, `m/44'/60'/0'/0/${index}`
 );
@@ -155,18 +198,18 @@ console.log(derive(2).address);
 NODE
 )
 OPERATOR_PRIVATE_KEY="${WALLET_VALUES[0]}"
-DEMO_BENEFICIARY="${WALLET_VALUES[1]}"
+LOCAL_BENEFICIARY="${WALLET_VALUES[1]}"
 INGEST_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
-ADMIN_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
 
 cat >"$RUN_DIR/run.json" <<EOF
 {
   "runId": "$RUN_ID",
   "network": "localhost",
   "chainId": 31337,
+  "appAuthMode": "$APP_AUTH_MODE",
   "rpcUrl": "$RPC_URL",
   "blockchainApiUrl": "$API_URL",
-  "demoBeneficiary": "$DEMO_BENEFICIARY"
+  "localTestWallet": "$LOCAL_BENEFICIARY"
 }
 EOF
 
@@ -181,19 +224,21 @@ echo "Starting blockchain API..."
     export HRC_REWARD_ADDRESS=""
     export HRC_REWARD_TOKEN_ADDRESS=""
     export PRIVATE_KEY="$OPERATOR_PRIVATE_KEY"
-    export PORT=3000
+    export PORT="$API_PORT"
     export HRC_INGEST_API_TOKEN="$INGEST_TOKEN"
-    export HRC_ADMIN_API_TOKEN="$ADMIN_TOKEN"
-    export HRC_DASHBOARD_BENEFICIARY="$DEMO_BENEFICIARY"
-    export HRC_DEMO_MNEMONIC="$DEMO_MNEMONIC"
+    export HRC_DASHBOARD_BENEFICIARY="$LOCAL_BENEFICIARY"
+    unset HRC_LOCAL_CHAIN_MNEMONIC
     export HRC_EVENT_STORE_PATH="$RUN_DIR/events"
-    export HRC_DEMO_SESSION_STORE_PATH="$RUN_DIR/demo-sessions.json"
+    export HRC_SESSION_STORE_PATH="$RUN_DIR/wallet-sessions.json"
     export HRC_CUSTOMER_STORE_PATH="$RUN_DIR/customers.json"
-    export HRC_IOT_API_URL=http://127.0.0.1:8001
-    export HRC_APP_AUTH_MODE=demo
+    export HRC_APP_STORE=sqlite
+    export HRC_APP_DB_PATH="$RUN_DIR/customers.db"
+    export HRC_APP_SESSION_DB_PATH="$RUN_DIR/wallet-sessions.db"
+    export HRC_IOT_API_URL="http://127.0.0.1:${HRC_API_HOST_PORT:-8002}"
+    export HRC_APP_AUTH_MODE="$APP_AUTH_MODE"
     export HRC_APP_CHAIN_ID=31337
-    export HRC_APP_ORIGIN=http://localhost:8080
-    export HRC_CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080
+    export HRC_APP_ORIGIN="$APP_ORIGIN"
+    export HRC_CORS_ORIGINS="$APP_ORIGIN,http://127.0.0.1:$UI_PORT"
     exec node server.js >"$LOG_DIR/blockchain-api.log" 2>&1
 ) &
 API_PID=$!
@@ -238,7 +283,7 @@ wait_for_dashboard_chain_proxy() {
         echo "Last proxy response:" >&2
         sed -n '1,12p' "$output_file" >&2
     fi
-    echo "Stop any older stack with 'docker compose down', then run this script again." >&2
+    echo "Check this run's dashboard proxy configuration and API connectivity." >&2
     docker compose --env-file "$RUN_DIR/compose.env" logs --no-color --tail 40 dashboard >&2 || true
     return 1
 }
@@ -256,29 +301,49 @@ if [[ "$SMOKE" == true ]]; then
         cat "$RUN_DIR/safety-event.json" >&2
         exit 1
     fi
-    curl -fsS -X POST "$API_URL/api/demo/login" \
-        -H 'Content-Type: application/json' --data '{"userId":"user_1"}' \
-        >"$RUN_DIR/demo-login.json"
-    DEMO_TOKEN="$(node -e 'const x=require(process.argv[1]); if(!x.success||!x.token) process.exit(1); process.stdout.write(x.token)' "$RUN_DIR/demo-login.json")"
-    curl -fsS "$API_URL/api/me/wallet" -H "Authorization: Bearer $DEMO_TOKEN" \
-        >"$RUN_DIR/demo-wallet.json"
-    node - "$RUN_DIR/safety-event.json" "$RUN_DIR/demo-wallet.json" <<'NODE'
+    cd "$ROOT_DIR"
+    HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node - "$API_URL" "$RUN_DIR/wallet.json" <<'NODE'
+const fs = require("node:fs");
+const { ethers } = require("./blockchain_api/node_modules/ethers");
+async function main() {
+    const [api, output] = process.argv.slice(2);
+    const wallet = ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44'/60'/0'/0/2");
+    const challengeResponse = await fetch(`${api}/api/auth/challenge`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337 })
+    });
+    const challenge = await challengeResponse.json();
+    const signature = await wallet.signMessage(challenge.message);
+    const loginResponse = await fetch(`${api}/api/auth/wallet`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337, message: challenge.message, signature })
+    });
+    const login = await loginResponse.json();
+    if (!loginResponse.ok || !login.success || !login.token) throw new Error(login.error || "SIWE smoke login failed");
+    const walletResponse = await fetch(`${api}/api/me/wallet`, { headers: { authorization: `Bearer ${login.token}` } });
+    const account = await walletResponse.json();
+    if (!walletResponse.ok || !account.success) throw new Error(account.error || "SIWE wallet read failed");
+    fs.writeFileSync(output, JSON.stringify({ success: true, walletAddress: wallet.address, balance: account.balance }));
+}
+main().catch(error => { console.error(error.message); process.exit(1); });
+NODE
+    node - "$RUN_DIR/safety-event.json" "$RUN_DIR/wallet.json" <<'NODE'
 const fs = require("node:fs");
 for (const file of process.argv.slice(2)) {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     if (value.success !== true) throw new Error(`Smoke response failed: ${file}`);
 }
 NODE
-    echo "Smoke passed: Hardhat 31337, both deployments, API readback and one safety transaction."
+    echo "Smoke passed: Hardhat 31337, SIWE wallet login, wallet readback and one safety transaction."
     exit 0
 fi
 
 if [[ "$BLOCKCHAIN_ONLY" == true ]]; then
-    echo "Blockchain demo is ready: $API_URL"
+    echo "Blockchain stack is ready: $API_URL"
     echo "Press Ctrl+C to stop."
 else
     cat >"$RUN_DIR/compose.env" <<EOF
-HRC_COMPOSE_PROJECT_NAME=hrcdemo-$RUN_ID
+HRC_COMPOSE_PROJECT_NAME=hrcwallet-$RUN_ID
 HRC_IOT_DATA_MOUNT=$IOT_DATA_DIR
 HRC_IMAGE=${HRC_IMAGE:-blockchain-hrc:ai}
 HRC_RUNTIME_TARGET=${HRC_RUNTIME_TARGET:-ai}
@@ -286,14 +351,14 @@ HRC_MODEL_TYPE=lstm
 HRC_MODEL_SUBDIR=${HRC_MODEL_SUBDIR:-lstm-v1}
 HRC_SOURCE_MODE=${HRC_SOURCE_MODE:-esp32}
 HRC_DEVICE_ID=${HRC_DEVICE_ID:-esp32_01}
-HRC_MQTT_HOST_PORT=${HRC_MQTT_HOST_PORT:-1885}
-HRC_API_HOST_PORT=${HRC_API_HOST_PORT:-8001}
-HRC_DASHBOARD_HOST_PORT=${HRC_DASHBOARD_HOST_PORT:-8080}
-HRC_REWARD_API_URL=http://host.docker.internal:3000
+HRC_MQTT_HOST_PORT=${HRC_MQTT_HOST_PORT:-1886}
+HRC_API_HOST_PORT=${HRC_API_HOST_PORT:-8002}
+HRC_DASHBOARD_HOST_PORT=$UI_PORT
+HRC_REWARD_API_URL=http://host.docker.internal:$API_PORT
 HRC_REWARD_INGEST_TOKEN=$INGEST_TOKEN
 HRC_REWARD_AUTO_START=false
 HRC_REWARD_AUTO_SETTLE=false
-HRC_CHAIN_API_URL=http://host.docker.internal:3000
+HRC_CHAIN_API_URL=http://host.docker.internal:$API_PORT
 HRC_CHAIN_INGEST_TOKEN=$INGEST_TOKEN
 HRC_CHAIN_AUTO_SUBMIT=true
 HRC_VIOLATION_CONFIRMATION=true
@@ -302,9 +367,8 @@ EOF
     echo "Starting MQTT, IoT/AI and dashboard..."
     COMPOSE_STARTED=true
     docker compose --env-file "$RUN_DIR/compose.env" up -d --build --force-recreate --wait mqtt iot_backend dashboard
-    DASHBOARD_PORT="${HRC_DASHBOARD_HOST_PORT:-8080}"
-    wait_for_dashboard_chain_proxy "$DASHBOARD_PORT"
-    echo "Demo is ready: http://127.0.0.1:$DASHBOARD_PORT/#rewards"
+    wait_for_dashboard_chain_proxy "$UI_PORT"
+    echo "MetaMask stack is ready: $APP_ORIGIN/"
     echo "Press Ctrl+C to stop."
 fi
 

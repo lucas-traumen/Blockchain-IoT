@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 const require = createRequire(new URL('../blockchain_api/package.json', import.meta.url));
 const { ethers } = require('ethers');
-const base = process.env.HRC_DASHBOARD_URL || 'http://localhost:8080/';
+const base = process.env.HRC_DASHBOARD_URL || 'http://localhost:8081/';
 const configResponse = await fetch(new URL('/api/chain/api/config', base));
 assert.equal(configResponse.status, 200, 'dashboard proxy returns config');
 const config = await configResponse.json();
-assert.ok(['wallet', 'siwe'].includes(config.app?.authMode), 'wallet authentication is enabled');
+assert.equal(config.app?.authMode, 'siwe', 'SIWE is the only authentication mode');
 assert.equal(config.chainId, 31337, 'this verifier uses only local Hardhat');
 const wallet = ethers.Wallet.createRandom();
 const provider = new ethers.JsonRpcProvider(config.rpcUrl, undefined, { cacheTimeout: -1 });
@@ -160,7 +160,7 @@ try {
         await navigate('missing', mobile);
         await click('#walletFirstConnectBtn');
         await wait('/MetaMask is not available/.test(document.getElementById("walletFirstStatus").textContent)');
-        assert.equal(await evaluate('document.getElementById("demoAccountButtonLabel").textContent'), 'Connect wallet');
+        assert.equal(await evaluate('document.getElementById("walletAccountButtonLabel").textContent'), 'Connect wallet');
         assert.equal(await evaluate('document.getElementById("walletFirstStatus").getBoundingClientRect().height > 0'), true);
         await check('missing-wallet-' + (mobile ? 'mobile' : 'desktop'));
     }
@@ -168,7 +168,7 @@ try {
         await navigate(scenario);
         await click('#walletFirstConnectBtn');
         if (scenario === 'wrong-network') {
-            await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("demoWalletPanel").hidden');
+            await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("walletPanel").hidden');
             assert.ok((await evaluate('window.__walletCalls')).includes('wallet_addEthereumChain'));
             await check('wrong-network-add-chain');
         } else {
@@ -180,35 +180,35 @@ try {
         if (scenario === 'cancel-sign') {
             await evaluate('window.__walletScenario = "success"');
             await click('#walletFirstConnectBtn');
-            await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("demoWalletPanel").hidden');
+            await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("walletPanel").hidden');
             await check('retry-sign-in');
         }
     }
     await navigate('late', true);
     await wait('/not available/.test(document.getElementById("walletFirstStatus").textContent)');
     await evaluate('window.__installTestWallet()');
-    await click('#demoAccountTrigger');
-    await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("demoWalletPanel").hidden');
+    await click('#walletAccountTrigger');
+    await wait('document.getElementById("walletFirstConnectBtn").hidden && !document.getElementById("walletPanel").hidden');
     assert.equal(await evaluate('window.hrcWallet.state.account'), wallet.address);
     assert.equal(await evaluate('document.getElementById("accountTriggerLabel").textContent'), 'SIGNED IN');
     assert.ok((await evaluate('window.__walletCalls')).includes('personal_sign'));
     await check('late-wallet-siwe-mobile');
     // Model a running session only for timer rendering/layout. No stake or End
     // transaction is submitted by this connection verifier.
-    await evaluate(`demoSessions = [{sessionId: 'timer-ui-fixture', stage: 'RUNNING', settled: false,
+    await evaluate(`walletSessions = [{sessionId: 'timer-ui-fixture', stage: 'RUNNING', settled: false,
         sampleCount: 1095, stakedAmount: '2', iotSession: {started_at: new Date(Date.now() - 109000).toISOString()}}];
-        renderDemoWallet(); document.getElementById('demoSessionTimer').scrollIntoView({block: 'center'});`);
-    await wait("document.getElementById('demoSessionTimer').textContent === '00:01:50'");
-    assert.equal(await evaluate("document.getElementById('demoEndBtn').hidden"), false);
-    assert.equal(await evaluate("document.getElementById('demoStartBtn').disabled"), true);
+        renderWallet(); document.getElementById('walletSessionTimer').scrollIntoView({block: 'center'});`);
+    await wait("document.getElementById('walletSessionTimer').textContent === '00:01:50'");
+    assert.equal(await evaluate("document.getElementById('walletEndBtn').hidden"), false);
+    assert.equal(await evaluate("document.getElementById('walletStartBtn').disabled"), true);
     await check('session-timer-mobile');
     await call('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false});
     await check('session-timer-desktop');
-    await evaluate(`demoSessions[0].stage = 'SETTLEMENT_PENDING';
-        demoSessions[0].iotSession.ended_at = new Date(Date.parse(demoSessions[0].iotSession.started_at) + 110000).toISOString();
-        renderDemoWallet();`);
-    assert.equal(await evaluate("document.getElementById('demoSessionTimer').textContent"), '00:01:50');
-    assert.match(await evaluate("document.getElementById('demoSessionTimerDetail').textContent"), /Stopped/);
+    await evaluate(`walletSessions[0].stage = 'SETTLEMENT_PENDING';
+        walletSessions[0].iotSession.ended_at = new Date(Date.parse(walletSessions[0].iotSession.started_at) + 110000).toISOString();
+        renderWallet();`);
+    assert.equal(await evaluate("document.getElementById('walletSessionTimer').textContent"), '00:01:50');
+    assert.match(await evaluate("document.getElementById('walletSessionTimerDetail').textContent"), /Stopped/);
     assert.deepEqual(exceptions, [], 'no JavaScript exceptions');
     await writeFile(join(evidence, 'verification.json'), JSON.stringify({ scenarios: results, authMode: config.app.authMode, chainId: config.chainId, walletAddress: wallet.address, broadcasts: 0, exceptions }, null, 2));
     console.log('Evidence: ' + evidence);

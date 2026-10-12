@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ethers } = require('ethers');
-const { DemoWalletService } = require('../demoWalletService');
-const { DemoSessionStore } = require('../demoSessionStore');
+const { WalletService } = require('../walletService');
+const { JsonSessionStore } = require('../sessionStore');
 const { LiveSessionService } = require('../liveSessionService');
 const { ApiError } = require('../eventPayload');
 
@@ -34,7 +34,7 @@ function fixture(t) {
     const state = { now: Date.parse('2026-10-11T10:00:00Z'), balances: new Map([[USER1,unit('20')],[USER2,unit('20')]]), allowances: new Map([[USER1,unit('2')],[USER2,unit('2')]]),
         tuples: new Map(), logs: [], stakes: 0, stops: 0, sensorStarts: 0, block: 1, settlementCalls: [], ready: true, busy: null,
         failStake: null, failSettlement: false, loseSensorStart: false, outcome: 'VALID_NO_VIOLATION', sensors: new Map() };
-    const users = new Map([['user_1', USER1], ['user_2', USER2]].map(([userId, address]) => [userId, { userId, walletAddress: address, wallet: { address }, role: 'customer' }]));
+    const users = new Map([['user_1', USER1], ['user_2', USER2]].map(([userId, address]) => [userId, { userId, walletAddress: address, wallet: { address }, role: 'customer', walletFirst: true }]));
     const provider = { getNetwork: async () => ({ chainId: 31337 }), getBalance: async () => unit('1'), getCode: async () => '0x1234',
         getTransaction: async hash => state.walletTransactions?.[hash] || null,
         getTransactionReceipt: async hash => state.walletReceipts?.[hash] || null,
@@ -53,7 +53,7 @@ function fixture(t) {
                 emit('SessionStarted',[key,wallet.address,unit('2'),Math.floor(state.now/1000)]); return {blockNumber:state.block};
             }};
         } }) };
-    const walletService = new DemoWalletService({ provider, token, rewards, users, store: new DemoSessionStore(storePath), config: { tokenAddress: TOKEN, rewardAddress: REWARDS, chainId: 31337, deploymentBlock: 1 } });
+    const walletService = new WalletService({ provider, token, rewards, users, store: new JsonSessionStore(storePath), config: { tokenAddress: TOKEN, rewardAddress: REWARDS, chainId: 31337, deploymentBlock: 1 } });
     walletService.rewardInterface = rewardAbi;
     users.get('user_1').walletFirst = true;
     const iot = {
@@ -85,15 +85,40 @@ function fixture(t) {
         }};
     const options={walletService,iot,settler,clock:()=>state.now,logger:()=>{}};
     const live = new LiveSessionService(options);
-    return {live,state,walletService,iot,options,storePath};
+    async function stakeWallet(userId, sessionId, reserve = true) {
+        const user = walletService._user(userId);
+        if (reserve) await live.reserveWalletStart(userId, sessionId);
+        const key = ethers.id(sessionId);
+        if (!state.tuples.get(key)?.started) {
+            // Simulated external wallet submits the transaction; the API only reads the receipt.
+            const transaction = await rewards.connect(user.wallet).startSession(key);
+            await transaction.wait();
+            state.walletTransactions ||= {}; state.walletReceipts ||= {};
+            state.walletTransactions[transaction.hash] = { chainId: 31337, from: user.walletAddress, to: REWARDS,
+                value: 0n, data: rewardAbi.encodeFunctionData('startSession', [key]) };
+            state.walletReceipts[transaction.hash] = { hash: transaction.hash, status: 1, from: user.walletAddress, to: REWARDS,
+                blockNumber: state.block, logs: [state.logs.at(-1)] };
+        }
+        const transactionHash = state.logs.find(log => log.topics[1] === key)?.transactionHash;
+        return transactionHash;
+    }
+    async function start(userId, body) {
+        live.validateBody(body, ['sessionRef']);
+        const id = walletService._sessionId(userId, body);
+        const previous = walletService.store.get(id);
+        if (previous && ['RUNNING', 'SETTLED'].includes(previous.stage)) return live.response(previous, { duplicate: true });
+        const hash = await stakeWallet(userId, id);
+        return live.confirmWalletStart(userId, id, { transactionHash: hash });
+    }
+    return {live,state,walletService,iot,options,storePath,start,stakeWallet};
 }
 
 test('Start/End bind one sensor session to the user, and concurrent retries do not stake or settle twice', async t => {
     const f=fixture(t);
-    const starts=await Promise.all([f.live.start('user_1',{sessionRef:'same'}),f.live.start('user_1',{sessionRef:'same'})]);
+    const starts=await Promise.all([f.start('user_1',{sessionRef:'same'}),f.start('user_1',{sessionRef:'same'})]);
     assert.equal(f.state.sensorStarts,1);assert.equal(f.state.stakes,1);assert.equal(starts[0].stage,'RUNNING');assert.equal(starts[1].duplicate,true);
     assert.equal((await f.live.wallet('user_1')).lockedBalance,'2.0');
-    await assert.rejects(f.live.start('user_2',{sessionRef:'other'}),{code:'DEVICE_BUSY'});assert.equal(f.state.stakes,1);
+    await assert.rejects(f.start('user_2',{sessionRef:'other'}),{code:'DEVICE_BUSY'});assert.equal(f.state.stakes,1);
     f.state.now+=30000;
     const ended=await Promise.all([f.live.end('user_1',starts[0].sessionId),f.live.end('user_1',starts[0].sessionId)]);
     assert.equal(ended[0].stage,'SETTLED');assert.equal(ended[1].duplicate,true);assert.equal(f.state.stops,1);assert.equal(f.state.settlementCalls.length,1);
@@ -107,8 +132,8 @@ test('wallet-first signed start is reconciled into the sensor session store', as
     const f = fixture(t);
     const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'wallet-confirm' });
     const key = ethers.id(sessionId);
-    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
     await f.live.reserveWalletStart('user_1', sessionId);
+    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
     const transactionHash = ethers.id('wallet-first-start');
     const event = rewardAbi.encodeEventLog(rewardAbi.getEvent('SessionStarted'), [key, USER1, unit('2'), 100]);
     f.state.walletTransactions = { [transactionHash]: {
@@ -131,8 +156,8 @@ test('wallet start keeps a pending receipt reserved and opens the sensor only af
     const f = fixture(t);
     const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'pending-wallet-confirm' });
     const key = ethers.id(sessionId);
-    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
     await f.live.reserveWalletStart('user_1', sessionId);
+    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
     const transactionHash = ethers.id('pending-wallet-start');
     const event = rewardAbi.encodeEventLog(rewardAbi.getEvent('SessionStarted'), [key, USER1, unit('2'), 100]);
     f.state.walletTransactions = { [transactionHash]: {
@@ -150,8 +175,8 @@ test('wallet start keeps a pending receipt reserved and opens the sensor only af
         hash: transactionHash, status: 1, from: USER1, to: REWARDS, blockNumber: 3,
         logs: [{ ...event, address: REWARDS }]
     };
-    const confirmed = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash });
-    assert.equal(confirmed.stage, 'RUNNING');
+    await f.live.drain();
+    assert.equal(f.walletService.store.get(sessionId).stage, 'RUNNING');
     assert.equal(f.state.sensorStarts, 1);
 });
 
@@ -207,33 +232,28 @@ test('unsubmitted wallet intents expire and release the shared sensor lease', as
 
 test('offline or busy sensor is rejected before moving any HRC', async t => {
     const f=fixture(t);f.state.ready=false;
-    await assert.rejects(f.live.start('user_1',{sessionRef:'offline'}),{code:'SENSOR_UNAVAILABLE'});
+    await assert.rejects(f.start('user_1',{sessionRef:'offline'}),{code:'SENSOR_UNAVAILABLE'});
     f.state.ready=true;f.state.busy='collection-session';
-    await assert.rejects(f.live.start('user_1',{sessionRef:'busy'}),{code:'DEVICE_BUSY'});
+    await assert.rejects(f.start('user_1',{sessionRef:'busy'}),{code:'DEVICE_BUSY'});
     assert.equal(f.state.stakes,0);assert.equal(f.state.sensorStarts,0);assert.equal(f.walletService.store.list().length,0);
 });
 
-test('a definite stake preparation failure closes the opened sensor session without charging the user', async t => {
-    const f=fixture(t);f.state.failStake='TRANSACTION_PREPARE_FAILED';
-    const result=await f.live.start('user_1',{sessionRef:'no-charge'});
-    assert.equal(result.stage,'START_FAILED');assert.equal(result.started,false);assert.equal(f.state.stops,1);assert.equal(f.state.stakes,0);
-    assert.equal((await f.live.wallet('user_1')).balance,'20.0');
-});
-
-test('a lost sensor start response resumes the same sensor reference instead of opening or staking another session', async t => {
-    const f=fixture(t);f.state.loseSensorStart=true;
-    const first=await f.live.start('user_1',{sessionRef:'lost'});assert.equal(first.pending,true);assert.equal(f.state.stakes,0);
-    const resumed=await f.live.start('user_1',{sessionRef:'lost'});
-    assert.equal(resumed.stage,'RUNNING');assert.equal(f.state.sensorStarts,1);assert.equal(f.state.stakes,1);
+test('sensor startup failure after a confirmed wallet stake refunds INCOMPLETE without opening another session', async t => {
+    const f = fixture(t); f.state.loseSensorStart = true;
+    const result = await f.start('user_1', { sessionRef: 'lost-sensor' });
+    assert.equal(result.stage, 'SETTLED');
+    assert.equal(result.outcomeCode, 3);
+    assert.equal(f.state.stakes, 1); assert.equal(f.state.sensorStarts, 1);
+    assert.equal((await f.live.wallet('user_1')).balance, '20.0');
 });
 
 test('operator failure and service recreation retain frozen outcome/evidence and retry one settlement', async t => {
-    const f=fixture(t);const started=await f.live.start('user_1',{sessionRef:'restart'});f.state.now+=30000;f.state.failSettlement=true;
+    const f=fixture(t);const started=await f.start('user_1',{sessionRef:'restart'});f.state.now+=30000;f.state.failSettlement=true;
     const pending=await f.live.end('user_1',started.sessionId);assert.equal(pending.stage,'SETTLEMENT_PENDING');
     const payload=f.state.settlementCalls[0];
     assert.equal(payload.endedAt, Math.floor(f.state.now / 1000));
     assert.equal(payload.endedAt, Math.floor(Date.parse(f.walletService.store.get(started.sessionId).evidence.session.ended_at) / 1000));
-    f.walletService.store=new DemoSessionStore(f.storePath);f.state.outcome='VIOLATION_CONFIRMED';f.state.now+=31000;
+    f.walletService.store=new JsonSessionStore(f.storePath);f.state.outcome='VIOLATION_CONFIRMED';f.state.now+=31000;
     const resumed=new LiveSessionService({...f.options,walletService:f.walletService});await resumed.drain();
     assert.deepEqual(f.state.settlementCalls[1],payload);assert.equal((await resumed.session('user_1',started.sessionId)).session.stage,'SETTLED');
     assert.equal(f.state.logs.filter(log => log.topics[0] === ethers.id('SessionSettled(bytes32,address,uint8,uint8,uint256,uint256,uint256,bytes32,uint256,uint256)')).length,1);
@@ -241,7 +261,9 @@ test('operator failure and service recreation retain frozen outcome/evidence and
 });
 
 test('old unlinked stakes are returned as INCOMPLETE, with recovery provenance and idempotent restart', async t => {
-    const f=fixture(t);await f.walletService.startSession('user_1',{sessionRef:'old'});
+    const f=fixture(t); const id=f.walletService._sessionId('user_1',{sessionRef:'old'});
+    await f.stakeWallet('user_1',id,false);
+    f.walletService.store.save({sessionId:id,userId:'user_1',createdAt:new Date(f.state.now).toISOString()});
     assert.equal((await f.walletService.getWallet('user_1')).balance,'18.0');
     await f.live.drain();await f.live.drain();
     const row=(await f.live.sessions('user_1')).sessions[0];
@@ -251,9 +273,9 @@ test('old unlinked stakes are returned as INCOMPLETE, with recovery provenance a
 });
 
 test('users cannot End another user session or supply outcome, beneficiary or reward amounts', async t => {
-    const f=fixture(t);const started=await f.live.start('user_1',{sessionRef:'owned'});
+    const f=fixture(t);const started=await f.start('user_1',{sessionRef:'owned'});
     await assert.rejects(f.live.end('user_2',started.sessionId),{code:'SESSION_OWNER_MISMATCH'});
-    assert.throws(()=>f.live.start('user_1',{sessionRef:'tamper',outcome:'VALID_NO_VIOLATION'}),{code:'INVALID_PAYLOAD'});
+    await assert.rejects(f.start('user_1',{sessionRef:'tamper',outcome:'VALID_NO_VIOLATION'}),{code:'INVALID_PAYLOAD'});
     assert.throws(()=>f.live.end('user_1',started.sessionId,{rewardPaid:'100'}),{code:'INVALID_PAYLOAD'});
     assert.equal(f.state.stops,0);assert.equal(f.state.settlementCalls.length,0);
 });
@@ -274,7 +296,7 @@ test('recovery timer coalesces scans while an earlier scan is still waiting on R
 
 
 test('End closes and freezes sensor evidence while the operator is unavailable, then retries that evidence', async t => {
-    const f=fixture(t);const started=await f.live.start('user_1',{sessionRef:'operator-down'});f.state.now+=30000;
+    const f=fixture(t);const started=await f.start('user_1',{sessionRef:'operator-down'});f.state.now+=30000;
     f.options.settler.contract.operators=async()=>{throw new Error('RPC unavailable');};
     const pending=await f.live.end('user_1',started.sessionId);
     assert.equal(pending.stage,'SETTLEMENT_PENDING');assert.equal(f.state.stops,1);assert.equal(f.state.settlementCalls.length,0);
@@ -289,9 +311,19 @@ test('End closes and freezes sensor evidence while the operator is unavailable, 
 
 test('End immediately clears the cached busy sensor state used by the next wallet refresh', async t => {
     const f = fixture(t);
-    const started = await f.live.start('user_1', { sessionRef: 'sensor-cache' });
+    const started = await f.start('user_1', { sessionRef: 'sensor-cache' });
     f.state.now += 30000;
     assert.equal((await f.live.deviceState({ fresh: true })).busySessionId, started.sessionId);
     await f.live.end('user_1', started.sessionId);
     assert.equal((await f.live.wallet('user_1')).device.busySessionId, null);
+});
+
+test('a late duplicate confirm does not reopen the sensor or settle a running session after its lease expires', async t => {
+    const f = fixture(t);
+    const started = await f.start('user_1', { sessionRef: 'duplicate-confirm' });
+    const hash = f.walletService.store.get(started.sessionId).transactionHash;
+    f.state.now += 180000;
+    const again = await f.live.confirmWalletStart('user_1', started.sessionId, { transactionHash: hash });
+    assert.equal(again.stage, 'RUNNING'); assert.equal(again.duplicate, true);
+    assert.equal(f.state.sensorStarts, 1); assert.equal(f.state.settlementCalls.length, 0);
 });

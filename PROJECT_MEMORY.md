@@ -909,6 +909,29 @@ safety outcome.
   local-only ETH for gas and HRC test balance via a controlled faucet or an
   explicit transfer to the user's full public address.
 
+## MetaMask-only app auth (R24, 2026-10-12)
+
+- The supported application login is MetaMask + SIWE only. Demo-account login,
+  fixed wallet identities, and demo API routes are removed. Application and
+  reward access use the same wallet-derived user identity. Do not ask for an
+  external wallet's private key or seed phrase.
+- `scripts/run_local_metamask.sh` defaults to dashboard `localhost:8081`, API
+  `127.0.0.1:3000`, Hardhat RPC `127.0.0.1:8545`, IoT API `8002`, MQTT `1886`,
+  chain `31337`, and SIWE origin `http://localhost:8081`. It refuses occupied
+  ports before deployment. Its local test key is generated only for the known
+  local Hardhat wallet and saved mode `0600`; never use it on a public chain.
+- Session persistence module is `blockchain_api/sessionStore.js`. Existing
+  `.runtime` JSON filenames, migration env aliases and SQLite `demo_sessions` /
+  `demo_transactions` tables are retained to read prior session/evidence data;
+  no runtime data is moved or rewritten by the source rename.
+- Current docs/verifier use `verify_wallet_first_ui.mjs`; contract integration
+  tests use `WalletLiveSessions.js` with isolated simulated sensor fixtures.
+  Browser tests do not prove an installed MetaMask extension signed or broadcast
+  a transaction, and fixture tests do not prove real ESP32 behavior.
+- Do not restart the existing local stack, deploy, reset chain state or run a
+  write-producing smoke test during this task. Keep the user's
+  `firmware/esp32/.vscode/settings.json` change out of the commit.
+
 ## Wallet-first Start reconciliation (R20, 2026-10-12)
 
 - A wallet-first `POST /api/me/sessions/start` response is an unsigned

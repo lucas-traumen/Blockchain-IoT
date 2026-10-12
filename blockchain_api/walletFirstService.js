@@ -4,21 +4,21 @@ const { sessionKey } = require("./rewardPolicy");
 
 // Wallet-first onboarding: the user keeps their own key, the backend stays the
 // oracle/operator that confirms sensor data. This service links a signed SIWE
-// login (or legacy wallet login) to the reward-session layer so a connected
+// login to the reward-session layer so a connected
 // wallet can read its own history and prepare transactions to sign locally.
 class WalletFirstService {
-    constructor({ customerService, demoService, sessionKey }) {
+    constructor({ customerService, walletService, sessionKey }) {
         this.customerService = customerService;
-        this.demoService = demoService;
+        this.walletService = walletService;
         this.sessionKey = sessionKey;
     }
 
-    /// @dev The demo/session layer is optional: a deployment can run the app
+    /// @dev The reward/session layer is optional: a deployment can run the app
     ///      identity alone (for example a pure SIWE gate) without the reward
     ///      session store. Login must keep working in that case.
-    _demo() {
-        if (typeof this.demoService === "function") return this.demoService();
-        return this.demoService || null;
+    _wallet() {
+        if (typeof this.walletService === "function") return this.walletService();
+        return this.walletService || null;
     }
 
     /// @notice Verify the login message, then bind the verified wallet to a
@@ -26,8 +26,8 @@ class WalletFirstService {
     ///         signature is rejected by the customer service.
     login(input) {
         const authenticated = this.customerService.authenticateWallet(input);
-        const demo = this._demo();
-        if (!demo) {
+        const walletService = this._wallet();
+        if (!walletService) {
             return {
                 success: true,
                 token: authenticated.token,
@@ -36,7 +36,7 @@ class WalletFirstService {
                 user: authenticated.user
             };
         }
-        const user = demo.loginWithWallet(authenticated.user.walletAddress);
+        const user = walletService.loginWithWallet(authenticated.user.walletAddress);
         return {
             success: true,
             token: authenticated.token,
@@ -47,18 +47,18 @@ class WalletFirstService {
         };
     }
 
-    _requireDemo() {
-        const demo = this._demo();
-        if (!demo) throw new ApiError(503, "DEMO_SERVICE_UNAVAILABLE", "The reward session layer is not configured");
-        return demo;
+    _requireWallet() {
+        const walletService = this._wallet();
+        if (!walletService) throw new ApiError(503, "WALLET_SERVICE_UNAVAILABLE", "The reward session layer is not configured");
+        return walletService;
     }
 
     /// @notice Transaction the wallet must sign locally to approve the stake. The
     ///         backend never signs on behalf of a wallet-first user.
     async prepareApproval(userId) {
-        const demo = this._requireDemo();
-        const wallet = await demo.getWallet(userId);
-        const user = demo._user(userId);
+        const walletService = this._requireWallet();
+        const wallet = await walletService.getWallet(userId);
+        const user = walletService._user(userId);
         if (!user.walletFirst) throw new ApiError(400, "NOT_WALLET_FIRST", "This account is managed by the backend");
         const amount = ethers.parseUnits(wallet.stakeAmount, wallet.decimals);
         return {
@@ -76,13 +76,13 @@ class WalletFirstService {
 
     /// @notice Transaction the wallet must sign locally to start a session.
     async prepareStartSession(userId, input = {}) {
-        const demo = this._requireDemo();
-        const user = demo._user(userId);
+        const walletService = this._requireWallet();
+        const user = walletService._user(userId);
         if (!user.walletFirst) throw new ApiError(400, "NOT_WALLET_FIRST", "This account is managed by the backend");
         const sessionRef = input.sessionRef === undefined || input.sessionRef === null || input.sessionRef === ""
             ? "default" : String(input.sessionRef);
-        const sessionId = demo._sessionId(userId, { sessionRef });
-        const wallet = await demo.getWallet(userId);
+        const sessionId = walletService._sessionId(userId, { sessionRef });
+        const wallet = await walletService.getWallet(userId);
         return {
             success: true,
             mode: "wallet-first",
@@ -101,15 +101,15 @@ class WalletFirstService {
     ///         outcome itself is decided by the backend oracle from sensor data,
     ///         never by the caller, so a user cannot self-report a valid session.
     async prepareEndSession(userId, sessionId) {
-        const demo = this._requireDemo();
-        const user = demo._user(userId);
+        const walletService = this._requireWallet();
+        const user = walletService._user(userId);
         if (!user.walletFirst) throw new ApiError(400, "NOT_WALLET_FIRST", "This account is managed by the backend");
         const id = identifier(sessionId, "sessionId");
-        const record = demo.store.get(id);
+        const record = walletService.store.get(id);
         if (record && record.userId !== userId) {
             throw new ApiError(403, "SESSION_OWNER_MISMATCH", "This session belongs to another user");
         }
-        const wallet = await demo.getWallet(userId);
+        const wallet = await walletService.getWallet(userId);
         return {
             success: true,
             mode: "wallet-first",
@@ -127,8 +127,8 @@ class WalletFirstService {
     }
 }
 
-function buildWalletFirstService(customerService, demoService) {
-    return new WalletFirstService({ customerService, demoService, sessionKey });
+function buildWalletFirstService(customerService, walletService) {
+    return new WalletFirstService({ customerService, walletService, sessionKey });
 }
 
 module.exports = { WalletFirstService, buildWalletFirstService };

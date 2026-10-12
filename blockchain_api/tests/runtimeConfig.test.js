@@ -14,12 +14,18 @@ test("blockchain network ignores an unrelated generic NETWORK variable", () => {
     );
 });
 
-test("local operator key is derived automatically but testnets require an explicit key", () => {
+test("local operator key is derived automatically but live networks require an explicit key", () => {
     const key = operatorPrivateKey({}, "localhost");
     assert.equal(new ethers.Wallet(key).address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-    assert.throws(() => operatorPrivateKey({}, "sepolia"), /required outside/);
+    assert.throws(() => operatorPrivateKey({}, "sepolia"), /required/);
+    assert.throws(() => operatorPrivateKey({}, "amoy"), /required/);
     assert.throws(
         () => operatorPrivateKey({ PRIVATE_KEY: "YOUR_HARDHAT_PRIVATE_KEY" }, "localhost"),
         /32-byte/
     );
+    const custom = operatorPrivateKey(
+        { HRC_LOCAL_CHAIN_MNEMONIC: "test test test test test test test test test test test junk" },
+        "localhost"
+    );
+    assert.equal(new ethers.Wallet(custom).address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 });

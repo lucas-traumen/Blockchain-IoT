@@ -30,6 +30,19 @@ async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN
                 safety: { address: ADDRESS, deploymentBlock: 10 }, rewards: { tokenAddress: null, address: null, deploymentBlock: 0 } };
         }
     };
+    if (!customerService) {
+        const { CustomerStore } = require("../customerStore");
+        const { CustomerService } = require("../customerService");
+        const store = new CustomerStore(require("node:path").join(f.directory, "api-customers.json"));
+        t.after(() => store.close());
+        customerService = new CustomerService({ store, chainId: 31337, adminWallets: [f.owner.address] });
+    }
+    let adminToken;
+    if (customerService.authenticateWallet) {
+        const challenge = customerService.createChallenge({ walletAddress: f.owner.address, chainId: 31337 });
+        adminToken = customerService.authenticateWallet({ walletAddress: f.owner.address, chainId: 31337,
+            message: challenge.message, signature: await f.owner.signMessage(challenge.message) }).token;
+    }
     const server = createApp({ service, tokens, customerService }).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => new Promise(resolve => server.close(resolve)));
@@ -42,17 +55,17 @@ async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN
         const response = await fetch(base + path, { method, headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
         return { status: response.status, body: await response.json(), headers: response.headers, allowOrigin: response.headers.get("access-control-allow-origin") };
     };
-    return { ...f, tokens, call, base };
+    return { ...f, tokens, call, base, adminToken };
 }
 
 test("public config is runtime-derived and CORS is an explicit allowlist", async t => {
     const f = await api(t);
-    const config = await f.call("/api/config", { origin: "http://localhost:8080" });
+    const config = await f.call("/api/config", { origin: "http://localhost:8081" });
     assert.equal(config.status, 200);
     assert.equal(config.body.network, "test");
     assert.equal(config.body.chainId, CHAIN_ID);
     assert.equal(config.body.safety.address, ADDRESS);
-    assert.equal(config.allowOrigin, "http://localhost:8080");
+    assert.equal(config.allowOrigin, "http://localhost:8081");
 
     const denied = await f.call("/api/config", { origin: "http://evil.example" });
     assert.equal(denied.status, 200);
@@ -73,11 +86,11 @@ test("HTTP end-to-end: validated ingestion, dedupe, archive, dashboard reads and
     assert.equal(events.body.events[0].dataHash, event.body.dataHash);
     const detail = await f.call("/api/events/" + event.body.eventId);
     assert.equal(detail.status, 200);
-    const stored = await f.call(`/api/events/${event.body.eventId}/payload`, { token: f.tokens.HRC_ADMIN_API_TOKEN });
+    const stored = await f.call(`/api/events/${event.body.eventId}/payload`, { token: f.adminToken });
     assert.equal(stored.status, 200);
     assert.equal(ethers.keccak256(ethers.toUtf8Bytes(stored.body.canonicalPayload)), event.body.dataHash);
     assert.equal((await f.call("/api/robots/ROBOT-ARM-01/status")).body.status, "LOCKED");
-    const unlock = await f.call("/api/robots/ROBOT-ARM-01/unlock", { method: "POST", token: f.tokens.HRC_ADMIN_API_TOKEN });
+    const unlock = await f.call("/api/robots/ROBOT-ARM-01/unlock", { method: "POST", token: f.adminToken });
     assert.equal(unlock.status, 200);
     assert.equal((await f.call("/api/robots/ROBOT-ARM-01/status")).body.status, "UNLOCKED");
     assert.equal(f.state.signed.length, 2);
@@ -102,12 +115,12 @@ test("dashboard admin access rejects visitors and ingest tokens and checks owner
     for (const token of [undefined, "wrong", f.tokens.HRC_INGEST_API_TOKEN]) {
         assert.equal((await f.call("/api/admin/access", { token })).status, 401);
     }
-    const allowed = await f.call("/api/admin/access", { token: f.tokens.HRC_ADMIN_API_TOKEN });
+    const allowed = await f.call("/api/admin/access", { token: f.adminToken });
     assert.equal(allowed.status, 200);
     assert.equal(allowed.body.canUnlock, true);
     assert.equal(allowed.body.ownerAddress, f.owner.address);
     f.contract.owner = async () => ethers.Wallet.createRandom().address;
-    const denied = await f.call("/api/admin/access", { token: f.tokens.HRC_ADMIN_API_TOKEN });
+    const denied = await f.call("/api/admin/access", { token: f.adminToken });
     assert.equal(denied.status, 403);
     assert.equal(denied.body.code, "NOT_OWNER");
     assert.equal(f.state.signed.length, 0);
@@ -127,7 +140,7 @@ test("HTTP validation, malformed JSON, size limit, conflict and pending statuses
     const conflict = await f.call("/api/safety-event", { ...options, body: payload({ sensorData: { distance: 0.2 } }) });
     assert.equal(conflict.status, 409);
     assert.equal(conflict.body.code, "IDEMPOTENCY_CONFLICT");
-    const missing = await f.call("/api/events/historical/payload", { token: f.tokens.HRC_ADMIN_API_TOKEN });
+    const missing = await f.call("/api/events/historical/payload", { token: f.adminToken });
     assert.equal(missing.status, 404);
 });
 

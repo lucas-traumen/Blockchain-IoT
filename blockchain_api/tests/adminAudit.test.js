@@ -10,10 +10,12 @@ const { AuditLog } = require("../auditLog");
 
 const ADMIN_TOKEN = "a".repeat(40);
 
-async function fixture(t, { rewardService, authMode = "demo", adminWallets = [] } = {}) {
+async function fixture(t, { rewardService, authMode = "siwe", adminWallets = [] } = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hrc-admin-"));
     const store = new CustomerStore(path.join(directory, "customers.json"));
-    const customerService = new CustomerService({ store, chainId: 31337, authMode: authMode === "demo" ? "wallet" : authMode, adminWallets });
+    const admin = require("ethers").Wallet.createRandom();
+    adminWallets = [...adminWallets, admin.address];
+    const customerService = new CustomerService({ store, chainId: 31337, authMode, adminWallets });
     const app = createApp({
         service: { getAdminAccess: async () => ({ success: true, owner: "0xowner", backendAddress: "0xbackend", isOwner: true }) },
         customerService,
@@ -25,7 +27,8 @@ async function fixture(t, { rewardService, authMode = "demo", adminWallets = [] 
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => { server.close(); store.close(); fs.rmSync(directory, { recursive: true, force: true }); });
     const base = `http://127.0.0.1:${server.address().port}`;
-    const call = async (route, { method = "GET", body, token = ADMIN_TOKEN, actor } = {}) => {
+    let defaultToken = null;
+    const call = async (route, { method = "GET", body, token = defaultToken, actor } = {}) => {
         const headers = {};
         if (body !== undefined) headers["Content-Type"] = "application/json";
         if (token) headers.Authorization = "Bearer " + token;
@@ -33,7 +36,9 @@ async function fixture(t, { rewardService, authMode = "demo", adminWallets = [] 
         const response = await fetch(base + route, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
         return { status: response.status, body: await response.json() };
     };
-    return { call, store, auditLog: new AuditLog({ store }) };
+    const f = { call, store, auditLog: new AuditLog({ store }), admin };
+    defaultToken = await walletToken(f, admin);
+    return f;
 }
 
 async function walletToken(f, wallet) {
@@ -78,7 +83,7 @@ test("audit log records success and failure without losing the error", async t =
     assert.equal(entries[0].at >= entries[1].at, true);
 });
 
-test("admin reward routes require the admin token and are audited", async t => {
+test("admin reward routes require the SIWE admin session and are audited", async t => {
     const f = await fixture(t, { rewardService: fakeRewardService() });
     assert.equal((await f.call("/api/admin/reward/status", { token: null })).status, 401);
     assert.equal((await f.call("/api/admin/reward/status", { token: "w".repeat(40) })).status, 401);
@@ -100,7 +105,7 @@ test("admin reward routes require the admin token and are audited", async t => {
     assert.deepEqual(audit.body.entries.map(entry => entry.action), [
         "reward.treasury", "reward.pool.sweep", "reward.pool.fund", "reward.policy", "reward.unpause", "reward.pause"
     ]);
-    assert.equal(audit.body.entries[0].actor, "admin-api-token");
+    assert.equal(audit.body.entries[0].actor.toLowerCase(), f.admin.address.toLowerCase());
     assert.ok(audit.body.entries.every(entry => entry.actor !== "alice" && entry.actor !== "bob"));
     assert.equal(audit.body.entries[0].status, "ok");
     assert.equal(audit.body.entries[3].details.stakeAmount, "2000000000000000000");
