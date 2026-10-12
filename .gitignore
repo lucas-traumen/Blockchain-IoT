@@ -16,6 +16,10 @@ release/
 ai_model/artifacts/*
 !ai_model/artifacts/lstm-v1/
 !ai_model/artifacts/lstm-v1/**
+# lstm-v2-synthetic is a reviewed candidate kept under version control for
+# seed-stability comparison. Model weights are small enough to track.
+!ai_model/artifacts/lstm-v2-synthetic/
+!ai_model/artifacts/lstm-v2-synthetic/**
 exports/
 firmware/esp32/sdkconfig
 firmware/esp32/sdkconfig.old
