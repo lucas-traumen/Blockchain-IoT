@@ -3,7 +3,7 @@ const { ethers } = require('ethers');
 const { ApiError, identifier, canonicalJson } = require('./eventPayload');
 const { normalizeOutcome, sessionKey } = require('./rewardPolicy');
 const { IotSessionClient } = require('./iotSessionClient');
-const { validateTaskEvidence } = require('./taskEvidencePolicy');
+const { validateTaskEvidence, validateTaskOutcome } = require('./taskEvidencePolicy');
 
 const FINAL = new Set(['SETTLED', 'START_FAILED', 'INTENT_EXPIRED']);
 const TERMINAL_ERRORS = new Set(['SETTLEMENT_CONFLICT', 'STORE_INTEGRITY_ERROR', 'BENEFICIARY_MISMATCH', 'TRANSACTION_REVERTED', 'IOT_SESSION_MISMATCH']);
@@ -78,6 +78,15 @@ class LiveSessionService {
                 throw new ApiError(409, 'SESSION_INTENT_EXPIRED', 'Prepare a new session reference');
             }
 
+            if (this.walletService.config.rewardProtocolVersion === 'task-rewards-v2') {
+                if (!assignment || assignment.userId !== userId
+                    || assignment.walletAddress?.toLowerCase() !== user.walletAddress.toLowerCase()) {
+                    throw new ApiError(403, 'TASK_ASSIGNMENT_REQUIRED', 'A task assignment owned by this wallet is required');
+                }
+                if (assignment.policySnapshot?.task?.deviceId !== this.deviceId) {
+                    throw new ApiError(409, 'TASK_DEVICE_MISMATCH', 'The assigned task does not use the configured sensor');
+                }
+            }
             await this.checkOperator(userId);
             const [wallet, device] = await Promise.all([
                 this.walletService.getWallet(userId), this.deviceState({ fresh: true })
@@ -375,6 +384,20 @@ class LiveSessionService {
             return this.response(record);
         } catch (error) { return this.response(this.retry(record, error)); }
     }
+    settleFrozen(id, body = {}) {
+        this.validateBody(body);
+        return this.serial(async () => {
+            const sessionId = identifier(id, 'sessionId');
+            const record = this.store.get(sessionId);
+            if (!record) throw new ApiError(404, 'SESSION_NOT_FOUND', 'Session reference was not found');
+            if (!record.settlementPayload || !record.evidence) {
+                throw new ApiError(409, 'EVIDENCE_NOT_FROZEN', 'Sensor evidence must be closed and frozen before operator settlement');
+            }
+            if (FINAL.has(record.stage)) return this.response(record, { duplicate: true });
+            return this.advanceEnd(record);
+        });
+    }
+
     end(userId, id, body = {}) {
         this.validateBody(body);
         return this.serial(async () => {
@@ -398,18 +421,27 @@ class LiveSessionService {
             const task = record.taskSnapshot.task;
             const completion = this.completionStore?.getCompletionEvidence?.(record.sessionId) || null;
             frozenEvidence.completionEvidence = completion;
+            const requestedOutcome = frozenEvidence.result.outcome;
             const reasonCodes = [];
-            if (frozenEvidence.result.outcome === 'VALID_NO_VIOLATION') {
+            const validation = validateTaskEvidence(frozenEvidence, task);
+            const outcomeValidation = validateTaskOutcome(frozenEvidence);
+            frozenEvidence.taskEvidenceValidation = validation;
+            frozenEvidence.taskOutcomeValidation = outcomeValidation;
+            if (requestedOutcome === 'VALID_NO_VIOLATION') {
                 if (!completion?.achieved) reasonCodes.push(completion ? 'task_completion_rule_not_met' : 'task_completion_evidence_missing');
-                const validation = validateTaskEvidence(frozenEvidence, task);
-                frozenEvidence.taskEvidenceValidation = validation;
                 reasonCodes.push(...validation.reasons);
-                if (reasonCodes.length) {
-                    frozenEvidence.result.outcome = 'INCOMPLETE';
-                    frozenEvidence.result.reason = reasonCodes[0];
-                    frozenEvidence.result.dataValid = false;
-                    frozenEvidence.result.coverageValid = false;
-                }
+            } else if (requestedOutcome === 'VIOLATION_CONFIRMED' || requestedOutcome === 'SENSOR_FAULT') {
+                // Never let an IoT result string select a penalty/refund by itself.
+                // The independently-derived event/stat counters must prove it.
+                reasonCodes.push(...outcomeValidation.reasons);
+            } else if (requestedOutcome !== 'INCOMPLETE') {
+                reasonCodes.push(...outcomeValidation.reasons);
+            }
+            if (reasonCodes.length) {
+                frozenEvidence.result.outcome = 'INCOMPLETE';
+                frozenEvidence.result.reason = reasonCodes[0];
+                frozenEvidence.result.dataValid = false;
+                frozenEvidence.result.coverageValid = false;
             }
             frozenEvidence.result.reasonCodes = [...new Set([...(frozenEvidence.result.reasonCodes || []), ...reasonCodes])];
             frozenEvidence.task = { taskId: task.taskId, definitionHash: this.store.get(record.sessionId)?.taskSnapshot?.snapshotHash || null,

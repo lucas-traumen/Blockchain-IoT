@@ -4,7 +4,13 @@ const { ApiError } = require('./eventPayload');
 // Callers serialize writes for the signing address using signerQueue.
 // Signed bytes are flushed before broadcast; retries never allocate another nonce.
 class DurableContractWriter {
-    constructor({ provider, store, waitMs = 1500 }) { Object.assign(this, { provider, store, waitMs }); }
+    constructor({ provider, store, waitMs = 1500, chainId = null }) {
+        if (!provider || !store) throw new TypeError('provider and store are required');
+        if (chainId !== null && (!Number.isSafeInteger(Number(chainId)) || Number(chainId) < 1)) {
+            throw new TypeError('chainId must be a positive integer');
+        }
+        Object.assign(this, { provider, store, waitMs, chainId: chainId === null ? null : Number(chainId) });
+    }
 
     async refresh(record) {
         if (record.status === 'CONFIRMED') {
@@ -32,15 +38,16 @@ class DurableContractWriter {
     async send(key, wallet, contract, method, args) {
         const address = await wallet.getAddress();
         const network = await this.provider.getNetwork();
-        if (Number(network.chainId) !== 31337) throw new ApiError(503, 'LOCAL_CHAIN_REQUIRED', 'Demo transactions require Hardhat local chain 31337');
+        const chainId = this.chainId ?? Number(network.chainId);
+        if (Number(network.chainId) !== chainId) throw new ApiError(503, 'WRONG_CHAIN', `Transaction writer requires configured chain ${chainId}`);
         const call = await contract[method].populateTransaction(...args);
-        const requestHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify({ to: call.to.toLowerCase(), data: call.data, chainId: 31337 })));
+        const requestHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify({ to: call.to.toLowerCase(), data: call.data, chainId })));
         let record = this.store.getTransaction(key);
         if (record) {
             if (record.requestHash !== requestHash || record.signer.toLowerCase() !== address.toLowerCase()
                 || ethers.keccak256(record.rawTransaction) !== record.transactionHash) throw new ApiError(503, 'STORE_INTEGRITY_ERROR', 'Stored transaction does not match this operation');
             const signed = ethers.Transaction.from(record.rawTransaction);
-            if (Number(signed.chainId) !== 31337 || signed.from.toLowerCase() !== address.toLowerCase()
+            if (Number(signed.chainId) !== chainId || signed.from.toLowerCase() !== address.toLowerCase()
                 || signed.to.toLowerCase() !== call.to.toLowerCase() || signed.data !== call.data) throw new ApiError(503, 'STORE_INTEGRITY_ERROR', 'Stored signed transaction has different parameters');
             record = await this.refresh(record);
         } else {
@@ -48,7 +55,7 @@ class DurableContractWriter {
             let rawTransaction;
             try {
                 const nonce = await this.provider.getTransactionCount(address, 'pending');
-                const transaction = await wallet.populateTransaction({ ...call, nonce });
+                const transaction = await wallet.populateTransaction({ ...call, nonce, chainId });
                 rawTransaction = await wallet.signTransaction(transaction);
             } catch (error) {
                 throw new ApiError(503, 'TRANSACTION_PREPARE_FAILED', error.shortMessage || 'Transaction could not be prepared; no transaction was broadcast');

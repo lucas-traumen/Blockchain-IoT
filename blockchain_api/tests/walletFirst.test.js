@@ -11,17 +11,18 @@ const { WalletService } = require("../walletService");
 const { JsonSessionStore } = require("../sessionStore");
 const { buildWalletFirstService } = require("../walletFirstService");
 const { LiveSessionService } = require("../liveSessionService");
+const { ApiError } = require("../eventPayload");
 
 const TOKENS = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40), HRC_APP_AUTH_MODE: "siwe" };
 
-async function fixture(t, { authMode = "siwe" } = {}) {
+async function fixture(t, { authMode = "siwe", taskRewards = false, adminWallets = [] } = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hrc-wallet-first-"));
     const store = new CustomerStore(path.join(directory, "customers.json"));
-    const customerService = new CustomerService({ store, chainId: 31337, authMode, appOrigin: "http://localhost:8080" });
+    const customerService = new CustomerService({ store, chainId: 31337, authMode, adminWallets, appOrigin: "http://localhost:8080" });
     const walletService = new WalletService({
         users: new Map(),
         store: new JsonSessionStore(path.join(directory, "sessions.json")),
-        config: { chainId: 31337 },
+        config: { chainId: 31337, rewardProtocolVersion: taskRewards ? "task-rewards-v2" : "session-rewards-v1" },
         tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode }
     });
     // Keep the wallet chain reads deterministic and offline for this test.
@@ -45,6 +46,13 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         async sessions(userId) { return { success: true, userId, count: 0, sessions: [] }; },
         async session(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
         async start() { return { success: true, mode: "backend" }; },
+        async settleFrozen(sessionId, body = {}) {
+            if (body && Object.keys(body).length) {
+                throw new ApiError(400, "INVALID_PAYLOAD", "Only an empty body is accepted");
+            }
+            endCalls.push(sessionId);
+            return { success: true, sessionId, stage: "SETTLED", duplicate: false };
+        },
         async confirmWalletStart(userId, sessionId, body) {
             walletService.store.save({ sessionId, userId, source: "esp32", stage: "RUNNING", createdAt: new Date().toISOString() });
             return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash };
@@ -65,14 +73,13 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         const response = await fetch(base + route, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
         return { status: response.status, body: await response.json() };
     };
-    const login = async () => {
-        const wallet = ethers.Wallet.createRandom();
+    const login = async (wallet = ethers.Wallet.createRandom()) => {
         const challenge = await call("/api/auth/challenge", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337 } });
         const signature = await wallet.signMessage(challenge.body.message);
         const result = await call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
         return { wallet, ...result };
     };
-    return { call, login, walletService, endCalls };
+    return { call, login, walletService, customerService, endCalls };
 }
 
 test("wallet login issues one durable app token for both application and reward routes", async t => {
@@ -173,4 +180,36 @@ test("wallet-first End rejects user-chosen outcomes and rewards", async t => {
     assert.equal(result.status, 400);
     assert.equal(result.body.code, "INVALID_PAYLOAD");
     assert.equal(f.endCalls.length, 0);
+});
+
+test('V2 settlement requires a SIWE operator and only frozen evidence can be settled', async t => {
+    const operator = ethers.Wallet.createRandom();
+    const f = await fixture(t, { taskRewards: true, adminWallets: [operator.address] });
+    const customer = await f.login();
+    const staticToken = TOKENS.HRC_INGEST_API_TOKEN;
+    const rejected = await f.call('/api/session-outcome', {
+        method: 'POST', token: staticToken,
+        body: { sessionId: 'session-1', outcome: 'COMPLETED_SAFE', beneficiary: customer.wallet.address,
+            evidenceHash: ethers.id('caller-controlled'), endedAt: 120 }
+    });
+    assert.equal(rejected.status, 401);
+
+    const admin = await f.login(operator);
+    const retired = await f.call('/api/session-outcome', {
+        method: 'POST', token: admin.body.token,
+        body: { sessionId: 'session-1', outcome: 'COMPLETED_SAFE', beneficiary: customer.wallet.address,
+            evidenceHash: ethers.id('caller-controlled'), endedAt: 120 }
+    });
+    assert.equal(retired.status, 410);
+    assert.equal(retired.body.code, 'TASK_SETTLEMENT_ROUTE_RETIRED');
+
+    const invalid = await f.call('/api/admin/task-sessions/frozen-1/settle', {
+        method: 'POST', token: admin.body.token, body: { outcome: 'COMPLETED_SAFE' }
+    });
+    assert.equal(invalid.status, 400);
+    const settled = await f.call('/api/admin/task-sessions/frozen-1/settle', {
+        method: 'POST', token: admin.body.token, body: {}
+    });
+    assert.equal(settled.status, 200);
+    assert.deepEqual(f.endCalls, ['frozen-1']);
 });

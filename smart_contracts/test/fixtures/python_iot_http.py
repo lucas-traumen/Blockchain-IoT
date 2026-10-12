@@ -9,6 +9,7 @@ reward evidence, not model quality, radio behavior or physical hardware.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import sys
@@ -82,13 +83,15 @@ class Prepare(BaseModel):
 class Collect(BaseModel):
     sessionId: str
     scenario: str = "safe"
-    durationS: int = 120
+    durationS: float = 120
+    sampleCount: int | None = None
+    gapS: float | None = None
 
 
-def ingest(request, measured_at, distance=900, valid=True):
+def ingest(request, measured_at, distance=900, valid=True, *, monotonic_us=None, boot_id=BOOT):
     clock["sequence"] += 1
-    sample = {"schema_version": "1.0", "device_id": DEVICE, "boot_id": BOOT,
-              "sequence": clock["sequence"], "monotonic_us": clock["sequence"] * 100_000,
+    sample = {"schema_version": "1.0", "device_id": DEVICE, "boot_id": boot_id,
+              "sequence": clock["sequence"], "monotonic_us": monotonic_us if monotonic_us is not None else clock["sequence"] * 100_000,
               "measured_at": iso(measured_at), "time_synced": True,
               "distance_mm": distance if valid else None,
               "echo_us": 5248 if valid else None, "valid": valid,
@@ -114,15 +117,34 @@ def collect(body: Collect, request: Request):
     row = request.app.state.store.get_session(body.sessionId)
     if row is None or row["status"] != "running":
         raise HTTPException(409, detail="Collect only into the active sensor session")
-    if body.scenario not in {"safe", "spike", "violation", "fault", "insufficient"} or not 1 <= body.durationS <= 900:
+    scenarios = {"safe", "spike", "repeated_spikes", "sustained_violation", "violation", "fault",
+                 "insufficient", "sequence_gap", "boot_reset", "timing_gap"}
+    if body.scenario not in scenarios or not math.isfinite(body.durationS) or not 1 <= body.durationS <= 900:
         raise HTTPException(400, detail="Invalid fixture scenario")
     start = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
-    count = 20 if body.scenario == "insufficient" else body.durationS * 10
+    count = body.sampleCount if body.sampleCount is not None else (20 if body.scenario == "insufficient" else math.floor(body.durationS * 10))
+    if not 20 <= count <= 10800 or (body.gapS is not None and not 0 < body.gapS < body.durationS / 2):
+        raise HTTPException(400, detail="Invalid fixture sample count or gap")
+    # Monotonic time is independent of sequence: exercise actual SQLite stats.
+    span = body.durationS - 0.1
+    normal_interval = span / (count - 1)
+    if body.gapS is not None:
+        normal_interval = (span - body.gapS) / (count - 2)
+    mono_start = clock["sequence"] * 100_000
+    offset = 0.1
     for index in range(1, count + 1):
+        if index > 1:
+            offset += body.gapS if body.gapS is not None and index == 21 else normal_interval
         low = body.scenario in {"spike", "violation"} and index == 21
         low = low or (body.scenario == "violation" and index == 22)
-        ingest(request, start + timedelta(seconds=index / 10),
-               distance=300 if low else 900, valid=not (body.scenario == "fault" and index == 21))
+        low = low or (body.scenario == "repeated_spikes" and index % 4 == 0)
+        low = low or (body.scenario == "sustained_violation" and 21 <= index <= 60)
+        if body.scenario == "sequence_gap" and index == 21:
+            clock["sequence"] += 1
+        ingest(request, start + timedelta(seconds=offset),
+               distance=300 if low else 900, valid=not (body.scenario == "fault" and index == 21),
+               monotonic_us=mono_start + round(offset * 1_000_000),
+               boot_id="synthetic-reset" if body.scenario == "boot_reset" and index == 21 else BOOT)
     clock["now"] = start + timedelta(seconds=body.durationS)
     return {"sampleCount": count, "endedAt": iso(clock["now"]), "scenario": body.scenario}
 

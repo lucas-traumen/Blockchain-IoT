@@ -1067,3 +1067,28 @@ safety outcome.
   chaos, dashboard browser/visual verification, warning/spike telemetry, edge
   parity, HIL, public testnet, TLS, and multisig readiness remain open. No active
   ports, live deployment, hardware, or deployment manifest was changed.
+
+## V2 boundary/recovery/authority hardening (R26, 2026-10-12)
+
+- `LiveSessionService` independently validates every task outcome before freezing
+  the settlement payload. A safe result needs completion evidence plus the frozen
+  duration/raw/processed/cadence/timing/gap policy. A penalty needs a confirmed
+  violation counter; a single spike cannot select `VIOLATION_CONFIRMED`. A sensor
+  fault needs unknown evidence or a boot reset. Invalid claims become `INCOMPLETE`.
+- V2 wallet start accepts only `sessionRef` and `taskId`; policy snapshots are
+  loaded from the server-side assignment, and the assignment wallet/device must
+  match the authenticated wallet and configured sensor.
+- `POST /api/session-outcome` is V1-only. V2 requires a SIWE operator/admin for
+  `POST /api/admin/task-sessions/:sessionId/settle`, with an empty body; the
+  route settles the already frozen evidence and cannot accept outcome, beneficiary,
+  evidence hash or amount fields. `x-hrc-actor` is not used for authorization.
+- `DurableContractWriter` no longer assumes chain 31337. WalletService passes the
+  manifest chain ID; otherwise the writer derives it from the configured provider,
+  allowing Sepolia/Amoy transaction bytes while retaining chain mismatch guards.
+  Reconciliation refreshes existing signed bytes/receipt and never rebroadcasts a
+  nonce merely because the chain state is already settled.
+- The isolated V2 integration now uses the real Python FastAPI/SQLite service and
+  covers sustained/repeated telemetry and exact policy boundaries, SQLite process
+  restart, pending and lost-broadcast receipt recovery, SIWE role/ownership attacks,
+  immutable evidence and accounting invariants. Browser verification remains
+  runtime-blocked when the dashboard proxy has no API/RPC listener.

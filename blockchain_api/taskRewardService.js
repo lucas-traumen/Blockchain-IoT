@@ -113,13 +113,29 @@ class TaskRewardService {
         const current = taskSession(await this.contract.sessions(key));
         if (!current.started) throw new ApiError(409, "SESSION_NOT_STARTED", "Task session was not started on-chain");
         if (current.beneficiary.toLowerCase() !== input.beneficiary.toLowerCase()) throw new ApiError(409, "BENEFICIARY_MISMATCH", "Session beneficiary differs from frozen evidence");
+        const sender = options.transactionSender || this.transactionSender;
         if (current.settled) {
             if (current.outcome !== outcome || current.evidenceHash.toLowerCase() !== proof.toLowerCase() || current.endedAt !== BigInt(input.endedAt)) {
                 throw new ApiError(409, "SETTLEMENT_CONFLICT", "V2 session is already settled with different evidence");
             }
-            return this.result(id, key, current, proof, null, null, true);
+            // A lost broadcast/receipt response can leave signed bytes pending
+            // even though the chain has settled. Reconcile the durable operation
+            // before reporting success, preserving its transaction history.
+            let transaction = null;
+            let receipt = null;
+            const durable = sender?.store?.getTransaction(`settlement:${id}`);
+            if (durable) {
+                // Chain state is authoritative once settled. Refresh the saved
+                // receipt for audit, but never rebroadcast a nonce just because
+                // the coordinator was restarted after a successful settlement.
+                const refreshed = await sender.refresh(durable);
+                if (refreshed.status === 'CONFIRMED') {
+                    transaction = { hash: refreshed.transactionHash };
+                    receipt = { blockNumber: refreshed.blockNumber, status: 1 };
+                }
+            }
+            return this.result(id, key, current, proof, transaction, receipt, true);
         }
-        const sender = options.transactionSender || this.transactionSender;
         let transaction;
         let receipt;
         try {

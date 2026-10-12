@@ -100,7 +100,14 @@ function createApp({ service, customerService, walletService, liveService, rewar
     let resolvedFundingService = null;
     const getFundingService = () => resolvedFundingService || (resolvedFundingService = require("./localFundingService").LocalFundingService.fromEnv(getWalletService(), tokens));
     const prepareWalletStart = async (userId, input, appUser = null) => {
+        if (!input || typeof input !== "object" || Array.isArray(input)
+            || Object.keys(input).some(key => !["sessionRef", "taskId"].includes(key))) {
+            throw new ApiError(400, "INVALID_PAYLOAD", "Only sessionRef and taskId are accepted; policy snapshots are loaded by the backend");
+        }
         const assignment = input.taskId ? getTaskService().assignmentSnapshot(appUser || { userId }, input.taskId) : null;
+        if (!assignment && getWalletService().config.rewardProtocolVersion === "task-rewards-v2") {
+            throw new ApiError(403, "TASK_ASSIGNMENT_REQUIRED", "Accept a published task before preparing a task reward session");
+        }
         if (assignment && getWalletService().config.rewardProtocolVersion !== "task-rewards-v2") {
             throw new ApiError(409, "TASK_REWARD_CONTRACT_REQUIRED", "Task assignments require the versioned task reward contract; this deployment is still V1");
         }
@@ -118,6 +125,23 @@ function createApp({ service, customerService, walletService, liveService, rewar
         next();
     };
     const requireAdmin = (req, res, next) => requireUserRole(getCustomerService, "admin")(req, res, next);
+    const taskRewardsSelected = () => {
+        if (tokens.HRC_REWARD_PROTOCOL_VERSION === "task-rewards-v2") return true;
+        try { return getWalletService().config.rewardProtocolVersion === "task-rewards-v2"; }
+        catch {
+            // A configured V2 manifest still retires legacy writes while RPC or
+            // wallet initialization is unavailable. Never fail open into V1.
+            if (tokens.HRC_REWARD_DEPLOYMENT) {
+                try { return JSON.parse(require("node:fs").readFileSync(tokens.HRC_REWARD_DEPLOYMENT, "utf8")).version === "task-rewards-v2"; }
+                catch { throw new ApiError(503, "REWARD_NOT_CONFIGURED", "Reward deployment cannot be read; settlement is disabled"); }
+            }
+            return false;
+        }
+    };
+    const requireSettlementAuthority = (req, res, next) => {
+        if (taskRewardsSelected()) return requireAnyUserRole(getCustomerService, ["operator", "admin"])(req, res, next);
+        return requireToken("ingest", tokens)(req, res, next);
+    };
     const app = express();
     app.set("trust proxy", tokens.HRC_TRUST_PROXY === "true" ? 1 : false);
     app.locals.customerService = { authenticateToken: token => getCustomerService().authenticateToken(token) };
@@ -236,6 +260,12 @@ function createApp({ service, customerService, walletService, liveService, rewar
             .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")));
         res.json({ success: true, sessions });
     });
+    app.post("/api/admin/task-sessions/:sessionId/settle", adminRateLimit,
+        requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+            await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress,
+                action: "task.session.settle", target: req.params.sessionId },
+                () => getLiveService().settleFrozen(req.params.sessionId, req.body || {})), 400);
+        });
     app.patch("/api/tasks/:taskId", adminRateLimit, requireUserRole(getCustomerService, "admin"), async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "task.update", target: req.params.taskId },
             () => getTaskService().update(req.appUser, req.params.taskId, req.body || {})), 400);
@@ -298,7 +328,10 @@ function createApp({ service, customerService, walletService, liveService, rewar
         const start = service.startSession || (() => require("./rewardService").getRewardService().startSession(req.body));
         await respond(res, () => start(req.body));
     });
-    app.post("/api/session-outcome", requireToken("ingest", tokens), async (req, res) => {
+    app.post("/api/session-outcome", requireSettlementAuthority, async (req, res) => {
+        if (taskRewardsSelected()) {
+            throw new ApiError(410, "TASK_SETTLEMENT_ROUTE_RETIRED", "Task rewards settle only from frozen evidence via /api/admin/task-sessions/:sessionId/settle");
+        }
         const settle = service.processSessionOutcome || (() => require("./rewardService").getRewardService().processSessionOutcome(req.body));
         await respond(res, () => settle(req.body));
     });

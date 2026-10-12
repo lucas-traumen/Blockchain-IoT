@@ -47,3 +47,39 @@ for (const [name, mutate, expected] of [
     const f = fixture(); mutate(f);
     assert.ok(validateTaskEvidence(f.document, f.task).reasons.includes(expected));
 });
+
+for (const [name, mutate, expected] of [
+    ['exactly 120 seconds', () => {}, null],
+    ['just under 120 seconds', f => { f.document.session.ended_at = '2026-10-12T10:01:59.999Z'; f.document.result.durationS = 119.999; }, 'task_duration_below_minimum'],
+    ['exactly 90 percent samples', f => { Object.assign(f.document.stats, { sample_count: 1080, raw_count: 1080, processed_count: 1080 }); }, null],
+    ['one sample under 90 percent', f => { Object.assign(f.document.stats, { sample_count: 1079, raw_count: 1079, processed_count: 1079 }); }, 'sample_count_below_task_minimum'],
+    ['95 percent processed coverage', f => { Object.assign(f.document.stats, { processed_count: 1140, processed_coverage: 0.95 }); }, null],
+    ['one processed sample under 95 percent', f => { Object.assign(f.document.stats, { processed_count: 1139, processed_coverage: 1139 / 1200 }); }, 'processed_coverage_below_task_minimum'],
+    ['cadence 8 Hz', f => { f.document.stats.mean_cadence_hz = 8; }, null],
+    ['cadence below 8 Hz', f => { f.document.stats.mean_cadence_hz = 7.999; }, 'cadence_out_of_task_range'],
+    ['cadence 12 Hz', f => { f.document.stats.mean_cadence_hz = 12; }, null],
+    ['cadence above 12 Hz', f => { f.document.stats.mean_cadence_hz = 12.001; }, 'cadence_out_of_task_range'],
+    ['gap exactly 0.5 seconds', f => { f.document.stats.max_timing_gap_s = 0.5; }, null],
+    ['gap over 0.5 seconds', f => { f.document.stats.max_timing_gap_s = 0.500001; }, 'timing_gap_above_task_maximum'],
+    ['one missing sequence', f => { f.document.stats.gap_count = 1; }, 'sequence_gap_in_task_evidence'],
+    ['device boot reset', f => { f.document.session.boot_change = true; }, 'task_sensor_fault_present_or_missing'],
+]) test(`task evidence boundary: ${name}`, () => {
+    const f = fixture(); mutate(f);
+    const result = validateTaskEvidence(f.document, f.task);
+    if (expected) assert.ok(result.reasons.includes(expected));
+    else assert.deepEqual(result.reasons, []);
+});
+
+test('a penalty outcome must be backed by confirmed events, while an isolated spike is insufficient', () => {
+    const { validateTaskOutcome } = require('../taskEvidencePolicy');
+    const f = fixture();
+    f.document.result.outcome = 'VIOLATION_CONFIRMED';
+    f.document.stats.violation_count = 1;
+    assert.deepEqual(validateTaskOutcome(f.document).reasons, ['confirmed_violation_evidence_missing']);
+    f.document.stats.confirmed_violation_count = 1;
+    assert.deepEqual(validateTaskOutcome(f.document).reasons, []);
+    f.document.result.outcome = 'SENSOR_FAULT';
+    assert.deepEqual(validateTaskOutcome(f.document).reasons, ['sensor_fault_evidence_missing']);
+    f.document.session.boot_change = true;
+    assert.deepEqual(validateTaskOutcome(f.document).reasons, []);
+});

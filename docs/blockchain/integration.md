@@ -85,6 +85,7 @@ Configuration:
 | `GET /api/me/sessions` | Only this user's sessions, including sensor progress and outcome reason |
 | `GET /api/me/sessions/:sessionId` | Owned contract state, sensor metadata and events |
 | `GET /api/me/wallet/transactions` | Wallet-filtered Approval, Transfer and reward events with amounts |
+| `POST /api/admin/task-sessions/:sessionId/settle` | SIWE operator/admin only; settles the immutable frozen V2 evidence; body must be empty |
 
 The Start preflight requires local chain 31337, an authorized operator, the
 configured ESP32 source, recent telemetry (at most five seconds), an idle
@@ -100,9 +101,11 @@ that session's device/boot/sequence boundary. It does not replay the historical
 raw table or refeed old rows into the live model on outcome reads. The outcome,
 evidence hash and timestamp are frozen before operator submission. Sensor closure
 and evidence can finish while the operator is offline; settlement waits for RPC.
-Users cannot submit outcome, beneficiary, reward or penalty. The protected
-`POST /api/session-outcome` operator route remains available to backend clients;
-a demo app token cannot call it.
+Users cannot submit outcome, beneficiary, reward or penalty. The protected `POST /api/session-outcome` route is V1-only. For task-rewards-v2,
+that route is retired: a SIWE operator/admin must call
+`POST /api/admin/task-sessions/:sessionId/settle` with an empty body after the
+sensor evidence is frozen. The server loads the immutable outcome, beneficiary,
+evidence hash and endedAt; callers cannot submit those fields.
 
 For settlement, the frozen evidence `session.ended_at` is converted from
 ISO-8601 to Unix seconds and submitted as `endedAt`. The contract requires

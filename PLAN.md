@@ -1668,3 +1668,18 @@ provenance and edge parity, hardware/HIL, public testnet, TLS and multisig/timel
 deployment.
 Checkpoint plugin tools are not available in this Codex session; no external
 checkpoint IDs are claimed.
+
+## R26 — V2 boundary, recovery and authority hardening (2026-10-12)
+
+| Task key | Goal / changed surface | Evidence | Status |
+| --- | --- | --- | --- |
+| R26:policy | Make task outcome selection fail closed for safe, confirmed violation and sensor-fault claims; reject forged result strings and enforce exact telemetry boundaries | `blockchain_api/taskEvidencePolicy.js`, `liveSessionService.js`; boundary matrix covers 120s/119.999s, 90%/one-under samples, 95% processed coverage, 8/12 Hz, 0.5s/over-gap, sequence gap, reboot and sustained/spike patterns | done |
+| R26:writer | Make durable signed transaction recovery chain-configurable and exercise SQLite reopen, pending receipt, lost broadcast response and no duplicate settlement | `durableContractWriter.js`, `walletService.js`, V2 lifecycle integration; exact raw bytes/nonce, one `SessionSettled`, immutable endedAt/evidenceHash | done |
+| R26:authority | Remove user-controlled V2 settlement payloads from the legacy endpoint; require SIWE operator/admin and settle only an empty request against frozen evidence | `server.js`, `settleFrozen()`, SIWE HTTP integration; unauthorized/wrong-owner/beneficiary/outcome/amount attempts show no token movement | done |
+| R26:browser | Verify the running dashboard proxy and MetaMask-compatible browser flow without restarting active ports | `scripts/verify_wallet_first_ui.mjs` attempted; blocked because `http://localhost:8081/api/chain/api/config` returned HTTP 503 and no Blockchain API/RPC listener was present | blocked by runtime availability |
+
+Latest isolated verification after R26: Blockchain API **197/197**, Hardhat
+**118/118**, Python IoT/model **449 passed, 12 skipped**; `git diff --check`
+and JavaScript/Python syntax checks pass. The active contract/deployment and
+user-owned firmware port setting were not changed. Public testnet, hardware/HIL,
+edge parity, TLS termination and multisig/timelock transfer remain external gates.

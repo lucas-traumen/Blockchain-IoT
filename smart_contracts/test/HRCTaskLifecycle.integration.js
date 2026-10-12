@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, network } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -16,14 +16,22 @@ const { DurableContractWriter } = require("../../blockchain_api/durableContractW
 const { sessionKey } = require("../../blockchain_api/rewardPolicy");
 const { IotSessionClient } = require("../../blockchain_api/iotSessionClient");
 const { TASK_EVIDENCE_POLICY } = require("../../blockchain_api/taskEvidencePolicy");
+const { SqliteCustomerStore, SqliteSessionStore } = require("../../blockchain_api/sqliteStores");
+const { CustomerService } = require("../../blockchain_api/customerService");
+const { createApp } = require("../../blockchain_api/server");
 
 const USER_ID = "usr_integration_customer";
 const TASK_ID = "task-integration-safe-cycles";
 const REQUIRED_CYCLES = 2;
 const temporaryDirectories = [];
 const fixtureProcesses = [];
+const httpServers = [];
+const sqliteStores = [];
 
 afterEach(async () => {
+    await network.provider.send('evm_setAutomine', [true]);
+    for (const server of httpServers.splice(0)) await new Promise(resolve => server.close(resolve));
+    for (const store of sqliteStores.splice(0)) store.close();
     for (const process of fixtureProcesses.splice(0)) {
         if (process.exitCode !== null || process.signalCode !== null) continue;
         const exited = new Promise(resolve => process.once('exit', resolve));
@@ -56,7 +64,7 @@ async function fixture({ outcome = "VALID_NO_VIOLATION", completion = true, fail
         assignmentId: "asg-integration-1", taskId: TASK_ID, userId: USER_ID,
         walletAddress: customer.address, status: "ASSIGNED", taskDefinitionHash: ethers.id("task-definition"),
         policySnapshot: {
-            task: { taskId: TASK_ID, title: "Integration cycles", status: "OPEN",
+            task: { taskId: TASK_ID, title: "Integration cycles", status: "OPEN", deviceId: "esp32_01",
                 evidencePolicy: { ...TASK_EVIDENCE_POLICY },
                 completionRule: { type: "robot_cycle_count", requiredCycles: REQUIRED_CYCLES,
                 minimumDurationS: 120, maximumDurationS: 600 } },
@@ -124,7 +132,7 @@ async function fixture({ outcome = "VALID_NO_VIOLATION", completion = true, fail
     const live = new LiveSessionService({ walletService, iot, settler, completionStore: identityStore,
         clock: () => clock.now, logger: () => {} });
     return { owner, customer, treasury, token, rewards, store, assignment, identityStore, walletService, rewardService,
-        sensor, live, iot, settler, clock, completion, directory };
+        sensor, live, iot, settler, clock, completion, directory, operatorWallet };
 }
 
 async function startSession(f) {
@@ -296,21 +304,28 @@ async function usePythonIot(f) {
 
 describe('V2 real Python IoT HTTP to real contract integration (synthetic transport)', function () {
     this.timeout(40000);
-    for (const [scenario, expectedOutcome, reward, penalty] of [
+    for (const [scenario, expectedOutcome, reward, penalty, collectOptions = {}] of [
         ['safe', 0, '0.002', '0'], ['spike', 0, '0.002', '0'],
-        ['violation', 1, '0', '0.010'], ['fault', 2, '0', '0'], ['insufficient', 3, '0', '0']
-    ]) it(`evaluates ${scenario} telemetry in Python, freezes evidence and settles once`, async function () {
+        ['repeated_spikes', 0, '0.002', '0'], ['sustained_violation', 1, '0', '0.010'],
+        ['violation', 1, '0', '0.010'], ['fault', 2, '0', '0'], ['insufficient', 3, '0', '0'],
+        ['safe', 0, '0.002', '0', { sampleCount: 1080 }],
+        ['safe', 3, '0', '0', { sampleCount: 1079 }],
+        ['safe', 3, '0', '0', { durationS: 119.999 }],
+        ['timing_gap', 0, '0.002', '0', { gapS: 0.5 }],
+        ['timing_gap', 3, '0', '0', { gapS: 0.500001 }],
+        ['sequence_gap', 3, '0', '0'], ['boot_reset', 2, '0', '0']
+    ]) it(`evaluates ${scenario} ${JSON.stringify(collectOptions)} telemetry in Python, freezes evidence and settles once`, async function () {
         const f = await fixture();
         await usePythonIot(f);
         const id = await startSession(f);
-        const collected = await f.httpFixture('collect', { sessionId: id, scenario });
+        const collected = await f.httpFixture('collect', { sessionId: id, scenario, ...collectOptions });
         const endedAt = Math.floor(Date.parse(collected.endedAt) / 1000);
         await time.increaseTo(endedAt);
         f.clock.now = endedAt * 1000;
         const settled = await f.live.end(USER_ID, id);
         expect(settled.stage, settled.lastError).to.equal('SETTLED');
         const frozen = f.store.get(id);
-        expect(frozen.evidence.stats.sample_count).to.equal(collected.sampleCount);
+        expect(frozen.evidence.stats.sample_count).to.equal(collected.sampleCount - (scenario === 'boot_reset' ? 1 : 0));
         expect(frozen.evidence.stats.processed_coverage).to.equal(1);
         expect(frozen.evidence.session.boundary_source).to.equal('device_ack');
         expect(frozen.settlementPayload.endedAt).to.equal(endedAt);
@@ -319,8 +334,8 @@ describe('V2 real Python IoT HTTP to real contract integration (synthetic transp
         expect(chain.rewardPaid).to.equal(ethers.parseEther(reward));
         expect(chain.penaltyCollected).to.equal(ethers.parseEther(penalty));
         expect(chain.evidenceHash).to.equal(frozen.settlementPayload.evidenceHash);
-        if (scenario === 'spike') {
-            expect(frozen.evidence.stats.violation_count).to.equal(1);
+        if (scenario === 'spike' || scenario === 'repeated_spikes') {
+            expect(frozen.evidence.stats.violation_count).to.equal(scenario === 'spike' ? 1 : 300);
             expect(frozen.evidence.stats.confirmed_violation_count).to.equal(0);
         }
         expect((await f.live.end(USER_ID, id)).duplicate).to.equal(true);
@@ -356,5 +371,208 @@ describe('V2 real Python IoT HTTP to real contract integration (synthetic transp
         expect(chain.rewardPaid).to.equal(ethers.parseEther('0.002'));
         expect((await f.httpFixture('diagnostics')).commands).to.deep.equal(['session_start', 'session_stop']);
         expect(await f.rewards.accountingInvariant()).to.equal(true);
+    });
+});
+
+async function useSqliteSessions(f) {
+    const store = new SqliteSessionStore(path.join(f.directory, 'wallet.db'));
+    sqliteStores.push(store);
+    f.store = f.walletService.store = store;
+    const writer = new DurableContractWriter({ provider: ethers.provider, store, waitMs: 0, chainId: 31337 });
+    f.walletService.transactionSender = f.rewardService.transactionSender = writer;
+    f.live = new LiveSessionService({ walletService: f.walletService, iot: f.iot, settler: f.settler,
+        completionStore: f.identityStore, clock: () => f.clock.now, logger: () => {} });
+    return writer;
+}
+
+async function useSiweHttp(f) {
+    const identities = new SqliteCustomerStore(path.join(f.directory, 'identity.db'));
+    sqliteStores.push(identities);
+    const customers = new CustomerService({ store: identities, chainId: 31337,
+        operatorWallets: [f.owner.address], appOrigin: 'http://localhost:8081' });
+    const app = createApp({ service: {}, customerService: customers, walletService: f.walletService,
+        liveService: f.live, tokens: { HRC_APP_AUTH_MODE: 'siwe', HRC_REWARD_PROTOCOL_VERSION: 'task-rewards-v2',
+            HRC_LOCAL_FUNDING_ENABLED: 'false', HRC_INGEST_API_TOKEN: 'i'.repeat(40) } });
+    const server = app.listen(0, '127.0.0.1');
+    httpServers.push(server);
+    await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const call = async (route, token, body, headers = {}) => {
+        const response = await fetch(baseUrl + route, { method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...headers },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+        return { status: response.status, body: await response.json() };
+    };
+    const login = async signer => {
+        const challenge = await call('/api/auth/challenge', null, { walletAddress: signer.address, chainId: 31337 });
+        expect(challenge.status).to.equal(200);
+        const result = await call('/api/auth/wallet', null, { walletAddress: signer.address, chainId: 31337,
+            message: challenge.body.message, signature: await signer.signMessage(challenge.body.message) });
+        expect(result.status).to.equal(200);
+        return result.body;
+    };
+    return { call, login };
+}
+
+describe('V2 durable receipt recovery and HTTP authorization (isolated real chain)', function () {
+    this.timeout(40000);
+
+    for (const failure of ['pending', 'receipt-outage-after-broadcast']) {
+        it(`recovers ${failure} through SQLite reopen using one signed transaction and one settlement event`, async function () {
+            const f = await fixture();
+            await usePythonIot(f);
+            await useSqliteSessions(f);
+            const id = await startSession(f);
+            const collected = await f.httpFixture('collect', { sessionId: id, scenario: 'safe' });
+            const endedAt = Math.floor(Date.parse(collected.endedAt) / 1000);
+            await time.increaseTo(endedAt);
+            f.clock.now = endedAt * 1000;
+            const broadcasts = [];
+            let nonceReads = 0;
+            let receiptUnavailable = false;
+            const proxy = new Proxy(ethers.provider, {
+                get(target, property) {
+                    if (property === 'getTransactionCount') return async (...args) => {
+                        nonceReads++;
+                        return target.getTransactionCount(...args);
+                    };
+                    if (property === 'getTransactionReceipt') return async (...args) => {
+                        if (receiptUnavailable) throw new Error('synthetic receipt RPC outage');
+                        return target.getTransactionReceipt(...args);
+                    };
+                    if (property === 'broadcastTransaction') return async raw => {
+                        // Read from a separate SQLite handle before broadcast to
+                        // prove signed bytes have been committed durably.
+                        const persisted = new SqliteSessionStore(path.join(f.directory, 'wallet.db'));
+                        try { expect(persisted.getTransaction(`settlement:${id}`).rawTransaction).to.equal(raw); }
+                        finally { persisted.close(); }
+                        broadcasts.push(raw);
+                        const transaction = await target.broadcastTransaction(raw);
+                        if (failure === 'receipt-outage-after-broadcast') {
+                            receiptUnavailable = true;
+                            throw new Error('synthetic lost broadcast response');
+                        }
+                        return transaction;
+                    };
+                    const value = Reflect.get(target, property, target);
+                    return typeof value === 'function' ? value.bind(target) : value;
+                }
+            });
+            const wallet = f.operatorWallet.connect(proxy);
+            f.rewardService.wallet = wallet;
+            f.rewardService.contract = f.rewards.connect(wallet);
+            f.rewardService.transactionSender = new DurableContractWriter({ provider: proxy, store: f.store, waitMs: 0, chainId: 31337 });
+            if (failure === 'pending') await network.provider.send('evm_setAutomine', [false]);
+            expect((await f.live.end(USER_ID, id)).stage).to.equal('SETTLEMENT_PENDING');
+            const before = f.store.get(id);
+            const signedBefore = f.store.getTransaction(`settlement:${id}`);
+            expect(['SIGNED', 'PENDING']).to.include(signedBefore.status);
+            expect(broadcasts).to.have.length(1);
+            expect(nonceReads).to.equal(1);
+            const transaction = ethers.Transaction.from(signedBefore.rawTransaction);
+            const decoded = f.rewards.interface.parseTransaction({ data: transaction.data });
+            expect(Number(decoded.args.endedAt)).to.equal(endedAt);
+            expect(decoded.args.evidenceHash).to.equal(before.settlementPayload.evidenceHash);
+            if (failure === 'pending') {
+                expect((await f.rewards.sessions(sessionKey(id))).settled).to.equal(false);
+                // Another retry before mining must reuse the exact same signed bytes.
+                await f.live.end(USER_ID, id);
+                expect(broadcasts).to.have.length(2);
+                expect(broadcasts[1]).to.equal(broadcasts[0]);
+                expect(nonceReads).to.equal(1);
+                await network.provider.send('evm_mine');
+                await network.provider.send('evm_setAutomine', [true]);
+            }
+            receiptUnavailable = false;
+            f.store.close();
+            const reopened = new SqliteSessionStore(path.join(f.directory, 'wallet.db'));
+            sqliteStores.push(reopened);
+            f.store = f.walletService.store = reopened;
+            f.rewardService.transactionSender = new DurableContractWriter({ provider: proxy, store: reopened, waitMs: 0, chainId: 31337 });
+            f.live = new LiveSessionService({ walletService: f.walletService, iot: f.iot, settler: f.settler,
+                completionStore: f.identityStore, clock: () => f.clock.now, logger: () => {} });
+            f.clock.now += 30000;
+            await f.live.drain();
+            const after = reopened.get(id);
+            expect(after.stage, after.lastError).to.equal('SETTLED');
+            expect(after.settlementPayload).to.deep.equal(before.settlementPayload);
+            expect(after.evidence).to.deep.equal(before.evidence);
+            const saved = reopened.getTransaction(`settlement:${id}`);
+            expect(saved.status).to.equal('CONFIRMED');
+            expect(saved.rawTransaction).to.equal(signedBefore.rawTransaction);
+            expect(saved.transactionHash).to.equal(signedBefore.transactionHash);
+            expect(after.settlementResult.transactionHash).to.equal(saved.transactionHash);
+            expect(nonceReads).to.equal(1);
+            expect(broadcasts).to.have.length(failure === 'pending' ? 2 : 1);
+            const events = await f.rewards.queryFilter(f.rewards.filters.SessionSettled(sessionKey(id)));
+            expect(events).to.have.length(1);
+            expect(events[0].args.endedAt).to.equal(BigInt(endedAt));
+            expect((await f.live.end(USER_ID, id)).duplicate).to.equal(true);
+            expect((await f.httpFixture('diagnostics')).commands).to.deep.equal(['session_start', 'session_stop']);
+            expect(await f.token.balanceOf(f.customer.address)).to.equal(ethers.parseEther('1.002'));
+            expect(await f.rewards.accountingInvariant()).to.equal(true);
+        });
+    }
+
+    it('rejects non-operators, wrong owners, beneficiaries and user-chosen outcomes through the real SIWE HTTP API without moving tokens', async function () {
+        const f = await fixture();
+        await usePythonIot(f);
+        const http = await useSiweHttp(f);
+        const login = await http.login(f.customer);
+        const user = f.walletService.walletUser(f.customer.address);
+        const other = await http.login((await ethers.getSigners())[3]);
+        const operator = await http.login(f.owner);
+        // Keep this assignment tied to the canonical SIWE wallet identity.
+        f.assignment.userId = user.userId;
+        const prepared = await new WalletFirstService({ customerService: {}, walletService: f.walletService, sessionKey })
+            .prepareStartSession(user.userId, { sessionRef: 'siwe-v2', taskSnapshot: f.assignment.policySnapshot });
+        await f.live.reserveWalletStart(user.userId, prepared.sessionId, f.assignment);
+        const tx = await f.customer.sendTransaction({ to: prepared.to, data: prepared.data, value: prepared.value });
+        await tx.wait();
+        const id = prepared.sessionId;
+        expect((await http.call(`/api/me/sessions/${id}/confirm-start`, login.token, { transactionHash: tx.hash })).status).to.equal(200);
+        const initial = await Promise.all([f.token.balanceOf(f.customer.address), f.token.balanceOf(f.treasury.address),
+            f.token.balanceOf(await f.rewards.getAddress()), f.rewards.rewardPoolBalance(), f.rewards.escrowedStakeTotal()]);
+        const cases = [
+            ['/api/session-outcome', login.token, { sessionId: id, outcome: 'COMPLETED_SAFE' }, 403, 'FORBIDDEN'],
+            ['/api/session-outcome', 'i'.repeat(40), { sessionId: id, outcome: 'COMPLETED_SAFE' }, 401, 'UNAUTHORIZED'],
+            ['/api/session-outcome', operator.token, { sessionId: id, outcome: 'COMPLETED_SAFE' }, 410, 'TASK_SETTLEMENT_ROUTE_RETIRED'],
+            [`/api/admin/task-sessions/${id}/settle`, login.token, {}, 403, 'FORBIDDEN'],
+            [`/api/me/sessions/${id}/end`, other.token, {}, 403, 'SESSION_OWNER_MISMATCH'],
+            [`/api/me/sessions/${id}/end`, login.token, { beneficiary: f.owner.address }, 400, 'INVALID_PAYLOAD'],
+            [`/api/me/sessions/${id}/end`, login.token, { outcome: 'COMPLETED_SAFE', rewardPaid: '999' }, 400, 'INVALID_PAYLOAD'],
+            [`/api/admin/task-sessions/${id}/settle`, operator.token, { beneficiary: f.owner.address }, 400, 'INVALID_PAYLOAD'],
+            [`/api/admin/task-sessions/${id}/settle`, operator.token, {}, 409, 'EVIDENCE_NOT_FROZEN'],
+            [`/api/sessions/${id}/completion-evidence`, login.token, { taskId: TASK_ID, observedCycles: 999, reason: 'self approved' }, 403, 'FORBIDDEN'],
+        ];
+        for (const [route, token, body, status, code] of cases) {
+            const response = await http.call(route, token, body, { 'x-hrc-actor': f.owner.address });
+            expect(response.status, route + ': ' + JSON.stringify(response.body)).to.equal(status);
+            expect(response.body.code).to.equal(code);
+        }
+        const after = await Promise.all([f.token.balanceOf(f.customer.address), f.token.balanceOf(f.treasury.address),
+            f.token.balanceOf(await f.rewards.getAddress()), f.rewards.rewardPoolBalance(), f.rewards.escrowedStakeTotal()]);
+        expect(after).to.deep.equal(initial);
+        expect(f.store.listTransactions()).to.have.length(0);
+        expect((await f.rewards.sessions(sessionKey(id))).settled).to.equal(false);
+        expect((await f.httpFixture('diagnostics')).commands).to.deep.equal(['session_start']);
+        expect(await f.rewards.accountingInvariant()).to.equal(true);
+    });
+
+    it('does not penalize a forged confirmed-violation result without confirmed event evidence', async function () {
+        const f = await fixture({ outcome: 'VIOLATION_CONFIRMED' });
+        const id = await startSession(f);
+        const original = f.iot.outcome;
+        f.iot.outcome = async sessionId => {
+            const document = await original(sessionId);
+            document.stats.confirmed_violation_count = 0;
+            return document;
+        };
+        await f.live.end(USER_ID, id);
+        const record = f.store.get(id);
+        expect(record.settlementPayload.outcome).to.equal('INCOMPLETE');
+        expect(record.evidence.result.reasonCodes).to.include('confirmed_violation_evidence_missing');
+        expect((await f.rewards.sessions(sessionKey(id))).penaltyCollected).to.equal(0n);
+        expect(await f.token.balanceOf(f.customer.address)).to.equal(ethers.parseEther('1'));
     });
 });

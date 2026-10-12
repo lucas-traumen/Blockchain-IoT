@@ -57,3 +57,14 @@ test('a confirmed operation whose receipt disappeared is not reported as confirm
     assert.equal(f.state.broadcasts.length,1);assert.equal(f.state.nonceReads,1);
     assert.equal(f.store.getTransaction('stake:one').status,'CONFIRMED');
 });
+
+test('the durable writer uses the configured deployment chain instead of a hard-coded local chain', async t => {
+    const f = fixture(t);
+    f.state.receipt = { status: 1, blockNumber: 11 };
+    f.provider.getNetwork = async () => ({ chainId: 11155111n });
+    const writer = new DurableContractWriter({ provider: f.provider, store: f.store, waitMs: 0, chainId: 11155111 });
+    const result = await writer.send('stake:sepolia', f.wallet, f.contract, 'call', [7]);
+    assert.equal(result.pending, false);
+    const record = f.store.getTransaction('stake:sepolia');
+    assert.equal(ethers.Transaction.from(record.rawTransaction).chainId, 11155111n);
+});

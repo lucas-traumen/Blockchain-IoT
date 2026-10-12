@@ -54,4 +54,25 @@ function validateTaskEvidence(document, task) {
     return { reasons, durationS, expectedSamples, policy };
 }
 
-module.exports = { TASK_EVIDENCE_POLICY, validateTaskEvidence };
+
+function validateTaskOutcome(document) {
+    const stats = document?.stats || {};
+    const session = document?.session || {};
+    const requested = document?.result?.outcome;
+    const reasons = [];
+    const closed = session.status === 'closed';
+    const confirmed = count(stats.confirmed_violation_count) && stats.confirmed_violation_count > 0;
+    const fault = (count(stats.unknown_count) && stats.unknown_count > 0) || session.boot_change === true;
+    if (requested === 'VIOLATION_CONFIRMED') {
+        if (!closed) reasons.push('task_sensor_session_not_closed');
+        if (!confirmed) reasons.push('confirmed_violation_evidence_missing');
+    } else if (requested === 'SENSOR_FAULT') {
+        if (!closed) reasons.push('task_sensor_session_not_closed');
+        if (!fault) reasons.push('sensor_fault_evidence_missing');
+    } else if (!['VALID_NO_VIOLATION', 'INCOMPLETE', 'OWNER_CANCELLED', 'SYSTEM_CANCELLED'].includes(requested)) {
+        reasons.push('task_outcome_unsupported');
+    }
+    return { reasons, confirmedViolation: confirmed, sensorFault: fault };
+}
+
+module.exports = { TASK_EVIDENCE_POLICY, validateTaskEvidence, validateTaskOutcome };

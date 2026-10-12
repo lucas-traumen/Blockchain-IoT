@@ -205,7 +205,7 @@ class WalletService {
         const store = env.HRC_APP_STORE !== "json"
             ? (() => { const { SqliteSessionStore } = require("./sqliteStores"); return new SqliteSessionStore(env.HRC_APP_SESSION_DB_PATH || sessionFile.replace(/\.json$/, ".db")); })()
             : new JsonSessionStore(sessionFile);
-        const transactionSender = new DurableContractWriter({ provider, store });
+        const transactionSender = new DurableContractWriter({ provider, store, chainId });
         const service = new WalletService({ provider, token, rewards, config, users, store, transactionSender, tokens: env,
             identityStore, legacyWallets: deployment.demoWallets || [] });
         for (const user of identityStore?.listUsers() || []) service.walletUser(user.walletAddress);
