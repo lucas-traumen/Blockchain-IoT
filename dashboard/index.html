@@ -157,8 +157,8 @@
                 <label>Description<input name="description" maxlength="2000" required></label>
                 <label>Device ID<input name="deviceId" value="esp32_01" maxlength="80" required></label>
                 <label>Required cycles<input name="requiredCycles" type="number" min="1" max="100000" value="20" required></label>
-                <label>Minimum seconds<input name="minimumDurationS" type="number" min="120" max="86400" value="120" required></label>
-                <label>Maximum seconds<input name="maximumDurationS" type="number" min="120" max="86400" value="900" required></label>
+                <label>Minimum seconds<input name="minimumDurationS" type="number" min="30" max="86400" value="30" required></label>
+                <label>Full reward seconds<input name="maximumDurationS" type="number" min="30" max="86400" value="180" required></label>
                 <button type="submit" class="view-all-btn primary-action">Create draft</button>
             </form>
             <p id="ownerTaskStatus" class="view-message" role="status" aria-live="polite"></p>
@@ -885,6 +885,6 @@
 
     <script src="vendor/ethers.umd.min.js" defer></script>
     <script src="wallet.js?v=metamask-6" defer></script>
-    <script src="app.js?v=metamask-7" defer></script>
+    <script src="app.js?v=task-reward-curve-1" defer></script>
 </body>
 </html>

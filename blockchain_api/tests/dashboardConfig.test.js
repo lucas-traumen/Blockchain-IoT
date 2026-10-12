@@ -51,6 +51,14 @@ test("dashboard proxy sets CSP and browser security headers", () => {
     assert.match(nginxConfig, /Referrer-Policy "no-referrer"/);
 });
 
+test("V2 task reward UI documents the 30-second floor and full-reward threshold", () => {
+    const html = fs.readFileSync(path.join(__dirname, "../../dashboard/index.html"), "utf8");
+    assert.match(html, /Minimum seconds<input name="minimumDurationS" type="number" min="30"[^>]*value="30"/);
+    assert.match(html, /Full reward seconds<input name="maximumDurationS" type="number" min="30"[^>]*value="180"/);
+    assert.match(source, /full reward at \$\{task\.completionRule\?\.maximumDurationS \?\? 180\}s \(capped after\)/);
+    assert.match(source, /remains eligible beyond it/);
+});
+
 test("local MetaMask launcher validates proxy JSON and defaults to the supported stack ports", () => {
     assert.match(walletScript, /wait_for_dashboard_chain_proxy/);
     assert.match(walletScript, /JSON\.parse\(fs\.readFileSync/);

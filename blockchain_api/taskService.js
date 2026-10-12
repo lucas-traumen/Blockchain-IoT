@@ -3,10 +3,11 @@ const { ApiError, identifier } = require("./eventPayload");
 
 const DEMO_ECONOMICS = Object.freeze({
     stakeHrc: "0.200",
+    baseRewardHrc: "0.001",
     rewardHrc: "0.002",
     penaltyHrc: "0.010",
     dailyRewardCapHrc: "0.010",
-    minimumDurationS: 120,
+    minimumDurationS: 30,
     referenceValueVndPerHrc: "10000"
 });
 
@@ -34,10 +35,10 @@ function validateRule(value) {
         throw new ApiError(400, "INVALID_COMPLETION_RULE", "completionRule must require a positive robot cycle count");
     }
     const minimumDurationS = Number(rule.minimumDurationS ?? DEMO_ECONOMICS.minimumDurationS);
-    const maximumDurationS = Number(rule.maximumDurationS ?? 900);
+    const maximumDurationS = Number(rule.maximumDurationS ?? 180);
     if (!Number.isSafeInteger(minimumDurationS) || minimumDurationS < DEMO_ECONOMICS.minimumDurationS
         || !Number.isSafeInteger(maximumDurationS) || maximumDurationS < minimumDurationS || maximumDurationS > 86400) {
-        throw new ApiError(400, "INVALID_COMPLETION_RULE", "duration must be between 120 seconds and 24 hours");
+        throw new ApiError(400, "INVALID_COMPLETION_RULE", "duration must be between 30 seconds and 24 hours");
     }
     return { type: "robot_cycle_count", requiredCycles: rule.requiredCycles, minimumDurationS, maximumDurationS };
 }

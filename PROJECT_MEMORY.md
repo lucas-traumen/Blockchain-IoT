@@ -1117,3 +1117,32 @@ safety outcome.
   checks pass. Browser wallet injection/rendering fixtures do not verify real
   MetaMask extension writes or hardware operation. Current sensor `latest=null`
   is an observed external readiness blocker, not bypassed by the UI change.
+
+## Task reward curve decision (R28, 2026-10-12)
+
+- V2 task rewards use a global 30-second eligibility floor. The task's
+  `maximumDurationS` is renamed conceptually to the full-reward duration: it is
+  frozen on-chain when Start is signed, but it is not an upper validity bound.
+- Safe reward curve: duration below 30 seconds pays no safe reward; 30 seconds
+  pays 0.001 HRC; between 30 seconds and the frozen full-reward duration the
+  payout increases linearly; at and beyond that threshold it is capped at
+  0.002 HRC. Unsafe/incomplete evidence behavior is unchanged.
+- The V2 Start ABI, session tuple and `SessionStarted` event carry the frozen
+  full-reward duration. Every wallet calldata builder, receipt verifier, event
+  parser and tuple reader must change together. Existing task deployments are
+  not proxies and must not be used with the new four-argument Start calldata.
+- Backend evidence policy still enforces the task-specific minimum duration,
+  which may be greater than 30 seconds, but must not reject evidence merely
+  because duration exceeds the full-reward threshold. Expected sample count
+  uses a 30-second global floor.
+- Default task form/rule is 30 seconds minimum and 180 seconds full reward.
+  Keep `rewardHrc=0.002` as the maximum reward for compatibility and expose
+  0.001 HRC as the base reward where policy/deployment metadata is shown.
+- R28 is source-only until a fresh explicit deployment is launched. Never
+  restart/reset the active ports or silently replace their deployment manifest.
+- R28 verification: Blockchain API **207/207**, Hardhat **122/122**, focused
+  task contract tests include midpoint payout and exact/underfunded pool
+  boundaries, JS syntax and `git diff --check` pass. Wallet preflight now only
+  requires the base reward (`0.001`) to be available; the actual payout and
+  daily-cap decision remains on-chain at settlement. No active runtime,
+  deployment, database, firmware setting or manifest was changed.

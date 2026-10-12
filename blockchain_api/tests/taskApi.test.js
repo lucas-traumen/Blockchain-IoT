@@ -46,7 +46,7 @@ test("task routes enforce SIWE roles and preserve idempotent assignments with au
     const userToken = await f.login(f.user);
     assert.equal((await f.call("/api/admin/task-sessions", { token: userToken })).status, 403);
     const payload = { title: "Safe cycles", description: "Complete robot cycles in zone A", deviceId: "esp32_01", zoneId: "zone-a",
-        completionRule: { type: "robot_cycle_count", requiredCycles: 5, minimumDurationS: 120, maximumDurationS: 600 } };
+        completionRule: { type: "robot_cycle_count", requiredCycles: 5, minimumDurationS: 30, maximumDurationS: 180 } };
     assert.equal((await f.call("/api/tasks", { method: "POST", body: payload, token: userToken })).status, 403);
     const created = await f.call("/api/tasks", { method: "POST", body: payload, token: ownerToken });
     assert.equal(created.status, 200);

@@ -7,6 +7,7 @@ const { rewardConfig } = require("./rewardService");
 const { createRpcProvider } = require("./rpcProvider");
 const { operatorPrivateKey } = require("./operatorKey");
 const { withSignerWrite } = require("./signerQueue");
+const TASK_REWARD_CONTRACT_REVISION = "task-rewards-v2-duration-curve-v1";
 
 function outcomeCode(value) {
     const outcome = typeof value === "string" ? value.toUpperCase() : value;
@@ -33,7 +34,8 @@ function taskSession(tuple) {
         penaltyCollected: BigInt(tuple.penaltyCollected ?? tuple[9]),
         outcome: Number(tuple.outcome ?? tuple[10]),
         started: Boolean(tuple.started ?? tuple[11]),
-        settled: Boolean(tuple.settled ?? tuple[12])
+        settled: Boolean(tuple.settled ?? tuple[12]),
+        fullRewardDuration: BigInt(tuple.fullRewardDuration ?? tuple[13])
     };
 }
 
@@ -44,6 +46,9 @@ class TaskRewardService {
     static fromEnv(env = process.env) {
         const config = rewardConfig(env);
         if (config.protocolVersion !== "task-rewards-v2") throw new ApiError(503, "REWARD_PROTOCOL_MISMATCH", "Task reward V2 deployment is not selected");
+        if (config.deployment.contractRevision !== TASK_REWARD_CONTRACT_REVISION) {
+            throw new ApiError(503, "REWARD_ABI_MISMATCH", "Task reward deployment predates the duration-curve ABI; deploy a fresh V2 task contract");
+        }
         const provider = createRpcProvider(config.rpcUrl, { cacheTimeout: -1 });
         const wallet = new ethers.Wallet(config.privateKey, provider);
         const contract = new ethers.Contract(config.address, config.abi, wallet);
@@ -167,6 +172,7 @@ class TaskRewardService {
             stakeReturned: ethers.formatEther(session.stakedAmount - session.penaltyCollected),
             rewardPaid: ethers.formatEther(session.rewardPaid), penaltyCollected: ethers.formatEther(session.penaltyCollected),
             evidenceHash: proof, endedAt: Number(session.endedAt), settledAt: Number(session.settledAt),
+            fullRewardDuration: Number(session.fullRewardDuration),
             transactionHash: transaction?.hash || null, blockNumber: receipt?.blockNumber ?? null };
     }
 }

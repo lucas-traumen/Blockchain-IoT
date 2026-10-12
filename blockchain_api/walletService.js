@@ -15,6 +15,7 @@ const DEFAULT_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/
 const DEFAULT_TOKEN_ABI = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCRewardToken.sol/HRCRewardToken.json");
 const DEFAULT_REWARD_ABI = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCSessionRewards.sol/HRCSessionRewards.json");
 const DEFAULT_TASK_REWARD_ABI = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCTaskRewards.sol/HRCTaskRewards.json");
+const TASK_REWARD_CONTRACT_REVISION = "task-rewards-v2-duration-curve-v1";
 const TOKEN_ABI = [
     "function balanceOf(address) view returns (uint256)",
     "function allowance(address,address) view returns (uint256)",
@@ -36,10 +37,10 @@ const REWARD_ABI = [
 ];
 const TASK_REWARD_ABI = [
     "function STAKE_AMOUNT() view returns (uint256)",
-    "function sessions(bytes32) view returns (address,bytes32,bytes32,bytes32,uint64,uint64,uint64,uint128,uint128,uint128,uint8,bool,bool)",
-    "function startSession(bytes32,bytes32,bytes32)",
+    "function sessions(bytes32) view returns (address,bytes32,bytes32,bytes32,uint64,uint64,uint64,uint128,uint128,uint128,uint8,bool,bool,uint64)",
+    "function startSession(bytes32,bytes32,bytes32,uint256)",
     "function operators(address) view returns (bool)",
-    "event SessionStarted(bytes32 indexed sessionId,bytes32 indexed taskIdHash,address indexed beneficiary,bytes32 policyHash,uint256 stakeAmount,uint256 startedAt)",
+    "event SessionStarted(bytes32 indexed sessionId,bytes32 indexed taskIdHash,address indexed beneficiary,bytes32 policyHash,uint256 stakeAmount,uint256 startedAt,uint256 fullRewardDuration)",
     "event SessionSettled(bytes32 indexed sessionId,bytes32 indexed taskIdHash,address indexed beneficiary,bytes32 policyHash,uint8 outcome,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 startedAt,uint256 endedAt,uint256 settledAt)"
 ];
 
@@ -94,6 +95,7 @@ function readTuple(tuple, taskRewards = false) {
         outcome: Number(tuple.outcome ?? tuple[10]),
         started: Boolean(tuple.started ?? tuple[11]),
         settled: Boolean(tuple.settled ?? tuple[12]),
+        fullRewardDuration: BigInt(tuple.fullRewardDuration ?? tuple[13]),
         settlementStatus: null,
         outcomeTimestamp: BigInt(tuple.endedAt ?? tuple[5])
     };
@@ -124,6 +126,7 @@ function formatEvent(parsed, log, taskRewards = false) {
         result.policyHash = taskRewards ? (args.policyHash ?? args[3]) : null;
         result.amount = ethers.formatEther(args.amount ?? args.stakeAmount ?? args[taskRewards ? 4 : 2]);
         result.startedAt = Number(args.startedAt ?? args[taskRewards ? 5 : 3]);
+        result.fullRewardDuration = taskRewards ? Number(args.fullRewardDuration ?? args[6]) : null;
     } else if (parsed.name === "SessionSettled") {
         result.sessionKey = args.sessionId ?? args[0];
         result.taskIdHash = taskRewards ? (args.taskIdHash ?? args[1]) : null;
@@ -171,6 +174,9 @@ class WalletService {
             ? path.join(__dirname, "../smart_contracts/deployments/task-rewards-localhost.json") : DEFAULT_DEPLOYMENT);
         const deployment = readJson(deploymentPath) || {};
         const taskRewards = deployment.version === "task-rewards-v2";
+        if (taskRewards && deployment.contractRevision !== TASK_REWARD_CONTRACT_REVISION) {
+            throw new ApiError(503, "REWARD_ABI_MISMATCH", "Task reward deployment predates the duration-curve ABI; deploy a fresh V2 task contract");
+        }
         const tokenAddress = env.HRC_REWARD_TOKEN_ADDRESS || deployment.tokenAddress;
         const rewardAddress = env.HRC_REWARD_ADDRESS || deployment.rewardsAddress;
         if (!ethers.isAddress(tokenAddress) || !ethers.isAddress(rewardAddress)) {
@@ -305,9 +311,14 @@ class WalletService {
             taskRewards ? this.rewards.STAKE_AMOUNT() : this.rewards.stakeAmount(),
             this.token.symbol(), this.token.decimals()
         ]);
-        const [rewardPoolBalance, safeReward, dailyRewardCap] = taskRewards
-            ? await Promise.all([this.rewards.rewardPoolBalance(), this.rewards.SAFE_REWARD(), this.rewards.DAILY_REWARD_CAP()])
-            : [null, null, null];
+        const [rewardPoolBalance, baseReward, safeReward, dailyRewardCap] = taskRewards
+            ? await Promise.all([
+                this.rewards.rewardPoolBalance(),
+                this.rewards.BASE_REWARD(),
+                this.rewards.SAFE_REWARD(),
+                this.rewards.DAILY_REWARD_CAP()
+            ])
+            : [null, null, null, null];
         const tuples = await Promise.all(this.store.list(userId).map(record => this._readSession(sessionKey(record.sessionId))));
         const sessions = tuples.map(tuple => readTuple(tuple, this.config.rewardProtocolVersion === "task-rewards-v2"))
             .filter(row => row.started && row.beneficiary.toLowerCase() === user.walletAddress.toLowerCase());
@@ -319,11 +330,14 @@ class WalletService {
         const rewardPaidToday = sessions.filter(row => row.settled && Math.floor(Number(row.settledAt) / 86400) === day).reduce((sum, row) => sum + row.rewardPaid, 0n);
         const onChainRewardPaidToday = taskRewards
             ? await this.rewards.rewardsPaidByDay(user.walletAddress, day) : rewardPaidToday;
-        const canEarnSafeReward = !taskRewards || (rewardPoolBalance >= safeReward && onChainRewardPaidToday + safeReward <= dailyRewardCap);
+        // A session can start when the contract can fund the minimum valid
+        // safe payout. Longer sessions may earn more, but that is decided at
+        // settlement from the frozen duration curve.
+        const canEarnSafeReward = !taskRewards || (rewardPoolBalance >= baseReward && onChainRewardPaidToday + baseReward <= dailyRewardCap);
         const startReason = balance < stakeAmount ? "INSUFFICIENT_HRC_BALANCE"
             : allowance < stakeAmount ? "APPROVAL_REQUIRED"
             : unsettled.length || pending ? "SESSION_IN_PROGRESS"
-            : taskRewards && rewardPoolBalance < safeReward ? "REWARD_POOL_EMPTY" : null;
+            : taskRewards && rewardPoolBalance < baseReward ? "REWARD_POOL_EMPTY" : null;
         return {
             success: true, userId, address: user.walletAddress, walletAddress: user.walletAddress,
             chainId: Number(network.chainId), tokenAddress: this.config.tokenAddress,
@@ -333,6 +347,7 @@ class WalletService {
             requiredAllowance: ethers.formatUnits(stakeAmount, decimals),
             stakeAmount: ethers.formatUnits(stakeAmount, decimals),
             rewardPoolBalance: taskRewards ? ethers.formatUnits(rewardPoolBalance, decimals) : null,
+            baseReward: taskRewards ? ethers.formatUnits(baseReward, decimals) : null,
             safeReward: taskRewards ? ethers.formatUnits(safeReward, decimals) : null,
             dailyRewardCap: taskRewards ? ethers.formatUnits(dailyRewardCap, decimals) : null,
             rewardPaidToday: ethers.formatUnits(taskRewards ? onChainRewardPaidToday : rewardPaidToday, decimals),
@@ -341,7 +356,7 @@ class WalletService {
             lockedBalance: ethers.formatUnits(locked, decimals), activeSessionCount: unsettled.length,
             pendingSessionId: pending?.sessionId || null,
             canStart: balance >= stakeAmount && allowance >= stakeAmount && !unsettled.length && !pending
-                && (!taskRewards || rewardPoolBalance >= safeReward)
+                && (!taskRewards || rewardPoolBalance >= baseReward)
         };
     }
 
@@ -373,7 +388,7 @@ class WalletService {
 
     _rewardTopics() {
         if (this.config.rewardProtocolVersion === "task-rewards-v2") return [
-            ethers.id("SessionStarted(bytes32,bytes32,address,bytes32,uint256,uint256)"),
+            ethers.id("SessionStarted(bytes32,bytes32,address,bytes32,uint256,uint256,uint256)"),
             ethers.id("SessionSettled(bytes32,bytes32,address,bytes32,uint8,uint256,uint256,uint256,bytes32,uint256,uint256,uint256)")
         ];
         return [
@@ -462,6 +477,7 @@ class WalletService {
             userId: record.userId, beneficiary: row.beneficiary,
             taskId: record.taskId || null, assignmentId: record.assignmentId || null,
             taskSnapshot: record.taskSnapshot || null, policySnapshot: record.policySnapshot || null,
+            fullRewardDuration: this.config.rewardProtocolVersion === "task-rewards-v2" ? Number(row.fullRewardDuration) : null,
             rewardProtocolVersion: this.config.rewardProtocolVersion || 'session-rewards-v1',
             started: row.started, settled: row.settled,
             startedAt: Number(row.startedAt), endedAt: Number(row.endedAt || settledEvent?.endedAt || 0), settledAt: Number(row.settledAt),

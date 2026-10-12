@@ -27,14 +27,13 @@ function validateTaskEvidence(document, task) {
     // snapshot must fail closed rather than quietly weaken eligibility.
     if (Object.entries(TASK_EVIDENCE_POLICY).some(([key, value]) => policy[key] !== value)) reasons.push('task_evidence_policy_unsupported');
     if (!finite(durationS) || durationS < 0 || !finite(result.durationS) || Math.abs(result.durationS - durationS) > 1e-6) reasons.push('task_duration_evidence_mismatch');
-    if (!Number.isSafeInteger(task.completionRule?.minimumDurationS) || task.completionRule.minimumDurationS < 120
+    if (!Number.isSafeInteger(task.completionRule?.minimumDurationS) || task.completionRule.minimumDurationS < 30
         || !Number.isSafeInteger(task.completionRule?.maximumDurationS)
         || task.completionRule.maximumDurationS < task.completionRule.minimumDurationS) reasons.push('task_duration_rule_invalid');
     if (session.status !== 'closed') reasons.push('task_sensor_session_not_closed');
     if (finite(durationS) && durationS < task.completionRule?.minimumDurationS) reasons.push('task_duration_below_minimum');
-    if (finite(durationS) && durationS > task.completionRule?.maximumDurationS) reasons.push('task_duration_above_maximum');
     const expectedSamples = finite(durationS) && durationS >= 0
-        ? Math.ceil(Math.max(120, durationS) * TASK_EVIDENCE_POLICY.sampleRateHz * TASK_EVIDENCE_POLICY.minimumSampleCoverage) : null;
+        ? Math.ceil(Math.max(30, durationS) * TASK_EVIDENCE_POLICY.sampleRateHz * TASK_EVIDENCE_POLICY.minimumSampleCoverage) : null;
     if (!count(stats.sample_count) || expectedSamples === null || stats.sample_count < expectedSamples) reasons.push('sample_count_below_task_minimum');
     if (!count(stats.raw_count) || expectedSamples === null || stats.raw_count < expectedSamples
         || stats.raw_count !== stats.sample_count) reasons.push('raw_sample_coverage_below_task_minimum');

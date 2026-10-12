@@ -15,8 +15,9 @@ interface IHRCTaskToken {
 /// @notice V2 task-bound escrow. V1 HRCSessionRewards remains deployable and unchanged.
 contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public constant SECONDS_PER_DAY = 1 days;
-    uint256 public constant MIN_SAFE_DURATION = 120 seconds;
+    uint256 public constant MIN_SAFE_DURATION = 30 seconds;
     uint256 public constant STAKE_AMOUNT = 0.200 ether;
+    uint256 public constant BASE_REWARD = 0.001 ether;
     uint256 public constant SAFE_REWARD = 0.002 ether;
     uint256 public constant VIOLATION_PENALTY = 0.010 ether;
     uint256 public constant DAILY_REWARD_CAP = 0.010 ether;
@@ -37,6 +38,7 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
     error SessionAlreadySettled();
     error BeneficiaryMismatch();
     error InvalidEndTime();
+    error InvalidRewardDuration();
     error SafeDurationTooShort();
     error TransferFailed();
     error InvalidAmount();
@@ -58,6 +60,7 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
         uint8 outcome;
         bool started;
         bool settled;
+        uint64 fullRewardDuration;
     }
 
     address public immutable token;
@@ -66,7 +69,7 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public rewardPoolBalance;
     uint256 public escrowedStakeTotal;
     mapping(address => bool) public operators;
-    mapping(bytes32 => Session) public sessions;
+    mapping(bytes32 => Session) private _sessions;
     mapping(address => mapping(uint256 => uint256)) public rewardsPaidByDay;
 
     event OperatorAdded(address indexed operator);
@@ -76,7 +79,7 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
     event RewardPoolPaused(address indexed operator);
     event RewardPoolUnpaused(address indexed operator);
     event SessionStarted(bytes32 indexed sessionId, bytes32 indexed taskIdHash, address indexed beneficiary,
-        bytes32 policyHash, uint256 stakeAmount, uint256 startedAt);
+        bytes32 policyHash, uint256 stakeAmount, uint256 startedAt, uint256 fullRewardDuration);
     event SessionSettled(bytes32 indexed sessionId, bytes32 indexed taskIdHash, address indexed beneficiary,
         bytes32 policyHash, uint8 outcome, uint256 stakeReturned, uint256 rewardPaid,
         uint256 penaltyCollected, bytes32 evidenceHash, uint256 startedAt, uint256 endedAt, uint256 settledAt);
@@ -141,13 +144,14 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
         emit RewardPoolFunded(msg.sender, amount, nextBalance);
     }
 
-    function startSession(bytes32 sessionId, bytes32 taskIdHash, bytes32 policyHash)
+    function startSession(bytes32 sessionId, bytes32 taskIdHash, bytes32 policyHash, uint256 fullRewardDuration)
         external nonReentrant whenNotPaused
     {
         if (sessionId == bytes32(0) || taskIdHash == bytes32(0) || policyHash == bytes32(0)) revert InvalidIdentifier();
-        if (sessions[sessionId].started) revert SessionExists();
+        if (fullRewardDuration < MIN_SAFE_DURATION || fullRewardDuration > type(uint64).max) revert InvalidRewardDuration();
+        if (_sessions[sessionId].started) revert SessionExists();
         _transferFrom(msg.sender, address(this), STAKE_AMOUNT);
-        sessions[sessionId] = Session({
+        _sessions[sessionId] = Session({
             beneficiary: msg.sender,
             taskIdHash: taskIdHash,
             policyHash: policyHash,
@@ -160,10 +164,21 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
             penaltyCollected: 0,
             outcome: type(uint8).max,
             started: true,
-            settled: false
+            settled: false,
+            fullRewardDuration: uint64(fullRewardDuration)
         });
         escrowedStakeTotal += STAKE_AMOUNT;
-        emit SessionStarted(sessionId, taskIdHash, msg.sender, policyHash, STAKE_AMOUNT, block.timestamp);
+        emit SessionStarted(sessionId, taskIdHash, msg.sender, policyHash, STAKE_AMOUNT, block.timestamp, fullRewardDuration);
+    }
+
+    function rewardAmountForDuration(uint256 durationSeconds, uint256 fullRewardDuration)
+        public pure returns (uint256)
+    {
+        if (durationSeconds < MIN_SAFE_DURATION || fullRewardDuration < MIN_SAFE_DURATION) return 0;
+        if (durationSeconds >= fullRewardDuration) return SAFE_REWARD;
+        if (durationSeconds == MIN_SAFE_DURATION) return BASE_REWARD;
+        return BASE_REWARD + (SAFE_REWARD - BASE_REWARD)
+            * (durationSeconds - MIN_SAFE_DURATION) / (fullRewardDuration - MIN_SAFE_DURATION);
     }
 
     function submitOutcome(bytes32 sessionId, address beneficiary, uint8 outcome, bytes32 evidenceHash, uint256 endedAt)
@@ -171,7 +186,7 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
     {
         if (evidenceHash == bytes32(0)) revert InvalidEvidence();
         if (outcome > SYSTEM_CANCELLED) revert InvalidOutcome();
-        Session storage session = sessions[sessionId];
+        Session storage session = _sessions[sessionId];
         if (!session.started) revert SessionNotFound();
         if (session.settled) revert SessionAlreadySettled();
         if (session.beneficiary != beneficiary) revert BeneficiaryMismatch();
@@ -188,14 +203,8 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
         if (outcome == COMPLETED_SAFE) {
             stakeReturned = session.stakedAmount;
             _transfer(beneficiary, stakeReturned);
-            uint256 day = block.timestamp / SECONDS_PER_DAY;
-            uint256 alreadyPaid = rewardsPaidByDay[beneficiary][day];
-            if (alreadyPaid + SAFE_REWARD <= DAILY_REWARD_CAP && rewardPoolBalance >= SAFE_REWARD) {
-                rewardsPaidByDay[beneficiary][day] = alreadyPaid + SAFE_REWARD;
-                rewardPoolBalance -= SAFE_REWARD;
-                rewardPaid = SAFE_REWARD;
-                _transfer(beneficiary, rewardPaid);
-            }
+            rewardPaid = _paySafeReward(beneficiary,
+                rewardAmountForDuration(endedAt - session.startedAt, session.fullRewardDuration));
         } else if (outcome == VIOLATION_CONFIRMED) {
             penaltyCollected = VIOLATION_PENALTY;
             stakeReturned = session.stakedAmount - VIOLATION_PENALTY;
@@ -222,6 +231,20 @@ contract HRCTaskRewards is Ownable2Step, Pausable, ReentrancyGuard {
 
     function accountingInvariant() external view returns (bool) {
         return IHRCTaskToken(token).balanceOf(address(this)) >= rewardPoolBalance + escrowedStakeTotal;
+    }
+
+    function sessions(bytes32 sessionId) external view returns (Session memory) {
+        return _sessions[sessionId];
+    }
+
+    function _paySafeReward(address beneficiary, uint256 amount) internal returns (uint256) {
+        uint256 day = block.timestamp / SECONDS_PER_DAY;
+        uint256 alreadyPaid = rewardsPaidByDay[beneficiary][day];
+        if (alreadyPaid + amount > DAILY_REWARD_CAP || rewardPoolBalance < amount) return 0;
+        rewardsPaidByDay[beneficiary][day] = alreadyPaid + amount;
+        rewardPoolBalance -= amount;
+        _transfer(beneficiary, amount);
+        return amount;
     }
 
     function _transferFrom(address from, address to, uint256 amount) internal {

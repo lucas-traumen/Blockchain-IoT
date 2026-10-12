@@ -130,6 +130,16 @@ test('service recreation creates no fixed accounts, keys or demo login tokens', 
     assert.equal(second.walletUser(USER1).userId,user.userId);
 });
 
+test('task V2 refuses an old deployment manifest before using the four-argument Start ABI', t => {
+    const f = fixture(t);
+    const file = path.join(f.directory, 'task-rewards-localhost.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 'task-rewards-v2', network: 'localhost', chainId: 31337,
+        tokenAddress: TOKEN, rewardsAddress: REWARDS }));
+    assert.throws(() => WalletService.fromEnv({ HRC_APP_STORE: 'json',
+        HRC_SESSION_STORE_PATH: path.join(f.directory, 'task-sessions.json'), HRC_REWARD_DEPLOYMENT: file }),
+    { code: 'REWARD_ABI_MISMATCH' });
+});
+
 test('legacy fixed sessions migrate only when the verified address matches the deployment manifest', t => {
     const f=fixture(t);
     f.service.store.save({sessionId:'legacy-fixed',userId:'user_1'});

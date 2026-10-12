@@ -85,6 +85,7 @@ class WalletFirstService {
         const wallet = await walletService.getWallet(userId);
         let taskIdHash = null;
         let policyHash = null;
+        let fullRewardDuration = null;
         let data;
         if (walletService.config.rewardProtocolVersion === "task-rewards-v2") {
             const task = input.taskSnapshot?.task;
@@ -92,9 +93,13 @@ class WalletFirstService {
             if (!task?.taskId || !/^0x[0-9a-fA-F]{64}$/.test(String(policyHash || ""))) {
                 throw new ApiError(400, "TASK_ASSIGNMENT_REQUIRED", "Accept a published task before starting a V2 reward session");
             }
+            fullRewardDuration = Number(task.completionRule?.maximumDurationS);
+            if (!Number.isSafeInteger(fullRewardDuration) || fullRewardDuration < 30) {
+                throw new ApiError(400, "TASK_ASSIGNMENT_REQUIRED", "The accepted task must include a valid full-reward duration of at least 30 seconds");
+            }
             taskIdHash = ethers.id(task.taskId);
-            data = new ethers.Interface(["function startSession(bytes32 sessionId,bytes32 taskIdHash,bytes32 policyHash)"])
-                .encodeFunctionData("startSession", [this.sessionKey(sessionId), taskIdHash, policyHash]);
+            data = new ethers.Interface(["function startSession(bytes32 sessionId,bytes32 taskIdHash,bytes32 policyHash,uint256 fullRewardDuration)"])
+                .encodeFunctionData("startSession", [this.sessionKey(sessionId), taskIdHash, policyHash, fullRewardDuration]);
         } else {
             data = new ethers.Interface(["function startSession(bytes32 sessionId)"])
                 .encodeFunctionData("startSession", [this.sessionKey(sessionId)]);
@@ -110,6 +115,7 @@ class WalletFirstService {
             taskId: input.taskSnapshot?.task?.taskId || null,
             taskIdHash,
             policyHash,
+            fullRewardDuration,
             data,
             description: "Start a reward session with the staked amount"
         };

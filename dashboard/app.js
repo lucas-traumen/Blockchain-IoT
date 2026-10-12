@@ -293,8 +293,8 @@ function walletSessionRequirements(session) {
     const configuredDuration = window.hrcRuntimeConfig?.rewards?.policy?.minimumSafeDuration;
     const sessionDuration = session?.taskSnapshot?.task?.completionRule?.minimumDurationS
         ?? session?.policySnapshot?.minimumSafeDuration;
-    const parsedDuration = Number(sessionDuration ?? configuredDuration ?? 120);
-    const durationS = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 120;
+    const parsedDuration = Number(sessionDuration ?? configuredDuration ?? 30);
+    const durationS = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 30;
     return { durationS, minimumSamples: Math.ceil(durationS * 10 * 0.9) };
 }
 
@@ -345,7 +345,7 @@ function renderWalletTasks() {
         const title = document.createElement('strong');
         title.textContent = task.title;
         const detail = document.createElement('span');
-        detail.textContent = `${task.description} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.completionRule?.minimumDurationS ?? 120}s minimum · Stake ${task.economics?.stakeHrc ?? '0.200'} HRC · Reward ${task.economics?.rewardHrc ?? '0.002'} HRC`;
+        detail.textContent = `${task.description} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.completionRule?.minimumDurationS ?? 30}s minimum · full reward at ${task.completionRule?.maximumDurationS ?? 180}s (capped after) · Stake ${task.economics?.stakeHrc ?? '0.200'} HRC · Reward ${task.economics?.rewardHrc ?? '0.002'} HRC`;
         copy.append(title, detail);
         const button = document.createElement('button');
         button.type = 'button';
@@ -380,7 +380,7 @@ function renderOwnerTasks() {
         const title = document.createElement('strong');
         title.textContent = `${task.title} · ${task.status}`;
         const detail = document.createElement('span');
-        detail.textContent = `${task.taskId} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.economics?.stakeHrc ?? '0.200'} HRC stake / ${task.economics?.rewardHrc ?? '0.002'} HRC reward`;
+        detail.textContent = `${task.taskId} · ${task.completionRule?.requiredCycles ?? '--'} cycles · minimum ${task.completionRule?.minimumDurationS ?? 30}s · full reward at ${task.completionRule?.maximumDurationS ?? 180}s · ${task.economics?.stakeHrc ?? '0.200'} HRC stake / ${task.economics?.rewardHrc ?? '0.002'} HRC max reward`;
         copy.append(title, detail);
         row.appendChild(copy);
         if (task.status === 'DRAFT' && !ownerOnly) {
@@ -1232,12 +1232,12 @@ function renderRuntimeConfig(config) {
         text('walletPolicyStake', 'Lock ' + stake);
         text('walletPolicySafeTitle', 'COMPLETED SAFE TASK');
         text('walletPolicySafe', 'Return ' + stake + ' + ' + reward);
-        text('walletPolicySafeDetail', `Task completion and at least ${policy.minimumSafeDuration || 120} seconds are required. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
+        text('walletPolicySafeDetail', `Task completion and at least ${policy.minimumSafeDuration || 30} seconds are required. Reward scales from ${formatPolicyWei(policy.baseReward)} to ${reward} at the task's full-reward duration, then stays capped. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
         text('walletPolicyPenalty', 'Return 0.190 HRC · route ' + penalty + ' to treasury');
         text('walletPolicyRefund', 'Return ' + stake + ' · no reward or penalty');
         text('walletPolicyNoteTitle', 'Task-bound settlement');
         text('walletPolicyNote', 'A published task, completed cycle evidence, sensor coverage and frozen policy snapshot are required. Outcome and amounts are decided by backend evidence and contract policy.');
-        text('walletSessionTimerDetail', 'A completed task requires at least 120 seconds, its cycle target, and valid sensor evidence.');
+        text('walletSessionTimerDetail', 'A completed task requires at least 30 seconds, its cycle target, and valid sensor evidence. Reward reaches its cap at the task full-reward duration and remains eligible beyond it.');
         text('walletSensorStatus', 'Sensor readiness is checked before the task stake is submitted.');
         const scale = byId('walletRewardScale'); if (scale) scale.hidden = true;
     } else {

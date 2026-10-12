@@ -132,8 +132,8 @@ test('V2 sensor readiness reports the task minimum and 90-percent 10 Hz sample c
     const f = fixture(t);
     f.live.walletService.config.rewardProtocolVersion = 'task-rewards-v2';
     const device = await f.live.deviceState({ fresh: true });
-    assert.equal(device.minDurationS, 120);
-    assert.equal(device.minSamplesAtMinimumDuration, 1080);
+    assert.equal(device.minDurationS, 30);
+    assert.equal(device.minSamplesAtMinimumDuration, 270);
 });
 
 test('wallet-first signed start is reconciled into the sensor session store', async t => {

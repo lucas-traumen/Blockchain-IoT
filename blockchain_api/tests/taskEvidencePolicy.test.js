@@ -4,7 +4,7 @@ const { TASK_EVIDENCE_POLICY, validateTaskEvidence } = require('../taskEvidenceP
 
 function fixture() {
     return {
-        task: { evidencePolicy: { ...TASK_EVIDENCE_POLICY }, completionRule: { minimumDurationS: 120, maximumDurationS: 900 } },
+        task: { evidencePolicy: { ...TASK_EVIDENCE_POLICY }, completionRule: { minimumDurationS: 30, maximumDurationS: 90 } },
         document: { session: { started_at: '2026-10-12T10:00:00Z', ended_at: '2026-10-12T10:02:00Z', status: 'closed', boot_change: false },
             stats: { sample_count: 1200, raw_count: 1200, processed_count: 1200, processed_coverage: 1,
                 timing_span_s: 119.9, mean_cadence_hz: 10, max_timing_gap_s: 0.1, gap_count: 0,
@@ -18,6 +18,7 @@ test('task evidence is checked against the frozen wall-clock boundary and raw co
     const result = validateTaskEvidence(f.document, f.task);
     assert.deepEqual(result.reasons, []);
     assert.equal(result.expectedSamples, 1080);
+    assert.equal(result.reasons.includes('task_duration_above_maximum'), false);
     delete f.task.evidencePolicy;
     assert.deepEqual(validateTaskEvidence(f.document, f.task).reasons, []);
     f.task.completionRule.minimumDurationS = 180;
@@ -49,8 +50,7 @@ for (const [name, mutate, expected] of [
 });
 
 for (const [name, mutate, expected] of [
-    ['exactly 120 seconds', () => {}, null],
-    ['just under 120 seconds', f => { f.document.session.ended_at = '2026-10-12T10:01:59.999Z'; f.document.result.durationS = 119.999; }, 'task_duration_below_minimum'],
+    ['over the full-reward duration', () => {}, null],
     ['exactly 90 percent samples', f => { Object.assign(f.document.stats, { sample_count: 1080, raw_count: 1080, processed_count: 1080 }); }, null],
     ['one sample under 90 percent', f => { Object.assign(f.document.stats, { sample_count: 1079, raw_count: 1079, processed_count: 1079 }); }, 'sample_count_below_task_minimum'],
     ['95 percent processed coverage', f => { Object.assign(f.document.stats, { processed_count: 1140, processed_coverage: 0.95 }); }, null],
@@ -68,6 +68,22 @@ for (const [name, mutate, expected] of [
     const result = validateTaskEvidence(f.document, f.task);
     if (expected) assert.ok(result.reasons.includes(expected));
     else assert.deepEqual(result.reasons, []);
+});
+
+test('task evidence accepts exactly 30 seconds and rejects just below it', () => {
+    const f = fixture();
+    f.document.session.ended_at = '2026-10-12T10:00:30Z';
+    f.document.result.durationS = 30;
+    Object.assign(f.document.stats, { sample_count: 300, raw_count: 300, processed_count: 300,
+        processed_coverage: 1, timing_span_s: 29.9 });
+    const exact = validateTaskEvidence(f.document, f.task);
+    assert.deepEqual(exact.reasons, []);
+    assert.equal(exact.expectedSamples, 270);
+
+    f.document.session.ended_at = '2026-10-12T10:00:29.999Z';
+    f.document.result.durationS = 29.999;
+    f.document.stats.timing_span_s = 29.9;
+    assert.ok(validateTaskEvidence(f.document, f.task).reasons.includes('task_duration_below_minimum'));
 });
 
 test('a penalty outcome must be backed by confirmed events, while an isolated spike is insufficient', () => {

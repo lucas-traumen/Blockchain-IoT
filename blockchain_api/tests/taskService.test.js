@@ -22,8 +22,10 @@ test("task publication freezes deterministic economics and acceptance is idempot
     const created = service.create(admin, { title: "Run robot cycles", description: "Safe test", completionRule: { type: "robot_cycle_count", requiredCycles: 8 } }).task;
     assert.equal(created.status, "DRAFT");
     assert.equal(created.economics.stakeHrc, "0.200");
+    assert.equal(created.economics.baseRewardHrc, "0.001");
     assert.equal(created.economics.rewardHrc, "0.002");
-    assert.equal(created.completionRule.minimumDurationS, 120);
+    assert.equal(created.completionRule.minimumDurationS, 30);
+    assert.equal(created.completionRule.maximumDurationS, 180);
     assert.equal(created.evidencePolicy.sampleRateHz, 10);
     assert.equal(created.evidencePolicy.minimumSampleCoverage, 0.9);
     assert.equal(created.evidencePolicy.minimumProcessedCoverage, 0.95);
@@ -65,6 +67,6 @@ test("owner completion evidence is bound to an existing assigned session and fro
 test("unsafe duration rules and missing completion reasons fail closed", t => {
     const { service } = setup(t);
     const owner = { userId: "owner", walletAddress: "0xowner" };
-    assert.throws(() => service.create(owner, { title: "x", description: "y", completionRule: { type: "robot_cycle_count", requiredCycles: 2, minimumDurationS: 10 } }),
+    assert.throws(() => service.create(owner, { title: "x", description: "y", completionRule: { type: "robot_cycle_count", requiredCycles: 2, minimumDurationS: 29 } }),
         { code: "INVALID_COMPLETION_RULE" });
 });

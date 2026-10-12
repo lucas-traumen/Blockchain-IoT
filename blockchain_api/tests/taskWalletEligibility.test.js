@@ -6,6 +6,7 @@ const { WalletService } = require("../walletService");
 function service({ rewardPoolBalance, rewardPaidToday = 0n }) {
     const owner = ethers.Wallet.createRandom();
     const stake = ethers.parseEther("0.2");
+    const baseReward = ethers.parseEther("0.001");
     const safeReward = ethers.parseEther("0.002");
     const cap = ethers.parseEther("0.01");
     const walletService = new WalletService({
@@ -13,7 +14,7 @@ function service({ rewardPoolBalance, rewardPaidToday = 0n }) {
             getBlock: async () => ({ timestamp: 8640000 }), getBalance: async () => ethers.parseEther("1") },
         token: { balanceOf: async () => ethers.parseEther("20"), allowance: async () => stake,
             symbol: async () => "HRC", decimals: async () => 18 },
-        rewards: { STAKE_AMOUNT: async () => stake, SAFE_REWARD: async () => safeReward,
+        rewards: { STAKE_AMOUNT: async () => stake, BASE_REWARD: async () => baseReward, SAFE_REWARD: async () => safeReward,
             DAILY_REWARD_CAP: async () => cap, rewardPoolBalance: async () => rewardPoolBalance,
             rewardsPaidByDay: async () => rewardPaidToday, sessions: async () => { throw new Error("unexpected"); } },
         config: { chainId: 31337, tokenAddress: "0x0000000000000000000000000000000000000003",
@@ -35,4 +36,17 @@ test("V2 wallet eligibility blocks an empty pool and exposes exhausted daily cap
     assert.equal(capped.canStart, true);
     assert.equal(capped.canEarnSafeReward, false);
     assert.equal(capped.rewardPaidToday, "0.01");
+});
+
+test("V2 wallet eligibility allows a start when only the base reward is available", async () => {
+    const { walletService, user } = service({
+        rewardPoolBalance: ethers.parseEther("0.0015"),
+        rewardPaidToday: ethers.parseEther("0.009")
+    });
+    const wallet = await walletService.getWallet(user.userId);
+    assert.equal(wallet.baseReward, "0.001");
+    assert.equal(wallet.safeReward, "0.002");
+    assert.equal(wallet.canEarnSafeReward, true);
+    assert.equal(wallet.canStartReason, null);
+    assert.equal(wallet.canStart, true);
 });

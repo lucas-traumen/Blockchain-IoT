@@ -36,6 +36,7 @@ async function main() {
     };
     const deployment = {
         version: "task-rewards-v2",
+        contractRevision: "task-rewards-v2-duration-curve-v1",
         network: hre.network.name,
         chainId: Number(network.chainId),
         tokenAddress,
@@ -44,10 +45,13 @@ async function main() {
         owner: deployer.address,
         policy: {
             stakeAmount: (await rewards.STAKE_AMOUNT()).toString(),
+            baseReward: (await rewards.BASE_REWARD()).toString(),
             safeReward: (await rewards.SAFE_REWARD()).toString(),
             violationPenalty: (await rewards.VIOLATION_PENALTY()).toString(),
             dailyRewardCap: (await rewards.DAILY_REWARD_CAP()).toString(),
-            minimumSafeDuration: Number(await rewards.MIN_SAFE_DURATION())
+            minimumSafeDuration: Number(await rewards.MIN_SAFE_DURATION()),
+            rewardCurve: "linear",
+            fullRewardDurationSource: "task.completionRule.maximumDurationS"
         },
         deployTxHash: rewards.deploymentTransaction()?.hash || null,
         deploymentBlock: deploymentReceipt.blockNumber,

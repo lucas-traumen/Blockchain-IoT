@@ -119,9 +119,13 @@ class LiveSessionService {
             if (this.walletService.config.rewardProtocolVersion === 'task-rewards-v2') {
                 policySnapshot.stakeAmount = String(await this.walletService.rewards.STAKE_AMOUNT());
                 policySnapshot.rewardAmount = String(await this.walletService.rewards.SAFE_REWARD());
+                if (typeof this.walletService.rewards.BASE_REWARD === 'function') {
+                    policySnapshot.baseReward = String(await this.walletService.rewards.BASE_REWARD());
+                }
                 policySnapshot.penaltyAmount = String(await this.walletService.rewards.VIOLATION_PENALTY());
                 policySnapshot.dailyRewardCap = String(await this.walletService.rewards.DAILY_REWARD_CAP());
                 policySnapshot.minimumSafeDuration = String(await this.walletService.rewards.MIN_SAFE_DURATION());
+                policySnapshot.fullRewardDuration = String(assignment.policySnapshot.task.completionRule.maximumDurationS);
             }
             const now = this.clock();
             return this.store.save({
@@ -162,7 +166,8 @@ class LiveSessionService {
             || String(parsedTransaction.args[0]).toLowerCase() !== expectedSessionKey.toLowerCase()
             || (taskRewards && (!record.taskSnapshot?.task?.taskId
                 || String(parsedTransaction.args[1]).toLowerCase() !== ethers.id(record.taskSnapshot.task.taskId).toLowerCase()
-                || String(parsedTransaction.args[2]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()))) {
+                || String(parsedTransaction.args[2]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()
+                || String(parsedTransaction.args[3]) !== String(record.taskSnapshot.task.completionRule.maximumDurationS)))) {
             throw new ApiError(409, 'START_TRANSACTION_MISMATCH', 'Transaction calldata does not start this session');
         }
         let startedEvent = null;
@@ -177,7 +182,8 @@ class LiveSessionService {
             || String(startedEvent.args.sessionId).toLowerCase() !== expectedSessionKey.toLowerCase()
             || String(startedEvent.args.beneficiary ?? startedEvent.args[taskRewards ? 2 : 1]).toLowerCase() !== user.walletAddress.toLowerCase()
             || (taskRewards && (String(startedEvent.args.taskIdHash ?? startedEvent.args[1]).toLowerCase() !== ethers.id(record.taskSnapshot.task.taskId).toLowerCase()
-                || String(startedEvent.args.policyHash ?? startedEvent.args[3]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()))
+                || String(startedEvent.args.policyHash ?? startedEvent.args[3]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()
+                || String(startedEvent.args.fullRewardDuration ?? startedEvent.args[6]) !== String(record.taskSnapshot.task.completionRule.maximumDurationS)))
             || (record.policySnapshot?.stakeAmount && String(startedEvent.args.amount ?? startedEvent.args.stakeAmount ?? startedEvent.args[taskRewards ? 4 : 2]) !== record.policySnapshot.stakeAmount)) {
             throw new ApiError(409, 'SESSION_STARTED_EVENT_MISSING', 'Successful receipt lacks the expected SessionStarted event');
         }
@@ -188,7 +194,7 @@ class LiveSessionService {
         const version = this.deviceVersion;
         if (!fresh && this.deviceCache && this.clock() - this.deviceCache.at < 2000) return this.deviceCache.data;
         if (!fresh && this.deviceRead) return this.deviceRead;
-        const minDurationS = this.walletService.config.rewardProtocolVersion === 'task-rewards-v2' ? 120 : 30;
+        const minDurationS = 30;
         const minSamplesAtMinimumDuration = Math.ceil(minDurationS * 10 * 0.9);
         const task = (async () => {
             try {
@@ -301,6 +307,7 @@ class LiveSessionService {
                     beneficiary: String(verified.event.args.beneficiary ?? verified.event.args[2]),
                     amount: String(verified.event.args.amount ?? verified.event.args.stakeAmount ?? verified.event.args[4]),
                     startedAt: String(verified.event.args.startedAt ?? verified.event.args[5]),
+                    fullRewardDuration: taskRewards ? String(verified.event.args.fullRewardDuration ?? verified.event.args[6]) : null,
                     taskIdHash: taskRewards ? String(verified.event.args.taskIdHash ?? verified.event.args[1]) : null,
                     policyHash: taskRewards ? String(verified.event.args.policyHash ?? verified.event.args[3]) : null
                 }

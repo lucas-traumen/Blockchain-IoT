@@ -1713,3 +1713,24 @@ available after the user accepts/selects the task. Existing customer balance
 20 HRC, allowance 0.2 HRC and nonce 1 were verified unchanged. Dashboard files
 are served from the existing bind mount, with the app.js cache version updated.
 No live service restart or contract migration was performed.
+
+## R28 — Task reward duration curve (2026-10-12)
+
+Approved behavior: task sessions are globally eligible from 30 seconds. A safe
+session earns 0.001 HRC at 30 seconds, increases linearly to 0.002 HRC at the
+task's frozen `maximumDurationS`, and remains eligible at the capped 0.002 HRC
+for any longer duration. `maximumDurationS` is therefore the full-reward
+threshold, not an upper eligibility bound. Unsafe, invalid or incomplete
+evidence remains ineligible for a safe reward.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R28:coder | `HRCTaskRewards.sol`, task deployment/ABI services, evidence/task/live-session services, dashboard, directly affected tests | Contract freezes the full-reward duration at Start; 29s rejects, 30s pays 0.001, midpoint is linear, threshold/over-threshold pay 0.002; backend accepts over-threshold evidence and uses a 30s floor; UI defaults to 30/180 and explains the threshold | done |
+| R28:reviewer | Read-only review of R28 diff | Check ABI tuple/event indexes, accounting/daily cap, retry immutability, evidence fail-closed behavior and V1 compatibility | PASS WITH NOTES; base-reward preflight fixed; remaining low-risk receipt-matrix gap covered by integration happy path |
+| R28:tester | Read-only test/build verification | Blockchain API and Hardhat suites, JS syntax and `git diff --check` pass | done: API 207/207; Hardhat 122/122 |
+
+This is an ABI-changing V2 task-contract update. The existing deployment and
+active Docker/local runtime retain the old ABI and 120-second policy until a
+fresh explicit deployment is launched. Do not restart, reset, migrate or
+overwrite the running deployment as part of R28. Source verification is
+complete; deployment/redeployment remains an explicit follow-up gate.

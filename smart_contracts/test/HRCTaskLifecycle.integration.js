@@ -67,7 +67,7 @@ async function fixture({ outcome = "VALID_NO_VIOLATION", completion = true, fail
             task: { taskId: TASK_ID, title: "Integration cycles", status: "OPEN", deviceId: "esp32_01",
                 evidencePolicy: { ...TASK_EVIDENCE_POLICY },
                 completionRule: { type: "robot_cycle_count", requiredCycles: REQUIRED_CYCLES,
-                minimumDurationS: 120, maximumDurationS: 600 } },
+                minimumDurationS: 30, maximumDurationS: 120 } },
             snapshotHash: ethers.id("task-definition")
         }
     };
@@ -145,6 +145,8 @@ async function startSession(f) {
     const confirmed = await f.live.confirmWalletStart(USER_ID, prepared.sessionId, { transactionHash: tx.hash });
     expect(receipt.status).to.equal(1);
     expect(confirmed.stage).to.equal("RUNNING");
+    expect(prepared.fullRewardDuration).to.equal(120);
+    expect((await f.rewards.sessions(sessionKey(prepared.sessionId))).fullRewardDuration).to.equal(120);
     if (f.httpFixture) {
         const sensor = await f.iot.get(prepared.sessionId);
         expect(sensor.boundary_source).to.equal('device_ack');
@@ -310,7 +312,7 @@ describe('V2 real Python IoT HTTP to real contract integration (synthetic transp
         ['violation', 1, '0', '0.010'], ['fault', 2, '0', '0'], ['insufficient', 3, '0', '0'],
         ['safe', 0, '0.002', '0', { sampleCount: 1080 }],
         ['safe', 3, '0', '0', { sampleCount: 1079 }],
-        ['safe', 3, '0', '0', { durationS: 119.999 }],
+        ['safe', 3, '0', '0', { durationS: 29.999 }],
         ['timing_gap', 0, '0.002', '0', { gapS: 0.5 }],
         ['timing_gap', 3, '0', '0', { gapS: 0.500001 }],
         ['sequence_gap', 3, '0', '0'], ['boot_reset', 2, '0', '0']
