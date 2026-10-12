@@ -1163,3 +1163,22 @@ safety outcome.
   separate, destructive operation that still requires explicit user approval
   (new chain resetting demo data vs. deploying rewards V2 onto the existing
   chain and orphaning existing stakes).
+
+## Local chain reset onto rewards V2 (R30, 2026-10-13)
+
+- The user approved a full local reset. Two orphaned `hrcdemo-*` Docker stacks
+  left over from the retired `run_local_demo.sh` launcher were holding the
+  dashboard/API/MQTT ports; they were stopped with `--volumes` removed. Unrelated
+  stacks (`bigdata-*`, `mobile_backend`) were left untouched.
+- `scripts/run_local_metamask.sh --task-rewards-v2` is the supported entrypoint
+  and was used for the reset. New run directory holds the V2 deployment,
+  `wallet-sessions.db` and the API config; `.runtime/` stays gitignored.
+- Live verification: curve `29s` revert, `30s -> 0.001`, `105s -> 0.0015`,
+  `180s/181s/3600s -> 0.002`; a 30/180 task was created, published and accepted;
+  Start calldata is the new four-argument form and the on-chain session froze
+  `fullRewardDuration` equal to the task's `maximumDurationS`.
+- The launcher smoke test previously hardcoded `minimumDurationS: 120,
+  maximumDurationS: 120` — exactly the stale value behind the original bug — so
+  it could never catch the regression. It now asserts the 30-second floor, the
+  `0.001 -> 0.002` curve, a 30/180 task rule and that the rule survives
+  create/publish/accept.

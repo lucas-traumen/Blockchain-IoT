@@ -1749,3 +1749,32 @@ evidence and must be committed, unlike runtime state. `data/*` stays ignored;
 Restart/redeploy of the local stack is **not** part of R29 and is still gated on
 explicit user approval of the destructive option (fresh chain vs. new rewards
 contract on the existing chain).
+
+## R30 — Reset local chain onto rewards V2 (2026-10-13)
+
+User decision: option A, reset the local demo chain. The old `hrcdemo-*`
+Docker stacks (from the retired `run_local_demo.sh` launcher) were stopped and
+their volumes removed, freeing the dashboard/API/MQTT ports. The current
+launcher was then started with `--task-rewards-v2`, producing a fresh run
+directory and a fresh V2 task-rewards deployment.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R30:orchestrator | Local runtime only; `scripts/run_local_metamask.sh`, `PLAN.md`, `PROJECT_MEMORY.md` | V2 contract live, on-chain curve verified, task 30/180 created+published+accepted, 4-arg Start calldata frozen with the task's `maximumDurationS`; launcher smoke no longer hardcodes the stale 120/120 rule | done |
+
+Verification on the reset chain:
+
+- Rewards revision `task-rewards-v2-duration-curve-v1`, pool 1000 HRC.
+- `MIN_SAFE_DURATION = 30`; `rewardAmountForDuration(29,180)` reverts,
+  `30s -> 0.001`, `105s -> 0.0015`, `180s/181s/3600s -> 0.002`.
+- Task create with `minimumDurationS: 30, maximumDurationS: 180` succeeds; this
+  was the operation that failed with "duration must be between 120 seconds and
+  24 hours" against the stale deployment.
+- Wallet Start calldata decodes as
+  `startSession(bytes32 sessionId, bytes32 taskIdHash, bytes32 policyHash,
+  uint256 fullRewardDuration)` and the frozen `fullRewardDuration` equals the
+  task's `maximumDurationS`.
+
+Note: the retired launcher `run_local_demo.sh` and its `.runtime/local-demo/`
+run directories are historical; the supported entrypoint is
+`scripts/run_local_metamask.sh`.

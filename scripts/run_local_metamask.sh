@@ -364,12 +364,21 @@ async function main() {
         throw new Error("Task reward pool is unavailable");
     }
     if (account.rewardProtocolVersion === "task-rewards-v2") {
+        // Guard the duration-curve regression: the global eligibility floor is
+        // 30 seconds and the base payout is 0.001 HRC. A stale 120-second floor
+        // must fail this smoke instead of silently passing.
+        if (Number(account.baseReward) !== 0.001 || Number(account.safeReward) !== 0.002) {
+            throw new Error(`Unexpected reward curve: base=${account.baseReward} max=${account.safeReward}`);
+        }
         const admin = await login(derive(0));
         if (admin.user.role !== "admin") throw new Error("Local owner wallet did not receive the admin SIWE role");
         const draft = await call("/api/tasks", admin.token, "POST", { title: "Launcher smoke task", description: "Local disposable task",
             deviceId: "esp32_01", zoneId: "smoke", completionRule: { type: "robot_cycle_count", requiredCycles: 1,
-                minimumDurationS: 120, maximumDurationS: 120 } });
+                minimumDurationS: 30, maximumDurationS: 180 } });
         const published = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/publish`, admin.token, "POST", {});
+        if (draft.task.completionRule.minimumDurationS !== 30 || draft.task.completionRule.maximumDurationS !== 180) {
+            throw new Error(`Task duration rule was not preserved: ${JSON.stringify(draft.task.completionRule)}`);
+        }
         const accepted = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/accept`, customer.token, "POST", {});
         if (accepted.assignment.taskDefinitionHash !== published.task.definitionHash) throw new Error("Task assignment snapshot did not match the published task");
     }
