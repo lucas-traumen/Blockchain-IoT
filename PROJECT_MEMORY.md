@@ -1092,3 +1092,28 @@ safety outcome.
   restart, pending and lost-broadcast receipt recovery, SIWE role/ownership attacks,
   immutable evidence and accounting invariants. Browser verification remains
   runtime-blocked when the dashboard proxy has no API/RPC listener.
+
+
+## Wallet action discoverability (R27, 2026-10-12)
+
+- Customer Start stays visible after login and exposes its blocking reason in
+  `walletStartStatus` via `aria-describedby`. `walletStartBlockReason()` drives
+  both rendering and the click guard, so a blocked click cannot allocate a new
+  pending session reference or request a wallet transaction.
+- V2 Start requires a selected ASSIGNED/ACTIVE server assignment. Empty tasks
+  tell the user an admin must create/publish; task fetch failures clear stale
+  assignments/selections, block Start and preserve the underlying error until a
+  successful refresh. Pending start retries keep the existing reference and
+  active RUNNING/STOPPING/SETTLEMENT_PENDING sessions cannot start again.
+- Enough on-chain allowance renders `Approved <policy amount>` and explains
+  that no further approval is needed. Guidance uses the current stake/allowance,
+  not a fixed 2 HRC. Approval and Start explanations sit next to the buttons.
+- A local task was created/published through the existing SIWE admin HTTP APIs
+  in the current runtime; it is local SQLite data, not automatic production
+  bootstrapping. The customer must still accept it, and real ESP32 telemetry
+  plus independently approved completion remain required. A fresh launcher
+  runtime has a separate database and does not inherit this task.
+- Verification: API 203/203; browser 15/15 on desktop/mobile, syntax and diff
+  checks pass. Browser wallet injection/rendering fixtures do not verify real
+  MetaMask extension writes or hardware operation. Current sensor `latest=null`
+  is an observed external readiness blocker, not bypassed by the UI change.

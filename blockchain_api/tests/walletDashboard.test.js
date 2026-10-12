@@ -23,13 +23,14 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
 
 function fixture(fetchImpl = async () => reply({ success: true, sessions: [], transactions: [] }), storage = new Map()) {
     class Element {
-        constructor() { this.children = []; this.textContent = ''; this.disabled = false; this.hidden = false; this.value = ''; this.style = {}; this.dataset = {}; this.attrs = new Map(); this.classes = new Set();
+        constructor() { this.children = []; this.textContent = ''; this.disabled = false; this.hidden = false; this.value = ''; this.style = {}; this.dataset = {}; this.attrs = new Map(); this.classes = new Set(); this.listeners = new Map();
             this.classList = { toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name), contains: name => this.classes.has(name), add: name => this.classes.add(name), remove: name => this.classes.delete(name) }; }
         appendChild(child) { this.children.push(child); return child; }
         append(...children) { this.children.push(...children); }
         replaceChildren(...children) { this.children = children; }
         setAttribute(name, value) { this.attrs.set(name, value); }
         removeAttribute(name) { this.attrs.delete(name); }
+        addEventListener(name, callback) { this.listeners.set(name, callback); }
         focus() {}
         querySelector() { return null; }
         cloneNode() { return new Element(); }
@@ -343,4 +344,123 @@ test('V2 outcome labels use actual payout and do not misreport refunds as reward
     assert.equal(f.run('walletOutcomeName(5)'), 'SYSTEM CANCELLED');
     assert.equal(f.run('walletResultLabel({settled:true,settlementStatusCode:null})'), 'NO REWARD');
     assert.equal(f.run('walletResultLabel({settled:true,settlementStatusCode:1})'), 'DAILY LIMIT');
+});
+
+function setTaskWallet(f, overrides = {}) {
+    f.context.taskWalletData = { ...wallet('user_1'), allowance: '0.2', requiredAllowance: '0.2', stakeAmount: '0.2',
+        rewardProtocolVersion: 'task-rewards-v2', device: { ready: true, operatorReady: true }, ...overrides };
+    f.run('wallet = taskWalletData; renderWallet()');
+}
+
+function selectAssignedTask(f) {
+    f.run(`walletTasks = [{taskId: 'task-local', title: 'Local task', status: 'OPEN'}];
+        walletAssignments = [{taskId: 'task-local', status: 'ASSIGNED'}];
+        selectWalletTask('task-local')`);
+}
+
+test('approved V2 wallet keeps Start visible with actionable empty-task and allowance explanations', async () => {
+    let writes = 0;
+    const f = fixture(async () => { writes++; return reply({success:true}); });
+    f.select('user_1'); setTaskWallet(f);
+    const start = f.elements.get('walletStartBtn');
+    assert.equal(start.hidden, false);
+    assert.equal(start.disabled, true);
+    assert.equal(start.textContent, 'Start Task Session');
+    assert.equal(start.attrs.get('aria-describedby'), 'walletStartStatus');
+    assert.match(f.elements.get('walletStartStatus').textContent, /admin must create and publish/i);
+    assert.match(f.elements.get('walletTaskList').children[0].textContent, /admin must create and publish/i);
+    assert.equal(f.elements.get('walletApproveBtn').disabled, true);
+    assert.equal(f.elements.get('walletApproveBtn').textContent, 'Approved 0.2 HRC');
+    assert.match(f.elements.get('walletApprovalStatus').textContent, /No further approval is needed/);
+    await f.run('startWalletSession()');
+    await f.run('approveWallet()');
+    assert.equal(writes, 0);
+    assert.equal(f.run('walletSessionRef'), null);
+    assert.equal(f.storage.has('hrc-wallet-pending-user_1'), false);
+});
+
+test('Start requires a selected usable assignment, not just an open task or a stale task id', async () => {
+    const f = fixture(); f.select('user_1'); setTaskWallet(f);
+    f.run("walletTasks = [{taskId: 'task-local', title: 'Task', status: 'OPEN'}]; selectedTaskId = 'stale-task'; renderWallet()");
+    assert.equal(f.elements.get('walletStartBtn').hidden, false);
+    assert.equal(f.elements.get('walletStartBtn').disabled, true);
+    assert.match(f.elements.get('walletStartStatus').textContent, /Accept a task and select it/);
+    selectAssignedTask(f);
+    assert.equal(f.elements.get('walletStartBtn').disabled, false);
+    assert.match(f.elements.get('walletStartStatus').textContent, /separate MetaMask transaction.*0.2 HRC/);
+    f.run("walletAssignments[0].status = 'COMPLETED'; renderWallet()");
+    assert.equal(f.elements.get('walletStartBtn').disabled, true);
+});
+
+test('V2 Accept selects the server assignment and enables Start only when wallet/sensor are ready', async () => {
+    let accepts = 0;
+    const f = fixture(async url => {
+        assert.match(url, /\/tasks\/task-local\/accept$/); accepts++;
+        return reply({success:true, assignment:{taskId:'task-local', status:'ASSIGNED'}});
+    });
+    f.select('user_1'); setTaskWallet(f);
+    f.run("walletTasks = [{taskId:'task-local', title:'Task', status:'OPEN'}]; renderWallet()");
+    const accept = f.elements.get('walletTaskList').children[0].children[1];
+    assert.equal(accept.textContent, 'Accept task');
+    await accept.listeners.get('click')();
+    assert.equal(accepts, 1);
+    assert.equal(f.run('selectedTaskId'), 'task-local');
+    assert.equal(f.elements.get('walletStartBtn').disabled, false);
+    assert.equal(f.storage.get('hrc-selected-task-user_1'), 'task-local');
+    assert.match(f.elements.get('walletMessage').textContent, /0.2 HRC/);
+});
+
+test('selected tasks display concrete approval, balance, pool, operator and sensor blockers', () => {
+    const f = fixture(); f.select('user_1'); setTaskWallet(f); selectAssignedTask(f);
+    for (const [overrides, message] of [
+        [{allowance:'0', canStart:false, canStartReason:'APPROVAL_REQUIRED'}, /Approve 0.2 HRC/],
+        [{canStart:false, canStartReason:'INSUFFICIENT_HRC_BALANCE'}, /Not enough HRC/],
+        [{canStart:false, canStartReason:'REWARD_POOL_EMPTY'}, /Reward pool is empty/],
+        [{canStart:false, device:{ready:true, operatorReady:false}}, /operator is not ready/],
+        [{canStart:false, device:{ready:true, busySessionId:'other'}}, /reserved by another/],
+        [{canStart:false, device:{ready:false, reason:'Telemetry is stale'}}, /Sensor unavailable: Telemetry is stale/],
+        [{canStart:false}, /Refresh to check/]
+    ]) {
+        setTaskWallet(f, overrides);
+        assert.equal(f.elements.get('walletStartBtn').hidden, false);
+        assert.equal(f.elements.get('walletStartBtn').disabled, true);
+        assert.match(f.elements.get('walletStartStatus').textContent, message);
+    }
+});
+
+test('failed task refresh clears stale assignments and stays blocked with the original error', async () => {
+    let fail = true;
+    const f = fixture(async url => {
+        if (url.endsWith('/wallet')) return reply({...wallet('user_1'), allowance:'0.2', requiredAllowance:'0.2', stakeAmount:'0.2', rewardProtocolVersion:'task-rewards-v2'});
+        if (url.endsWith('/api/tasks')) return fail ? reply({success:false, error:'Task database unavailable'}, 503)
+            : reply({success:true, tasks:[{taskId:'task-local', title:'Task', status:'OPEN'}]});
+        if (url.endsWith('/assignments')) return reply({success:true, assignments:[{taskId:'task-local', status:'ASSIGNED'}]});
+        return reply({success:true, sessions:[], transactions:[]});
+    });
+    f.select('user_1'); setTaskWallet(f); selectAssignedTask(f);
+    await f.run('loadWalletAccountData({fresh:true})');
+    assert.equal(f.run('walletAssignments.length'), 0);
+    assert.equal(f.run('selectedTaskId'), null);
+    assert.equal(f.elements.get('walletStartBtn').disabled, true);
+    assert.match(f.elements.get('walletStartStatus').textContent, /Task service unavailable: Task database unavailable/);
+    assert.match(f.elements.get('walletMessage').textContent, /Task database unavailable/);
+    fail = false;
+    await f.run('loadWalletAccountData({fresh:true})');
+    assert.equal(f.elements.get('walletStartBtn').disabled, false);
+    assert.equal(f.run('walletTaskError'), null);
+    assert.doesNotMatch(f.elements.get('walletMessage').textContent, /Approve 2 HRC/);
+    assert.match(f.elements.get('walletMessage').textContent, /0.2 HRC/);
+    f.run("walletTaskError = 'old error'; clearWalletSession()");
+    assert.equal(f.run('walletTaskError'), null);
+});
+
+test('V2 pending retry keeps the same reference but cannot open a second active session', () => {
+    const f = fixture(); f.select('user_1'); setTaskWallet(f); selectAssignedTask(f);
+    f.run("walletSessionRef = 'same-ref'");
+    setTaskWallet(f, {allowance:'0', canStart:false, canStartReason:'SESSION_IN_PROGRESS'});
+    assert.equal(f.elements.get('walletStartBtn').disabled, false);
+    assert.match(f.elements.get('walletStartStatus').textContent, /same session/);
+    f.run("walletSessions = [{sessionId:'active', stage:'RUNNING', settled:false}]; renderWallet()");
+    assert.equal(f.elements.get('walletStartBtn').disabled, true);
+    assert.match(f.elements.get('walletStartStatus').textContent, /already in progress/);
 });

@@ -193,6 +193,37 @@ try {
     assert.equal(await evaluate('document.getElementById("accountTriggerLabel").textContent'), 'SIGNED IN');
     assert.ok((await evaluate('window.__walletCalls')).includes('personal_sign'));
     await check('late-wallet-siwe-mobile');
+    // Deterministic rendering fixtures only: no approval or stake broadcasts.
+    // Verify both viewport sizes so blocked actions remain discoverable.
+    await evaluate(`window.__walletUiSnapshot = {wallet, walletTasks, walletAssignments, selectedTaskId, walletSessions};`);
+    for (const mobile of [true, false]) {
+        await call('Emulation.setDeviceMetricsOverride', {width: mobile ? 390 : 1440, height: mobile ? 844 : 1000, deviceScaleFactor: 1, mobile});
+        await evaluate(`wallet = {...window.__walletUiSnapshot.wallet, allowance:'0.2', requiredAllowance:'0.2', stakeAmount:'0.2',
+            rewardProtocolVersion:'task-rewards-v2', canStart:true, canStartReason:null, device:{ready:true, operatorReady:true}};
+            walletTasks = []; walletAssignments = []; selectedTaskId = null; walletSessions = []; walletTaskError = null;
+            renderWallet(); document.getElementById('walletStartBtn').scrollIntoView({block:'center'});`);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').hidden"), false);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').disabled"), true);
+        assert.equal(await evaluate("document.getElementById('walletApproveBtn').disabled"), true);
+        assert.equal(await evaluate("document.getElementById('walletApproveBtn').textContent"), 'Approved 0.2 HRC');
+        assert.match(await evaluate("document.getElementById('walletStartStatus').textContent"), /admin must create and publish/i);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').getAttribute('aria-describedby')"), 'walletStartStatus');
+        await check('approved-no-task-' + (mobile ? 'mobile' : 'desktop'));
+        await evaluate(`walletTasks = [{taskId:'ui-task', title:'Browser layout fixture', description:'Live safety monitoring', completionRule:{requiredCycles:1, minimumDurationS:120}, status:'OPEN'}];
+            walletAssignments = [{taskId:'ui-task', status:'ASSIGNED'}]; selectWalletTask('ui-task');`);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').disabled"), false);
+        assert.match(await evaluate("document.getElementById('walletStartStatus').textContent"), /separate MetaMask transaction.*0.2 HRC/);
+        await check('selected-task-ready-' + (mobile ? 'mobile' : 'desktop'));
+        await evaluate(`wallet.canStart = false; wallet.device = {ready:false, operatorReady:true, reason:'No recent sensor telemetry is available'};
+            renderWallet();`);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').hidden"), false);
+        assert.equal(await evaluate("document.getElementById('walletStartBtn').disabled"), true);
+        assert.match(await evaluate("document.getElementById('walletStartStatus').textContent"), /Sensor unavailable: No recent sensor telemetry/);
+        await check('selected-task-sensor-unavailable-' + (mobile ? 'mobile' : 'desktop'));
+    }
+    await evaluate(`({wallet, walletTasks, walletAssignments, selectedTaskId, walletSessions} = window.__walletUiSnapshot);
+        delete window.__walletUiSnapshot; renderWallet();`);
+    await call('Emulation.setDeviceMetricsOverride', {width:390, height:844, deviceScaleFactor:1, mobile:true});
     // Model a running session only for timer rendering/layout. No stake or End
     // transaction is submitted by this connection verifier.
     await evaluate(`walletSessions = [{sessionId: 'timer-ui-fixture', stage: 'RUNNING', settled: false,

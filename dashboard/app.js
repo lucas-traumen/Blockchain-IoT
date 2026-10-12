@@ -71,6 +71,7 @@ let walletFunding = null;
 let walletTasks = [];
 let walletAssignments = [];
 let selectedTaskId = null;
+let walletTaskError = null;
 let ownerTasks = [];
 let ownerTaskSessions = [];
 
@@ -331,7 +332,7 @@ function renderWalletTasks() {
     list.replaceChildren();
     if (!rows.size) {
         const empty = document.createElement('p');
-        empty.textContent = 'No open tasks are available.';
+        empty.textContent = walletTaskError || 'No open tasks are available. An admin must create and publish a task before you can accept it and start.';
         list.appendChild(empty);
         return;
     }
@@ -478,7 +479,7 @@ async function approveTaskCompletion(event) {
 function selectWalletTask(taskId) {
     selectedTaskId = taskId;
     try { sessionStorage.setItem('hrc-selected-task-' + walletSession.user.userId, taskId); } catch { /* Current page state remains usable. */ }
-    walletMessage = 'Task selected. Approve the exact stake if needed, then start the task session.';
+    walletMessage = 'Task selected. ' + (walletStartBlockReason() || `Ready to start with ${formatWalletAmount(wallet.stakeAmount)} stake.`);
     renderWallet();
 }
 
@@ -500,6 +501,36 @@ async function acceptWalletTask(taskId) {
         walletBusy = null;
         renderWallet();
     }
+}
+
+// One explanation drives both the visible Start state and its click guard.
+// Pending starts retain the original reference; the server still checks all
+// assignment, sensor and chain conditions before preparing a transaction.
+function walletStartBlockReason() {
+    if (!wallet) return 'Checking wallet and sensor readiness...';
+    const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
+    if (['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage)) {
+        return 'A session is already in progress. End it or wait for settlement before starting another.';
+    }
+    if (wallet.rewardProtocolVersion === 'task-rewards-v2') {
+        if (walletTaskError) return walletTaskError;
+        const selected = walletAssignments.find(row => row.taskId === selectedTaskId && ['ASSIGNED', 'ACTIVE'].includes(row.status));
+        if (!selected) return walletTasks.length || walletAssignments.length
+            ? 'Accept a task and select it in the task list before starting.'
+            : 'No open tasks are available. An admin must create and publish a task before you can accept it and start.';
+    }
+    if (walletSessionRef) return null;
+    if (wallet.canStart) return null;
+    if (wallet.canStartReason === 'INSUFFICIENT_HRC_BALANCE') return `Not enough HRC. This session requires ${formatWalletAmount(wallet.stakeAmount)} stake.`;
+    if (wallet.canStartReason === 'APPROVAL_REQUIRED' || Number(wallet.allowance) < Number(wallet.requiredAllowance)) {
+        return `Approve ${formatWalletAmount(wallet.requiredAllowance)} before starting. Approval does not change your balance.`;
+    }
+    if (wallet.canStartReason === 'REWARD_POOL_EMPTY') return 'Reward pool is empty. An admin must fund it before a task can start.';
+    if (wallet.canStartReason === 'SESSION_IN_PROGRESS') return 'A session is already pending or staked. Wait for recovery or settlement.';
+    if (wallet.device?.operatorReady === false) return 'The settlement operator is not ready. Contact the administrator.';
+    if (wallet.device?.busySessionId) return 'The sensor is reserved by another session. Wait until it is available.';
+    if (wallet.device?.ready === false) return 'Sensor unavailable: ' + (wallet.device.reason || 'waiting for live ESP32 telemetry.');
+    return 'Start is unavailable. Refresh to check wallet, sensor and operator readiness.';
 }
 
 function renderWallet() {
@@ -538,6 +569,13 @@ function renderWallet() {
     const start = byId('walletStartBtn');
     const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
     const ready = wallet && Number(wallet.allowance) >= Number(wallet.requiredAllowance);
+    const startProblem = walletStartBlockReason();
+    text('walletApprovalStatus', !wallet ? 'Checking HRC allowance...' : ready
+        ? `Approved ${formatWalletAmount(wallet.requiredAllowance)}. No further approval is needed; your balance is unchanged until Start.`
+        : `Approve ${formatWalletAmount(wallet.requiredAllowance)} to allow the reward contract to lock the session stake.`);
+    text('walletStartStatus', startProblem || (walletSessionRef
+        ? 'Retry resumes the same session; it does not create a second stake.'
+        : `Ready. Start requests a separate MetaMask transaction to lock ${formatWalletAmount(wallet.stakeAmount)}.`));
     if (approve) {
         approve.hidden = !customer;
         approve.disabled = busy || !customer || !wallet || ready;
@@ -546,8 +584,10 @@ function renderWallet() {
     }
     if (start) {
         const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
-        start.hidden = !customer || (taskMode && !selectedTaskId);
-        start.disabled = busy || !customer || !wallet || ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage) || (!wallet.canStart && !walletSessionRef);
+        start.hidden = !customer;
+        start.disabled = busy || !customer || Boolean(startProblem);
+        start.title = startProblem || '';
+        start.setAttribute('aria-describedby', 'walletStartStatus');
         start.textContent = walletBusy === 'start' ? 'Starting...' : walletSessionRef ? 'Retry Start Session' : taskMode ? 'Start Task Session' : 'Start Session';
     }
     const end = byId('walletEndBtn');
@@ -561,16 +601,12 @@ function renderWallet() {
     text('walletSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least ${requirements.durationS} seconds / ${requirements.minimumSamples.toLocaleString('en-US')} samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
     const last = active || walletSessions[0];
     const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
-    const blockedReason = wallet?.canStartReason === 'REWARD_POOL_EMPTY' ? 'Reward pool is empty; a task cannot be started.'
-        : wallet?.canStartReason === 'INSUFFICIENT_HRC_BALANCE' ? 'Not enough HRC for the displayed stake.'
-        : wallet?.canStartReason === 'APPROVAL_REQUIRED' ? 'Approve the displayed stake before starting.' : null;
     text('walletSessionState', last ? last.settled
         ? `${walletResultLabel(last)} · Stake returned +${formatWalletAmount(last.stakeReturned)} · Reward +${formatWalletAmount(last.rewardPaid)} · Penalty ${formatWalletAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
         : `${walletSessionStage(last)} · ${formatWalletAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
-        : blockedReason || (wallet && !ready ? `Approve ${formatWalletAmount(wallet.stakeAmount)}. Approval does not change your balance.`
-            : taskMode && !wallet.canEarnSafeReward ? 'Daily reward cap reached. You may complete the task, but it will not pay the safe reward.'
-            : taskMode ? `Ready to start the selected task and lock ${formatWalletAmount(wallet.stakeAmount)}.`
-                : `Ready to open a live sensor session and lock ${formatWalletAmount(wallet?.stakeAmount)}.`));
+        : taskMode && wallet && !wallet.canEarnSafeReward && wallet.canStartReason !== 'REWARD_POOL_EMPTY'
+            ? 'No session yet. Daily reward cap reached; this task will not pay the safe reward.'
+            : 'No session yet.');
     renderWalletSessionTimer();
     const latest = [walletReceipt, walletTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
     text('walletTransactionStatus', walletReceipt?.stage
@@ -582,7 +618,7 @@ function renderWallet() {
 
 function clearWalletSession() {
     walletSession = { token: null, user: null };
-    wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletFunding = null; walletTasks = []; walletAssignments = []; selectedTaskId = null; walletSessionRef = null;
+    wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletFunding = null; walletTasks = []; walletAssignments = []; selectedTaskId = null; walletTaskError = null; walletSessionRef = null;
     ownerTasks = []; ownerTaskSessions = [];
 }
 
@@ -591,6 +627,7 @@ function pendingWalletSession(userId) {
 }
 
 function bindWalletSession(user, token) {
+    walletTaskError = null;
     walletSession = { token, user: { userId: user.userId, role: user.role, walletAddress: user.walletAddress, walletFirst: true } };
     walletSessionRef = pendingWalletSession(user.userId);
 }
@@ -638,6 +675,7 @@ async function loadWalletAccountData({ fresh = false } = {}) {
                         walletRequest('/api/tasks', { token }), walletRequest('/api/me/assignments', { token })
                     ]);
                     if (session !== walletSession) return false;
+                    walletTaskError = null;
                     walletTasks = tasks.tasks || [];
                     walletAssignments = assignments.assignments || [];
                     selectedTaskId = selectedTaskId || (() => {
@@ -645,19 +683,24 @@ async function loadWalletAccountData({ fresh = false } = {}) {
                     })();
                     if (!walletAssignments.some(row => row.taskId === selectedTaskId)) selectedTaskId = null;
                 } catch (error) {
+                    if (session !== walletSession) return false;
                     walletTasks = [];
-                    walletMessage = 'Task service unavailable: ' + error.message;
+                    walletAssignments = [];
+                    selectedTaskId = null;
+                    walletTaskError = 'Task service unavailable: ' + error.message;
+                    walletMessage = walletTaskError;
                 }
             } else {
                 walletTasks = [];
                 walletAssignments = [];
                 selectedTaskId = null;
+                walletTaskError = null;
             }
             if (session.user.role === 'admin' || session.user.role === 'operator') await refreshOwnerTasks();
             if (!walletBusy) {
                 walletMessage = session.user.role === 'admin' ? 'Admin account is read-only.'
                     : walletSessions.some(row => row.stage === 'RUNNING') ? 'The sensor is measuring. End Session calculates the result.'
-                    : 'Wallet loaded. Approve 2 HRC, start a sensor session, then end it to settle.';
+                    : walletStartBlockReason() || `Wallet loaded. Start locks ${formatWalletAmount(wallet.stakeAmount)} in a separate MetaMask transaction; End freezes the sensor evidence for settlement.`;
             }
             renderWallet(); return true;
         } catch (error) {
@@ -678,7 +721,7 @@ async function approveWallet() {
         const result = await sendWalletPrepared(await walletRequest('/api/me/wallet/prepare/approve', { token: session.token }));
         if (session !== walletSession) return;
         if (result.transactionHash) walletReceipt = result;
-        walletMessage = 'Approved ' + formatWalletAmount(wallet.requiredAllowance) + ' HRC allowance. Your balance is unchanged. Start opens the sensor session and locks ' + formatWalletAmount(wallet.stakeAmount) + ' HRC.';
+        walletMessage = 'Approved ' + formatWalletAmount(wallet.requiredAllowance) + ' allowance. Your balance is unchanged. Start opens the sensor session and locks ' + formatWalletAmount(wallet.stakeAmount) + '.';
         await loadWalletAccountData({ fresh: true });
     } catch (error) { if (session === walletSession) walletMessage = 'Approve failed: ' + error.message; }
     finally { walletBusy = null; renderWallet(); }
@@ -692,12 +735,13 @@ async function sendWalletPrepared(prepared) {
 }
 
 async function startWalletSession() {
-    if (walletBusy || !walletSession.token || walletSession.user?.role !== 'customer' || !wallet || (!wallet.canStart && !walletSessionRef)) return;
+    if (walletBusy || !walletSession.token || walletSession.user?.role !== 'customer' || !wallet) return;
+    const blocked = walletStartBlockReason();
+    if (blocked) { walletMessage = blocked; renderWallet(); return; }
     const session = walletSession;
     if (!walletSessionRef) walletSessionRef = 'wallet-' + randomId();
     try { sessionStorage.setItem('hrc-wallet-pending-' + session.user.userId, walletSessionRef); } catch { /* same-page retries still keep their session id */ }
     const taskMode = wallet.rewardProtocolVersion === 'task-rewards-v2';
-    if (taskMode && !walletAssignments.some(row => row.taskId === selectedTaskId)) return;
     walletBusy = 'start'; walletMessage = `Submitting the ${formatWalletAmount(wallet.stakeAmount)} session stake...`; renderWallet();
     try {
         const prepared = await walletRequest('/api/me/sessions/start', { method: 'POST', token: session.token,

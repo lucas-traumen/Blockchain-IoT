@@ -1683,3 +1683,33 @@ Latest isolated verification after R26: Blockchain API **197/197**, Hardhat
 and JavaScript/Python syntax checks pass. The active contract/deployment and
 user-owned firmware port setting were not changed. Public testnet, hardware/HIL,
 edge parity, TLS termination and multisig/timelock transfer remain external gates.
+
+## R27 — Visible wallet actions and approved local task setup (2026-10-12)
+
+Approved by user `ok` after the missing Start/disabled Approve diagnosis.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R27a:orchestrator | `dashboard/app.js`, `dashboard/index.html`, `blockchain_api/tests/walletDashboard.test.js`, `scripts/verify_wallet_first_ui.mjs` | Customer Start remains visible with an accessible blocking reason; enough allowance is explicitly marked approved; policy-driven guidance has no fixed 2 HRC; task load errors fail closed; blocked clicks create no pending reference or transaction | done: 25 dashboard tests; 15 browser scenarios |
+| R27b:orchestrator | Existing local runtime SQLite through SIWE admin HTTP APIs only | Create/publish one identifiable local task, without accepting on behalf of the customer, changing RBAC, restarting/deploying/resetting the chain or faking completion | done: one OPEN task published through SIWE admin; customer assignment left to the user |
+| R27c:orchestrator | `PLAN.md`, `PROJECT_MEMORY.md`; tests/browser output in ignored results | API tests, real browser verification, syntax and diff checks; read back existing customer allowance/balance and open task | done: API 203/203; browser 15/15; syntax/diff checks pass |
+
+Checkpoint tools are unavailable here; inspect the existing checkpoint read-only,
+work locally without worker dispatch, and preserve the user-owned firmware
+VS Code `/dev/ttyACM0` change. Never include runtime keys/tokens in source or output.
+
+R27 evidence: existing runtime task `task-7c2975f5-4f23-4cd4-a550-3ea738346f6d`
+(`HRC Local — ESP32 safety task`) is OPEN on device `esp32_01`, one required
+cycle, 120s minimum/900s maximum, 0.200 HRC stake, 0.002 reward and 0.010 penalty.
+Creation/publication used the existing local admin key to sign SIWE and the
+RBAC/audited HTTP routes; no key/token was added to source/output. No customer
+assignment or completion evidence was created. Browser checks use an injected
+wallet provider with real SIWE/API, deterministic rendering fixtures and no
+approval/stake broadcasts; they do not prove real extension signing or hardware
+session execution. Screenshots/verification.json are in ignored
+`data/results/wallet-first-connect/`. Real latest sensor response still has
+`latest = null`; Start remains visibly blocked until recent ESP32 telemetry is
+available after the user accepts/selects the task. Existing customer balance
+20 HRC, allowance 0.2 HRC and nonce 1 were verified unchanged. Dashboard files
+are served from the existing bind mount, with the app.js cache version updated.
+No live service restart or contract migration was performed.

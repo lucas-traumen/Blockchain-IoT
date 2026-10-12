@@ -205,10 +205,12 @@
                         <div><span>Allowance</span><strong id="walletAllowance">-- HRC</strong></div>
                     </div>
                     <div class="wallet-wallet-actions">
-                        <button type="button" id="walletApproveBtn" class="view-all-btn" disabled>Approve 2 HRC</button>
+                        <button type="button" id="walletApproveBtn" class="view-all-btn" disabled>Approve HRC</button>
                         <button type="button" id="walletStartBtn" class="view-all-btn primary-action" disabled>Start Session</button>
                         <button type="button" id="walletEndBtn" class="view-all-btn primary-action" hidden disabled>End Session</button>
                     </div>
+                    <p id="walletApprovalStatus" class="wallet-session-state" role="status" aria-live="polite">Checking HRC allowance...</p>
+                    <p id="walletStartStatus" class="wallet-session-state" role="status" aria-live="polite">Checking wallet and sensor readiness...</p>
                     <p id="walletFundingStatus" class="wallet-account-hint" role="status" aria-live="polite">Local test funding status will appear after SIWE sign-in.</p>
                     <div class="wallet-session-timer">
                         <span id="walletSessionTimerLabel" class="wallet-card-label">Session time</span>
@@ -883,6 +885,6 @@
 
     <script src="vendor/ethers.umd.min.js" defer></script>
     <script src="wallet.js?v=metamask-6" defer></script>
-    <script src="app.js?v=metamask-6" defer></script>
+    <script src="app.js?v=metamask-7" defer></script>
 </body>
 </html>
