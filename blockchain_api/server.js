@@ -158,7 +158,7 @@ function createApp({ service, customerService, walletService, liveService, rewar
         const requestId = require("node:crypto").randomUUID();
         res.set("X-Request-ID", requestId);
         req.requestId = requestId;
-        if (/^\/api\/(auth|me|behavior|customers|tasks|admin)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
+        if (/^\/api\/(auth|me|behavior|customers|tasks|admin|sessions)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
         next();
     });
     app.use((req, res, next) => {
@@ -264,12 +264,17 @@ function createApp({ service, customerService, walletService, liveService, rewar
     });
     app.get("/api/admin/task-sessions", requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
         const store = getWalletService().store;
+        const live = getLiveService();
+        for (const row of store.list().filter(row => row.taskSnapshot?.task?.completionRule?.type === 'sensor_activity')) {
+            if (live.refreshSensorProgress) await live.refreshSensorProgress(row);
+        }
         const sessions = store.list().filter(row => row.taskSnapshot?.task && !["SETTLED", "START_FAILED", "INTENT_EXPIRED"].includes(row.stage))
             .map(row => ({ sessionId: row.sessionId, taskId: row.taskId, assignmentId: row.assignmentId,
                 userId: row.userId, beneficiary: row.beneficiary, stage: row.stage, startedAt: row.startedEvent?.startedAt || null,
                 endedAt: row.iotSession?.ended_at || null, durationS: row.iotSession?.durationS ?? null,
                 sampleCount: row.iotSession?.sample_count ?? null, task: row.taskSnapshot.task,
-                completionEvidence: getCustomerService().store.getCompletionEvidence(row.sessionId) }))
+                completionEvidence: row.evidence ? row.evidence.completionEvidence : getCustomerService().store.getCompletionEvidence(row.sessionId),
+                taskCompletion: getLiveService().taskCompletion(row) }))
             .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")));
         res.json({ success: true, sessions });
     });
@@ -292,6 +297,12 @@ function createApp({ service, customerService, walletService, liveService, rewar
     });
     app.get("/api/me/assignments", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         res.json(getTaskService().assignments(req.appUser));
+    });
+    app.post("/api/sessions/:sessionId/cycles", adminRateLimit, requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+        getTaskService().sessionStore = getWalletService().store;
+        await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "session.cycle.record", target: req.params.sessionId,
+            details: { eventId: req.body?.eventId, taskId: req.body?.taskId, reason: req.body?.reason } },
+            () => getTaskService().recordCycle(req.appUser, { ...req.body, sessionId: req.params.sessionId })), 400);
     });
     app.post("/api/sessions/:sessionId/completion-evidence", adminRateLimit, requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
         getTaskService().sessionStore = getWalletService().store;

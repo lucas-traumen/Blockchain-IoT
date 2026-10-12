@@ -118,7 +118,7 @@ def collect(body: Collect, request: Request):
     if row is None or row["status"] != "running":
         raise HTTPException(409, detail="Collect only into the active sensor session")
     scenarios = {"safe", "spike", "repeated_spikes", "sustained_violation", "violation", "fault",
-                 "insufficient", "sequence_gap", "boot_reset", "timing_gap"}
+                 "insufficient", "sequence_gap", "boot_reset", "timing_gap", "moving", "stationary_noise", "distance_spike", "moving_then_still"}
     if body.scenario not in scenarios or not math.isfinite(body.durationS) or not 1 <= body.durationS <= 900:
         raise HTTPException(400, detail="Invalid fixture scenario")
     start = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
@@ -141,8 +141,15 @@ def collect(body: Collect, request: Request):
         low = low or (body.scenario == "sustained_violation" and 21 <= index <= 60)
         if body.scenario == "sequence_gap" and index == 21:
             clock["sequence"] += 1
+        distance = 300 if low else 900
+        if body.scenario == "moving" or (body.scenario == "moving_then_still" and offset <= 5):
+            distance = 900 + round(100 * math.sin(offset * math.pi / 2))
+        elif body.scenario == "stationary_noise":
+            distance = 900 + index % 7 - 3
+        elif body.scenario == "distance_spike" and index == 21:
+            distance = 1100
         ingest(request, start + timedelta(seconds=offset),
-               distance=300 if low else 900, valid=not (body.scenario == "fault" and index == 21),
+               distance=distance, valid=not (body.scenario == "fault" and index == 21),
                monotonic_us=mono_start + round(offset * 1_000_000),
                boot_id="synthetic-reset" if body.scenario == "boot_reset" and index == 21 else BOOT)
     clock["now"] = start + timedelta(seconds=body.durationS)

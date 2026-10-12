@@ -91,6 +91,12 @@ try {
     }
     const injection = scenario => `
         window.__walletScenario = ${JSON.stringify(scenario)};
+        const nativeInterval = window.setInterval.bind(window);
+        window.setInterval = (callback, interval, ...args) => {
+            const id = nativeInterval(callback, interval, ...args);
+            if (String(callback).includes('loadWalletAccountData')) window.__walletAccountPoll = id;
+            return id;
+        };
         window.__walletCalls = [];
         window.__walletAuthorized = false;
         window.__walletChain = ${JSON.stringify(scenario === 'wrong-network' ? '0x1' : '0x7a69')};
@@ -195,7 +201,11 @@ try {
     await check('late-wallet-siwe-mobile');
     // Deterministic rendering fixtures only: no approval or stake broadcasts.
     // Verify both viewport sizes so blocked actions remain discoverable.
-    await evaluate(`window.__walletUiSnapshot = {wallet, walletTasks, walletAssignments, selectedTaskId, walletSessions};`);
+    await evaluate(`(async () => {
+        clearInterval(window.__walletAccountPoll);
+        if (walletReadTask) await walletReadTask.promise;
+        window.__walletUiSnapshot = {wallet, walletTasks, walletAssignments, selectedTaskId, walletSessions};
+    })()`);
     for (const mobile of [true, false]) {
         await call('Emulation.setDeviceMetricsOverride', {width: mobile ? 390 : 1440, height: mobile ? 844 : 1000, deviceScaleFactor: 1, mobile});
         await evaluate(`wallet = {...window.__walletUiSnapshot.wallet, allowance:'0.2', requiredAllowance:'0.2', stakeAmount:'0.2',
@@ -240,6 +250,74 @@ try {
         renderWallet();`);
     assert.equal(await evaluate("document.getElementById('walletSessionTimer').textContent"), '00:01:50');
     assert.match(await evaluate("document.getElementById('walletSessionTimerDetail').textContent"), /Stopped/);
+    // R32 rendering fixtures: progress remains independent from telemetry samples.
+    for (const mobile of [false, true]) {
+        await call('Emulation.setDeviceMetricsOverride', {width: mobile ? 390 : 1440, height: mobile ? 844 : 1000, deviceScaleFactor: 1, mobile});
+        await evaluate(`wallet = {...wallet, rewardProtocolVersion:'task-rewards-v2', stakeAmount:'0.2'};
+            walletSessions = [{sessionId:'cycle-ui-fixture', taskId:'cycle-task', stage:'RUNNING', settled:false, sampleCount:1800,
+                stakedAmount:'0.2', taskSnapshot:{task:{completionRule:{requiredCycles:20,minimumDurationS:30,maximumDurationS:180}}},
+                taskCompletion:{status:'TRACKING',requiredCycles:20,observedCycles:7,recordedCycles:7,remainingCycles:13},
+                iotSession:{started_at:new Date(Date.now()-180000).toISOString()}}];
+            renderWallet(); document.getElementById('walletCyclePanel').scrollIntoView({block:'center',behavior:'instant'});`);
+        assert.equal(await evaluate("document.getElementById('walletCycleCount').textContent"), '7 / 20');
+        assert.equal(await evaluate("document.getElementById('walletCycleProgress').value"), 7);
+        assert.match(await evaluate("document.getElementById('walletCycleRemaining').textContent"), /13 cycles remaining/);
+        assert.match(await evaluate("document.getElementById('walletCycleSource').textContent"), /earlier task.*operator-recorded.*automatic movement task/);
+        assert.equal(await evaluate("document.getElementById('walletEndBtn').disabled"), false);
+        await check('cycle-progress-' + (mobile ? 'mobile' : 'desktop'));
+        await evaluate(`walletSessions[0].taskCompletion = {status:'APPROVED',requiredCycles:20,observedCycles:20,recordedCycles:20,remainingCycles:0};
+            renderWallet(); document.getElementById('walletCyclePanel').scrollIntoView({block:'center',behavior:'instant'});`);
+        assert.equal(await evaluate("document.getElementById('walletCycleCount').textContent"), '20 / 20');
+        assert.equal(await evaluate("document.getElementById('walletCycleProgress').value"), 20);
+        await check('cycle-approved-' + (mobile ? 'mobile' : 'desktop'));
+    }
+    // Operator actions below use browser-local responses, never a real API write.
+    await evaluate(`window.__cycleSavedUser = walletSession;
+        window.__realWalletRequest = walletRequest; window.__cycleWrites = 0;
+        walletSession = {token:'ui-operator-fixture',user:{userId:'ui-operator',role:'operator'}};
+        window.hrcRuntimeConfig.rewards = {...window.hrcRuntimeConfig.rewards,version:'task-rewards-v2'};
+        ownerTasks = [];
+        ownerTaskSessions = [{sessionId:'hrc-cycle-ui-wallet-12345678-1234-1234-1234-123456789012',taskId:'cycle-task',stage:'RUNNING',sampleCount:300,durationS:30,
+            task:{title:'Operator cycle fixture',completionRule:{requiredCycles:2}},
+            taskCompletion:{status:'TRACKING',recordedCycles:1,observedCycles:1,requiredCycles:2,remainingCycles:1,reviewable:true}}];
+        walletRequest = async (path, options={}) => {
+            if(path.endsWith('/cycles')) {
+                window.__cycleWrites++;
+                ownerTaskSessions[0].taskCompletion={status:'APPROVED',observedCycles:2,recordedCycles:2,requiredCycles:2,remainingCycles:0,reviewable:false};
+                ownerTaskSessions[0].completionEvidence={achieved:true,observedCycles:2};
+                return {success:true,progress:{recordedCycles:2},evidence:{achieved:true}};
+            }
+            if(path==='/api/admin/tasks') return {success:true,tasks:[]};
+            if(path==='/api/admin/task-sessions') return {success:true,sessions:ownerTaskSessions};
+            throw new Error('Unexpected fixture request: '+path);
+        }; renderWallet();`);
+    for (const mobile of [false, true]) {
+        await call('Emulation.setDeviceMetricsOverride', {width: mobile ? 390 : 1440, height: mobile ? 844 : 1000, deviceScaleFactor: 1, mobile});
+        await evaluate("document.getElementById('ownerTaskList').scrollIntoView({block:'center',behavior:'instant'})");
+        await check('operator-cycles-' + (mobile ? 'mobile' : 'desktop'));
+    }
+    await click('#ownerTaskList .wallet-cycle-controls button');
+    await wait("document.getElementById('ownerTaskStatus').textContent.includes('Recorded: 2/2')");
+    assert.equal(await evaluate('window.__cycleWrites'), 1);
+    assert.equal(await evaluate("document.querySelector('#ownerTaskList .wallet-cycle-controls button').disabled"), true);
+    await evaluate(`walletRequest=window.__realWalletRequest;walletSession=window.__cycleSavedUser;ownerTaskSessions=[];renderWallet();`);
+    for (const mobile of [false, true]) {
+        await call('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 1000, deviceScaleFactor: 1, mobile });
+        await evaluate(`window.clearInterval(window.__walletAccountPoll);
+            wallet={...wallet,rewardProtocolVersion:'task-rewards-v2'};walletAssignments=[];selectedTaskId=null;
+            walletSessions=[{sessionId:'activity-ui-fixture',taskId:'activity-task',stage:'RUNNING',settled:false,stakedAmount:'0.2',
+                taskSnapshot:{task:{completionRule:{type:'sensor_activity',requiredActiveSeconds:20,minimumDurationS:30,maximumDurationS:180}}},
+                taskCompletion:{type:'sensor_activity',status:'TRACKING',activeSeconds:7.3,requiredActiveSeconds:20,stationarySeconds:31.2,unknownSeconds:0.4,state:'STATIONARY'}}];renderWallet();
+            document.getElementById('walletCyclePanel').scrollIntoView({block:'center',behavior:'instant'});`);
+        assert.equal(await evaluate("document.getElementById('walletCycleCount').textContent"),'7.3s / 20s');
+        assert.match(await evaluate("document.getElementById('walletActivityState').textContent"), /NO MOVEMENT.*31.2s/);
+        await check('activity-stationary-' + (mobile ? 'mobile' : 'desktop'));
+        await evaluate(`walletSessions[0].taskCompletion={...walletSessions[0].taskCompletion,state:'MOVING',activeSeconds:20,status:'APPROVED'};renderWallet();`);
+        assert.match(await evaluate("document.getElementById('walletCompletionStatus').textContent"),/target reached automatically/);
+        await check('activity-approved-' + (mobile ? 'mobile' : 'desktop'));
+        await evaluate(`walletSessions[0].taskCompletion.state='UNKNOWN';renderWallet();`);
+        assert.match(await evaluate("document.getElementById('walletActivityState').textContent"),/WAITING FOR VALID SENSOR DATA/);
+    }
     assert.deepEqual(exceptions, [], 'no JavaScript exceptions');
     await writeFile(join(evidence, 'verification.json'), JSON.stringify({ scenarios: results, authMode: config.app.authMode, chainId: config.chainId, walletAddress: wallet.address, broadcasts: 0, exceptions }, null, 2));
     console.log('Evidence: ' + evidence);

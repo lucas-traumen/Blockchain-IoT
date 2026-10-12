@@ -1206,3 +1206,49 @@ safety outcome.
   Hardhat 122/122, wallet-first browser 15/15, custom Chrome report/completion
   checks pass on desktop/mobile with zero broadcasts. The API was reloaded without
   resetting the local chain or runtime databases.
+
+
+## Audited live task-cycle progress (R32, 2026-10-13)
+
+- HC-SR04 distance telemetry and elapsed session time do not prove robot action
+  completion. Cycle progress is explicitly `operator_recorded`, never inferred
+  from samples, safe state or time. Standing still adds no cycle events.
+- `POST /api/sessions/:sessionId/cycles` requires SIWE admin/operator and accepts
+  `taskId`, a unique `eventId`, and an optional observation reason. One request
+  records one full observed action; client-supplied totals and unknown fields
+  are rejected. Customer wallets cannot record or approve their own actions.
+- Cycle events are append-only in SQLite `task_cycle_events`, unique by session
+  and event ID, with actor/reason/timestamp and chained event hashes. Matching
+  retries return the stored event without incrementing, including after End;
+  a changed retry conflicts. New events are restricted to a RUNNING assignment
+  without End requested, closed sensor, frozen evidence or final approval.
+- Reaching the frozen cycle target commits the last event and owner-approved
+  completion evidence in the same SQLite transaction. A storage failure rolls
+  both back. Final manual approval remains compatible with prior tasks; once
+  any events exist its observed total must match the durable event count.
+- `taskCompletion` carries recorded/observed counts, target, remaining count,
+  source and approval state. End freezes cycle progress with completion and
+  telemetry evidence; settled reports never read later mutable progress.
+- Dashboard shows count/target, progress bar and remaining actions. Operator
+  workspace exposes Record +1; its pending event ID survives lost responses
+  and reload, with account-scoped storage and retry reuse. Customer visibility
+  refreshes through the existing five-second account poll.
+- Verification: API 224/224, isolated V2 real-contract lifecycle 26/26, Chrome
+  21/21 desktop/mobile scenarios, no JS exceptions or wallet broadcasts. The
+  new cases prove 1/2 -> no reward and 2/2 -> 0.002 HRC, plus SQLite reopen,
+  delayed settlement and one immutable settlement event. Browser recording is
+  fixture-only, not a hardware cycle test.
+- Local API reload kept the existing chain genesis, deployment manifest and all
+  nine session records unchanged. No live cycle event or retroactive reward was
+  created. Evidence is in `data/results/task-cycle-progress-r32/`.
+
+
+## Automatic user movement time (R33, 2026-10-13)
+
+- User clarified cycles were meant to discourage users standing still, not count robot actions, then approved automatic active-time measurement. R32 operator counts remain only for previously published `robot_cycle_count` tasks. New dashboard tasks and local launcher smoke use `sensor_activity`, default requiredActiveSeconds 20, existing 30-second session minimum and duration reward curve. Published/accepted policy snapshots remain immutable.
+- TaskService freezes exact `distance-activity-v1`: 5-sample trailing median, 1-second filtered range >=10mm, consecutive valid time-synced CLEAR assessments, maximum interval 0.5 seconds. Manual cycle/final approval routes reject activity tasks. Distance change proves neither identity, steps nor a walking route; tangential movement can be missed and unrelated objects can move in view. This is a demo distance-activity metric.
+- Store.session_stats supplies session/device-bound nested activity with active/stationary/unknown/observed seconds, state, raw sample count, last received timestamp/sequence/boot, immutable policy and deterministic evidence hash. Uses an exact processor-version join. Sequence/clock/boot gaps, unsafe or unprocessed samples reset filters, give no active credit; first warmup intervals are UNKNOWN. A clock high watermark prevents double credit after regression. Repeated reads, duplicates and SQLite reopen do not accumulate time.
+- Node validates policy, session ID against durable record and sensor document, device ID, raw sample count, numeric duration totals bounded by sensor timing_span_s, state and hash. Live progress uses existing five-second wallet polling. Stale latest sample >2 seconds shows UNKNOWN with no new time. End automatically freezes activity completion and snapshot; sufficient activity is one requirement alongside duration, sample coverage and safety. Frozen reports/retries never recompute a payout. Multi-boot evidence still fails closed under existing boot-change and timing-span checks.
+- Reward amounts stay 0.2 HRC stake, 0.001 -> 0.002 HRC curve with capped reward after full-reward duration and 0.01 HRC daily cap. Under-target safe sessions return stake with 0 reward/penalty. Activity does not hide confirmed safety violations or technical faults.
+- R33 verification: Python 118/118 (55 activity); API 233/233; isolated real-contract lifecycle 32/32; Chrome 25/25 desktop/mobile with zero exceptions/broadcasts. Stationary/noise/spike/brief motion refunded; continuous safe motion at 120s and 180s paid max 0.002 automatically. SQLite reopen kept immutable evidence and one event. Fixtures use synthetic transport/time and real backend/contracts; no physical hardware movement verification was claimed.
+- Runtime rebuilt IoT and reloaded API PID 616502 with existing environment. Chain genesis/manifest, 10 wallet session records and 8 existing task definitions are unchanged. Published one new OPEN task `task-8f158b8a-f1b1-43d9-8e8d-add83fccd546`, **Active movement · 20s automatic**, target20, minimum30, fullReward50 through existing SIWE admin. No customer assignment or fabricated live evidence was added. Docs `docs/user-activity.md`, artifacts `data/results/user-activity-r33/`. Work is uncommitted.

@@ -372,11 +372,13 @@ async function main() {
         }
         const admin = await login(derive(0));
         if (admin.user.role !== "admin") throw new Error("Local owner wallet did not receive the admin SIWE role");
-        const draft = await call("/api/tasks", admin.token, "POST", { title: "Launcher smoke task", description: "Local disposable task",
-            deviceId: "esp32_01", zoneId: "smoke", completionRule: { type: "robot_cycle_count", requiredCycles: 1,
+        const draft = await call("/api/tasks", admin.token, "POST", { title: "Launcher movement task", description: "Local disposable task with automatic active time",
+            deviceId: "esp32_01", zoneId: "smoke", completionRule: { type: "sensor_activity", requiredActiveSeconds: 20,
                 minimumDurationS: 30, maximumDurationS: 180 } });
         const published = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/publish`, admin.token, "POST", {});
-        if (draft.task.completionRule.minimumDurationS !== 30 || draft.task.completionRule.maximumDurationS !== 180) {
+        if (draft.task.completionRule.minimumDurationS !== 30 || draft.task.completionRule.maximumDurationS !== 180
+            || draft.task.completionRule.type !== "sensor_activity" || draft.task.completionRule.requiredActiveSeconds !== 20
+            || draft.task.completionRule.activityPolicy?.version !== "distance-activity-v1") {
             throw new Error(`Task duration rule was not preserved: ${JSON.stringify(draft.task.completionRule)}`);
         }
         const accepted = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/accept`, customer.token, "POST", {});

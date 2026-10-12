@@ -23,9 +23,10 @@ async function fixture(t) {
     };
     const records = walletService.store.list();
     walletService.store.list = () => records;
+    walletService.store.get = id => records.find(row => row.sessionId === id) || null;
     walletService.getSession = async (userId, sessionId) => ({ success: true,
         session: { ...records.find(row => row.userId === userId && row.sessionId === sessionId) } });
-    const liveService = { taskCompletion: row => ({ status: row.evidence?.completionEvidence ? 'APPROVED' : 'MISSING' }) };
+    const liveService = { completionStore: store, taskCompletion: require('../liveSessionService').LiveSessionService.prototype.taskCompletion };
     const app = createApp({ service: {}, customerService, walletService, liveService, tokens: { HRC_APP_AUTH_MODE: "siwe", HRC_CORS_ORIGINS: "http://localhost:8081" } });
     const server = app.listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
@@ -86,9 +87,74 @@ test('HRC report route includes settled refunds and running sessions only for ad
     const refund = reports.body.sessions.find(row => row.sessionId === 'refunded-session');
     assert.equal(refund.rewardPaid, '0');
     assert.equal(refund.stakeReturned, '0.2');
-    assert.equal(refund.taskCompletion.status, 'MISSING');
+    assert.equal(refund.taskCompletion, null);
     assert.equal(refund.outcomeReason, 'task_completion_evidence_missing');
     assert.equal(f.store.listAudit(100).length, 0, 'report reads must not create approvals or settlements');
     const operatorToken = await f.login(f.operator);
     assert.equal((await f.call('/api/admin/wallet/sessions', { token: operatorToken })).status, 200);
+});
+
+
+test('cycle HTTP recording requires operator authority, returns progress and freezes completion at the target', async t => {
+    const f = await fixture(t);
+    const ownerToken = await f.login(f.owner);
+    const operatorToken = await f.login(f.operator);
+    const userToken = await f.login(f.user);
+    const created = await f.call('/api/tasks', { method: 'POST', token: ownerToken, body: {
+        title: 'Two actions', description: 'Observe completed robot actions', completionRule: { type: 'robot_cycle_count', requiredCycles: 2 } } });
+    const taskId = created.body.task.taskId;
+    await f.call(`/api/tasks/${taskId}/publish`, { method: 'POST', token: ownerToken, body: {} });
+    const accepted = await f.call(`/api/tasks/${taskId}/accept`, { method: 'POST', token: userToken, body: {} });
+    const assignment = accepted.body.assignment;
+    const session = { sessionId: 'two-action-session', userId: assignment.userId, taskId, assignmentId: assignment.assignmentId,
+        taskSnapshot: assignment.policySnapshot, stage: 'RUNNING' };
+    f.records.push(session);
+    const route = '/api/sessions/two-action-session/cycles';
+    const body = { taskId, eventId: 'observed-1' };
+    assert.equal((await f.call(route, { method: 'POST', body })).status, 401);
+    assert.equal((await f.call(route, { method: 'POST', body, token: userToken })).status, 403);
+    assert.equal(f.store.getCycleProgress(session.sessionId).recordedCycles, 0);
+    const one = await f.call(route, { method: 'POST', body, token: operatorToken });
+    assert.equal(one.status, 200);
+    assert.equal(one.body.progress.recordedCycles, 1);
+    assert.equal(one.body.evidence, null);
+    assert.equal((await f.call(route, { method: 'POST', body, token: operatorToken })).body.duplicate, true);
+    const adminRows = await f.call('/api/admin/task-sessions', { token: ownerToken });
+    const current = adminRows.body.sessions.find(row => row.sessionId === session.sessionId);
+    assert.equal(current.taskCompletion.status, 'TRACKING');
+    assert.equal(current.taskCompletion.remainingCycles, 1);
+    assert.equal((await f.call(route, { method: 'POST', body: { ...body, observedCycles: 200 }, token: ownerToken })).status, 400);
+    const two = await f.call(route, { method: 'POST', body: { ...body, eventId: 'observed-2' }, token: ownerToken });
+    assert.equal(two.body.evidence.achieved, true);
+    assert.equal(two.body.evidence.observedCycles, 2);
+    const reports = await f.call('/api/admin/wallet/sessions', { token: ownerToken });
+    assert.equal(reports.body.sessions.find(row => row.sessionId === session.sessionId).taskCompletion.status, 'APPROVED');
+    session.stage = 'STOPPING_SENSOR';
+    assert.equal((await f.call(route, { method: 'POST', body: { ...body, eventId: 'observed-3' }, token: operatorToken })).status, 409);
+    assert.equal(f.store.getCycleProgress(session.sessionId).recordedCycles, 2);
+    assert.ok(f.store.listAudit(100).some(entry => entry.action === 'session.cycle.record' && entry.actor === f.operator.address.toLowerCase()));
+});
+
+test('HTTP activity tasks store the released rule and reject all manual completion routes', async t => {
+    const f = await fixture(t);
+    const ownerToken = await f.login(f.owner), operatorToken = await f.login(f.operator), userToken = await f.login(f.user);
+    const created = await f.call('/api/tasks', { method: 'POST', token: ownerToken, body: {
+        title: 'User movement', description: '20 seconds of measured activity', completionRule: { type: 'sensor_activity', requiredActiveSeconds: 20 } } });
+    assert.equal(created.status, 200);
+    const taskId = created.body.task.taskId;
+    assert.equal(created.body.task.completionRule.activityPolicy.version, 'distance-activity-v1');
+    await f.call(`/api/tasks/${taskId}/publish`, { method: 'POST', token: ownerToken, body: {} });
+    const accepted = await f.call(`/api/tasks/${taskId}/accept`, { method: 'POST', token: userToken, body: {} });
+    const assignment = accepted.body.assignment;
+    f.records.push({ sessionId: 'auto-activity-session', taskId, assignmentId: assignment.assignmentId, userId: assignment.userId,
+        stage: 'RUNNING', taskSnapshot: assignment.policySnapshot });
+    for (const [suffix, fields] of [['cycles', { eventId: 'manual-1' }], ['completion-evidence', { observedCycles: 100, reason: 'override' }]]) {
+        assert.equal((await f.call(`/api/sessions/auto-activity-session/${suffix}`, { method: 'POST', token: userToken,
+            body: { taskId, ...fields } })).status, 403);
+        const rejected = await f.call(`/api/sessions/auto-activity-session/${suffix}`, { method: 'POST', token: operatorToken,
+            body: { taskId, ...fields } });
+        assert.equal(rejected.status, 409); assert.equal(rejected.body.code, 'AUTOMATIC_COMPLETION_REQUIRED');
+    }
+    assert.equal(f.store.getCompletionEvidence('auto-activity-session'), null);
+    assert.equal(f.store.getCycleProgress('auto-activity-session').recordedCycles, 0);
 });

@@ -1814,3 +1814,56 @@ Implementation and verification:
 
 Checkpoint tool is unavailable in this Codex session; historical OpenCode state
 was read but remains unchanged.
+
+
+## R32 — Visible, durable task-cycle progress (2026-10-13)
+
+User authorized implementation after reporting that changing the target still
+leaves the completed cycle count unknown. The existing HC-SR04 telemetry has
+no robot action/completion signal; distance or elapsed time must not fabricate
+robot cycles. Use audited operator-recorded cycle events, show current/required
+and remaining counts, and freeze owner-approved completion automatically when
+the recorded target is reached. Keep existing manual approval compatibility.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R32:orchestrator-source | `blockchain_api/taskService.js`, `sqliteStores.js`, `liveSessionService.js`, `server.js`, directly affected tests; `dashboard/app.js`, `index.html`, `style.css`; isolated lifecycle integration | Durable idempotent operator events; customer cannot increment; only RUNNING/unfrozen sessions; count and remaining visible; target auto-approval from audited events; retries/reopen/final evidence immutable; existing V1 works | done |
+| R32:orchestrator | `PLAN.md`, `PROJECT_MEMORY.md`, dedicated cycle browser verifier/evidence, local API reload | Review implementation and focused/full tests; browser desktop/mobile; reload API preserving chain and existing settlements | done |
+
+Checkpoint/task plugin and GitNexus MCP are unavailable in this Codex session;
+source inspection replaces graph tracing, and historical checkpoint state is
+read-only. No chain reset, contract deployment, firmware flash or manufactured
+runtime completion is authorized by this change.
+
+R32 verification: Blockchain API **224/224**; isolated real-contract lifecycle
+**26/26**, including 1/2 recorded actions -> refund/no reward and 2/2 ->
+0.2 HRC stake refund + 0.002 HRC reward, SQLite reopen and immutable delayed
+settlement retry. Chrome **21/21** desktop/mobile scenarios, no JavaScript
+exceptions or wallet broadcasts. Browser fixtures simulate cycle writes locally
+and do not manufacture completion evidence on the live API. Syntax and
+`git diff --check` pass. Evidence: `data/results/task-cycle-progress-r32/`.
+
+The local API was reloaded with its existing environment. Chain genesis and
+reward deployment manifest are unchanged; all **9** existing session records
+retain their exact digest. The new SQLite table contains **0** live cycle events
+until an operator records a real observed action. Hardware does not count robot
+cycles automatically: the delivered count is explicitly operator-recorded.
+Manual final approval cannot override a nonzero event counter with another
+value; ongoing work uses cycle events until the target is reached.
+Implementation/review/testing were performed directly; no worker dispatched.
+
+
+## R33 — Automatic user activity time (2026-10-13)
+
+User clarified that the intended goal is to detect user movement and prevent standing still from satisfying completion, then approved measuring active time. R32 operator-recorded robot cycles did not meet this intent. New tasks default to a sensor_activity rule requiring 20 active seconds plus the existing 30-second session minimum; published tasks and accepted policy snapshots retain their original rules.
+
+| Task key | Scope and acceptance | Status |
+| --- | --- | --- |
+| R33:coder-activity | Python deterministic median-filtered activity statistics from safe session-bound raw telemetry; no credit for noise/spikes/gaps/faults; stable evidence hash and reopen/isolation tests | done |
+| R33:orchestrator | Frozen activity rule, automatic completion/evidence validation, no manual override; UI active/stationary seconds; API/UI/real-contract checks, docs, launcher smoke activity rule and local reload preserving chain | done |
+
+Released demo policy: trailing median of 5 samples, 1-second movement window with distance range at least 10mm; only consecutive time-synced valid CLEAR evidence and intervals <=0.5s receive activity credit. No wall-clock waiting credit. Sensor activity reflects distance variation rather than identity, steps or a walking route. No live sensor samples or activity evidence will be manufactured.
+
+R33 verification: Python **118/118** (55 activity cases); Blockchain API **233/233**; isolated real-contract lifecycle **32/32**; Chrome **25/25** desktop/mobile scenarios, zero JS exceptions and zero wallet broadcasts. New integration cases show stationary/noise/spike/short movement -> 0.2 HRC stake refund and no reward; sufficient movement at 120s and 180s -> stake refund plus capped 0.002 HRC without manual completion. SQLite reopen preserves evidence and one settlement event. Bash/JS/Python syntax and diff whitespace checks pass. Launcher activity smoke is syntax-checked; no fresh-chain launcher was run on the active runtime.
+
+Local API PID **616502** and rebuilt IoT container are serving R33. Before reload no sensor session was running. Chain genesis, manifest, all **10 wallet-session records** and **8 existing task definitions** retain their exact digests. Through existing SIWE admin routes, published one OPEN task **Active movement · 20s automatic**, task ID `task-8f158b8a-f1b1-43d9-8e8d-add83fccd546`, requiredActiveSeconds 20, minimumDurationS 30, full reward at 50s. No customer assignment, live completion/activity evidence, robot action or retroactive reward was created. Existing sensors are read-only for verification; hardware movement detection has not been physically exercised. Evidence: `data/results/user-activity-r33/`. Changes remain uncommitted.

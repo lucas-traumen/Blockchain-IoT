@@ -345,7 +345,7 @@ test('completion review reads live evidence, preserves the frozen decision and i
     f.live.completionStore = { getCompletionEvidence: () => approved };
     f.walletService.store.update(sessionId, { taskSnapshot: { task: { completionRule: { requiredCycles: 20 } } } });
     assert.deepEqual((await f.live.session('user_1', sessionId)).session.taskCompletion,
-        { status: 'MISSING', requiredCycles: 20, observedCycles: null, approvedAt: null, reviewable: true });
+        { status: 'MISSING', requiredCycles: 20, observedCycles: null, recordedCycles: 0, remainingCycles: 20, source: 'operator_recorded', lastRecordedAt: null, approvedAt: null, reviewable: true });
     approved = { achieved: false, observedCycles: 12, createdAt: '2026-10-11T10:00:20Z' };
     assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.status, 'INSUFFICIENT');
     approved = { ...approved, achieved: true, observedCycles: 20 };
@@ -360,4 +360,86 @@ test('completion review reads live evidence, preserves the frozen decision and i
     assert.equal(frozen.reviewable, false);
     f.walletService.store.update(sessionId, { evidence: { completionEvidence: approved } });
     assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.status, 'APPROVED');
+});
+
+
+test('cycle progress is independent of sensor samples and freezes with the end evidence', async t => {
+    const f = fixture(t);
+    const { sessionId } = await f.start('user_1', { sessionRef: 'cycle-progress' });
+    let progress = { recordedCycles: 0, source: 'operator_recorded', lastRecordedAt: null };
+    let completion = null;
+    f.live.completionStore = { getCompletionEvidence: () => completion, getCycleProgress: () => progress };
+    const task = { taskId: 'cycle-task', completionRule: { requiredCycles: 3, minimumDurationS: 30, maximumDurationS: 180 } };
+    f.walletService.store.update(sessionId, { taskId: task.taskId, taskSnapshot: { task } });
+    assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.recordedCycles, 0);
+    f.state.now += 180000;
+    assert.equal((await f.live.session('user_1', sessionId)).session.taskCompletion.recordedCycles, 0, 'elapsed time and samples do not invent robot actions');
+    progress = { ...progress, recordedCycles: 2, lastRecordedAt: '2026-10-11T10:00:20Z' };
+    const current = (await f.live.session('user_1', sessionId)).session.taskCompletion;
+    assert.equal(current.status, 'TRACKING');
+    assert.equal(current.observedCycles, 2);
+    assert.equal(current.remainingCycles, 1);
+    const record = f.walletService.store.get(sessionId);
+    f.live.freezeEvidence(record, { session: { started_at: new Date(f.state.now - 180000).toISOString(), ended_at: new Date(f.state.now).toISOString() },
+        result: { outcome: 'INCOMPLETE', reason: 'insufficient_cycles', sampleCount: 1800, durationS: 180 } });
+    progress = { ...progress, recordedCycles: 3 };
+    completion = { achieved: true, observedCycles: 3 };
+    const frozen = (await f.live.session('user_1', sessionId)).session.taskCompletion;
+    assert.equal(frozen.recordedCycles, 2);
+    assert.equal(frozen.status, 'TRACKING');
+    assert.equal(frozen.reviewable, false);
+});
+
+function activityDocument(record, activeSeconds = 20) {
+    const { ACTIVITY_POLICY } = require('../activityEvidencePolicy');
+    const session = { session_id: record.sessionId, device_id: 'esp32_01', status: 'closed', boot_change: false,
+        started_at: '2026-10-11T10:00:00.000Z', ended_at: '2026-10-11T10:00:30.000Z' };
+    const activity = { policy: { ...ACTIVITY_POLICY }, session_id: record.sessionId, device_id: 'esp32_01', sample_count: 300,
+        active_seconds: activeSeconds, stationary_seconds: 29.5 - activeSeconds, unknown_seconds: 0.4,
+        observed_seconds: 29.9, state: activeSeconds ? 'MOVING' : 'STATIONARY',
+        last_sample_at: '2026-10-11T10:00:29.900Z', evidence_hash: ethers.id('activity-raw-evidence') };
+    return { session, stats: { activity, sample_count: 300, raw_count: 300, processed_count: 300, processed_coverage: 1,
+        timing_span_s: 29.9, mean_cadence_hz: 10, max_timing_gap_s: 0.1, gap_count: 0, confirmed_violation_count: 0, unknown_count: 0 },
+        result: { outcome: 'VALID_NO_VIOLATION', durationS: 30, reasonCodes: [] } };
+}
+function activityRecord(f) {
+    const record = { sessionId: 'activity-test', userId: 'user_1', taskId: 'activity-task', assignmentId: 'activity-assignment', stage: 'RUNNING',
+        taskSnapshot: { task: { taskId: 'activity-task', deviceId: 'esp32_01',
+            completionRule: { type: 'sensor_activity', requiredActiveSeconds: 20, minimumDurationS: 30,
+                maximumDurationS: 50, activityPolicy: { ...require('../activityEvidencePolicy').ACTIVITY_POLICY } } } } };
+    f.walletService.store.save(record);
+    return f.walletService.store.get(record.sessionId);
+}
+test('activity progress is automatic, goes stale without accumulating time, and final evidence cannot change', t => {
+    const f = fixture(t); const record = activityRecord(f); const document = activityDocument(record);
+    f.state.now = Date.parse('2026-10-11T10:00:30Z');
+    record.iotSession = { ...document.session, status: 'running', ...document.stats };
+    const live = f.live.taskCompletion(record);
+    assert.equal(live.status, 'APPROVED'); assert.equal(live.state, 'MOVING'); assert.equal(live.reviewable, false);
+    f.state.now += 60000;
+    const stale = f.live.taskCompletion(record);
+    assert.equal(stale.state, 'UNKNOWN'); assert.equal(stale.activeSeconds, 20);
+    const frozen = f.live.freezeEvidence(record, document);
+    assert.equal(frozen.evidence.result.outcome, 'VALID_NO_VIOLATION');
+    assert.equal(frozen.evidence.completionEvidence.source, 'sensor_activity');
+    document.stats.activity.active_seconds = 0;
+    record.iotSession.activity = document.stats.activity;
+    const final = f.live.taskCompletion(frozen);
+    assert.equal(final.activeSeconds, 20); assert.equal(final.frozen, true);
+    assert.deepEqual(f.live.freezeEvidence(frozen, document).settlementPayload, frozen.settlementPayload);
+});
+test('stationary telemetry and unsupported activity evidence refund despite sufficient session duration', t => {
+    for (const bad of ['stationary', 'missing', 'policy', 'wrong-session', 'replayed-session', 'duration']) {
+        const f = fixture(t); const record = activityRecord(f); const document = activityDocument(record, bad === 'stationary' ? 0 : 20);
+        if (bad === 'missing') delete document.stats.activity;
+        if (bad === 'policy') document.stats.activity.policy.displacementMm = 1;
+        if (bad === 'wrong-session') document.stats.activity.session_id = 'another';
+        if (bad === 'replayed-session') document.session.session_id = document.stats.activity.session_id = 'another';
+        if (bad === 'duration') document.stats.activity.observed_seconds = 90;
+        f.live.completionStore = { getCompletionEvidence: () => ({ achieved: true, source: 'owner_approved' }) };
+        const frozen = f.live.freezeEvidence(record, document);
+        assert.equal(frozen.evidence.result.outcome, 'INCOMPLETE', bad);
+        assert.equal(frozen.evidence.completionEvidence.achieved, false, bad);
+        assert.ok(frozen.evidence.result.reasonCodes.some(reason => reason.startsWith('task_activity_')), bad);
+    }
 });

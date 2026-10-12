@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from iot_backend.activity import compute_session_activity
 from iot_backend.safety import STATUS_CLEAR, STATUS_UNKNOWN, STATUS_VIOLATION
 from iot_backend.util import utc_now_iso
 
@@ -551,16 +552,35 @@ class Store:
         - violation/clear/unknown_count: đếm theo ``safety.status`` trong
           processed_samples join session_samples; chỉ đếm theo
           ``processor_version`` đã cho, ``None`` = không lọc (mọi version).
+        - activity: bằng chứng distance-activity-v1 từ raw và assessment đúng
+          version; ``None`` chọn live PROCESSOR_VERSION chỉ cho activity.
         """
+        # Legacy None still counts every processed version. Activity always
+        # requires exactly one version; resolve the live default here to avoid
+        # the service -> Store import cycle.
+        if processor_version is None:
+            from iot_backend.ingestion.service import PROCESSOR_VERSION
+            activity_version = PROCESSOR_VERSION
+        else:
+            activity_version = processor_version
         with self._lock:
+            session = self._conn.execute(
+                "SELECT device_id FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
             sample_rows = self._conn.execute(
-                "SELECT ss.boot_id, ss.sequence, r.is_late, r.monotonic_us "
+                "SELECT ss.device_id, ss.boot_id, ss.sequence, r.id AS raw_id, "
+                "r.is_late, r.monotonic_us, r.received_at, r.measured_at, "
+                "r.time_synced, r.distance_mm, r.valid, "
+                "p.result_json AS activity_assessment_json "
                 "FROM session_samples ss "
                 "LEFT JOIN raw_samples r "
                   "ON r.device_id=ss.device_id AND r.boot_id=ss.boot_id "
                  "AND r.sequence=ss.sequence "
+                "LEFT JOIN processed_samples p "
+                  "ON p.device_id=r.device_id AND p.boot_id=r.boot_id "
+                 "AND p.sequence=r.sequence AND p.processor_version=? "
                 "WHERE ss.session_id=? ORDER BY ss.boot_id, ss.sequence",
-                (session_id,),
+                (activity_version, session_id),
             ).fetchall()
             processed_rows = self._conn.execute(
                 "SELECT p.result_json FROM session_samples ss "
@@ -623,8 +643,9 @@ class Store:
                 record = json.loads(row["result_json"])
             except ValueError:
                 continue
-            status = record.get("safety", {}).get("status")
-            if status in counts:
+            safety = record.get("safety") if isinstance(record, dict) else None
+            status = safety.get("status") if isinstance(safety, dict) else None
+            if isinstance(status, str) and status in counts:
                 counts[status] += 1
 
         confirmed_violation_count = 0
@@ -658,6 +679,12 @@ class Store:
             "unknown_count": counts[STATUS_UNKNOWN],
             "confirmed_violation_count": confirmed_violation_count,
             "observed_violation_count": observed_violation_count,
+            "activity": compute_session_activity(
+                (row for row in sample_rows if row["raw_id"] is not None),
+                session_id=session_id,
+                device_id=session["device_id"] if session is not None else None,
+                processor_version=activity_version,
+            ),
         }
 
     # ------------------------------------------------------------- queries

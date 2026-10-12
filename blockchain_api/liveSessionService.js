@@ -4,6 +4,7 @@ const { ApiError, identifier, canonicalJson } = require('./eventPayload');
 const { normalizeOutcome, sessionKey } = require('./rewardPolicy');
 const { IotSessionClient } = require('./iotSessionClient');
 const { validateTaskEvidence, validateTaskOutcome } = require('./taskEvidencePolicy');
+const { validateActivityEvidence } = require('./activityEvidencePolicy');
 
 const FINAL = new Set(['SETTLED', 'START_FAILED', 'INTENT_EXPIRED']);
 const TERMINAL_ERRORS = new Set(['SETTLEMENT_CONFLICT', 'STORE_INTEGRITY_ERROR', 'BENEFICIARY_MISMATCH', 'TRANSACTION_REVERTED', 'IOT_SESSION_MISMATCH']);
@@ -239,25 +240,56 @@ class LiveSessionService {
     }
     async session(userId, id) {
         const record = this.owner(userId, id);
-        if (record.source === 'esp32' && !FINAL.has(record.stage)) {
-            try {
-                const info = await this.iot.get(id);
-                if (info) this.store.update(id, { iotSession: this.sensorInfo(info) });
-            } catch { /* Last durable sensor state remains visible while the device API is down. */ }
-        }
+        await this.refreshSensorProgress(record);
         const result = await this.walletService.getSession(userId, id);
         return { ...result, session: { ...result.session, taskCompletion: this.taskCompletion(this.store.get(id)) } };
+    }
+    async refreshSensorProgress(record) {
+        if (record.source !== 'esp32' || FINAL.has(record.stage) || record.evidence || record.settlementPayload) return;
+        try {
+            const info = await this.iot.get(record.sessionId);
+            const current = this.store.get(record.sessionId);
+            if (info && current && !FINAL.has(current.stage) && !current.evidence && !current.settlementPayload) {
+                this.store.update(record.sessionId, { iotSession: this.sensorInfo(info) });
+            }
+        } catch { /* Keep the durable progress; freshness marks stale telemetry UNKNOWN. */ }
     }
     taskCompletion(record) {
         const rule = record?.taskSnapshot?.task?.completionRule;
         if (!rule) return null;
+        if (rule.type === 'sensor_activity') return this.activityCompletion(record);
         // Once End freezes evidence, later store changes cannot change the reported decision.
         const evidence = record.evidence ? record.evidence.completionEvidence
             : this.completionStore?.getCompletionEvidence?.(record.sessionId);
-        return { status: evidence ? (evidence.achieved ? 'APPROVED' : 'INSUFFICIENT') : 'MISSING',
-            requiredCycles: rule.requiredCycles, observedCycles: evidence?.observedCycles ?? null,
-            approvedAt: evidence?.createdAt ?? null,
-            reviewable: record.stage === 'RUNNING' && !record.evidence && !record.settlementPayload };
+        const progress = record.evidence ? record.evidence.cycleProgress
+            : evidence?.cycleProgress || this.completionStore?.getCycleProgress?.(record.sessionId);
+        const recordedCycles = progress?.recordedCycles ?? 0;
+        const observedCycles = evidence?.observedCycles ?? (recordedCycles > 0 ? recordedCycles : null);
+        return { status: evidence ? (evidence.achieved ? 'APPROVED' : 'INSUFFICIENT') : recordedCycles > 0 ? 'TRACKING' : 'MISSING',
+            requiredCycles: rule.requiredCycles, observedCycles, recordedCycles,
+            remainingCycles: Math.max(0, rule.requiredCycles - (observedCycles ?? 0)),
+            source: progress?.source ?? (evidence ? evidence.source || 'owner_approved' : 'operator_recorded'),
+            lastRecordedAt: progress?.lastRecordedAt ?? null, approvedAt: evidence?.createdAt ?? null,
+            reviewable: record.stage === 'RUNNING' && !record.endRequested && !record.iotSession?.ended_at
+                && !record.evidence && !record.settlementPayload && !evidence };
+    }
+    activityCompletion(record) {
+        const task = record.taskSnapshot.task;
+        const frozen = record.evidence;
+        const info = frozen?.session || record.iotSession;
+        const stats = frozen?.stats || info || {};
+        const activity = frozen?.activityProgress || stats.activity;
+        const validation = validateActivityEvidence(activity, { session: info, stats, task, sessionId: record.sessionId });
+        const elapsedSinceSample = this.clock() - Date.parse(activity?.last_sample_at);
+        const state = !frozen && (!Number.isFinite(elapsedSinceSample) || elapsedSinceSample > 2000 || elapsedSinceSample < -1000)
+            ? 'UNKNOWN' : activity?.state || 'UNKNOWN';
+        return { type: 'sensor_activity', status: validation.achieved ? 'APPROVED' : activity && !validation.reasons.length ? 'TRACKING' : 'MISSING',
+            requiredActiveSeconds: task.completionRule.requiredActiveSeconds, activeSeconds: validation.activeSeconds,
+            remainingActiveSeconds: Math.max(0, task.completionRule.requiredActiveSeconds - validation.activeSeconds),
+            stationarySeconds: validation.reasons.length ? 0 : activity.stationary_seconds,
+            unknownSeconds: validation.reasons.length ? 0 : activity.unknown_seconds,
+            state, source: 'sensor_activity', lastRecordedAt: activity?.last_sample_at || null,
+            reviewable: false, frozen: Boolean(frozen), reasonCodes: validation.reasons };
     }
     async sessions(userId) {
         for (const record of this.store.list(userId).filter(row => row.source === 'esp32' && !FINAL.has(row.stage))) await this.session(userId, record.sessionId);
@@ -440,8 +472,24 @@ class LiveSessionService {
         const frozenEvidence = structuredClone(document);
         if (record.taskSnapshot?.task) {
             const task = record.taskSnapshot.task;
-            const completion = this.completionStore?.getCompletionEvidence?.(record.sessionId) || null;
+            let completion = this.completionStore?.getCompletionEvidence?.(record.sessionId) || null;
+            let activityValidation = null;
+            if (task.completionRule?.type === 'sensor_activity') {
+                frozenEvidence.activityProgress = frozenEvidence.stats?.activity || null;
+                activityValidation = validateActivityEvidence(frozenEvidence.activityProgress,
+                    { session: frozenEvidence.session, stats: frozenEvidence.stats, task, sessionId: record.sessionId });
+                completion = { schemaVersion: 'activity-completion-evidence-v1', taskId: record.taskId,
+                    sessionId: record.sessionId, assignmentId: record.assignmentId, userId: record.userId,
+                    source: 'sensor_activity', requiredActiveSeconds: activityValidation.requiredActiveSeconds,
+                    activeSeconds: activityValidation.activeSeconds, achieved: activityValidation.achieved,
+                    sensorEvidenceHash: frozenEvidence.activityProgress?.evidence_hash || null,
+                    reasonCodes: activityValidation.reasons };
+                completion.evidenceHash = '0x' + crypto.createHash('sha256').update(canonicalJson(completion)).digest('hex');
+                frozenEvidence.activityEvidenceValidation = activityValidation;
+            }
             frozenEvidence.completionEvidence = completion;
+            frozenEvidence.cycleProgress = completion?.cycleProgress
+                || this.completionStore?.getCycleProgress?.(record.sessionId) || null;
             const requestedOutcome = frozenEvidence.result.outcome;
             const reasonCodes = [];
             const validation = validateTaskEvidence(frozenEvidence, task);
@@ -449,7 +497,10 @@ class LiveSessionService {
             frozenEvidence.taskEvidenceValidation = validation;
             frozenEvidence.taskOutcomeValidation = outcomeValidation;
             if (requestedOutcome === 'VALID_NO_VIOLATION') {
-                if (!completion?.achieved) reasonCodes.push(completion ? 'task_completion_rule_not_met' : 'task_completion_evidence_missing');
+                if (activityValidation) {
+                    reasonCodes.push(...activityValidation.reasons);
+                    if (!activityValidation.achieved && !activityValidation.reasons.length) reasonCodes.push('task_activity_duration_below_target');
+                } else if (!completion?.achieved) reasonCodes.push(completion ? 'task_completion_rule_not_met' : 'task_completion_evidence_missing');
                 reasonCodes.push(...validation.reasons);
             } else if (requestedOutcome === 'VIOLATION_CONFIRMED' || requestedOutcome === 'SENSOR_FAULT') {
                 // Never let an IoT result string select a penalty/refund by itself.

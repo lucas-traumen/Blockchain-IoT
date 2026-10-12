@@ -29,6 +29,8 @@ class SqliteCustomerStore {
             CREATE TABLE IF NOT EXISTS task_assignments (assignmentId TEXT PRIMARY KEY, taskId TEXT NOT NULL, userId TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(taskId, userId));
             CREATE INDEX IF NOT EXISTS assignments_user_created ON task_assignments (userId, createdAt);
             CREATE TABLE IF NOT EXISTS completion_evidence (sessionId TEXT PRIMARY KEY, data TEXT NOT NULL, createdAt TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_cycle_events (id INTEGER PRIMARY KEY AUTOINCREMENT, sessionId TEXT NOT NULL, eventId TEXT NOT NULL, createdAt TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(sessionId, eventId));
+            CREATE INDEX IF NOT EXISTS cycle_events_session ON task_cycle_events (sessionId, id);
             CREATE TABLE IF NOT EXISTS local_funding (walletAddress TEXT NOT NULL, deploymentId TEXT NOT NULL, status TEXT NOT NULL, updatedAt TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(walletAddress, deploymentId));
         `);
     }
@@ -140,6 +142,22 @@ class SqliteCustomerStore {
         return this.getCompletionEvidence(evidence.sessionId);
     }
     getCompletionEvidence(sessionId) { return parse(this.db.prepare("SELECT data FROM completion_evidence WHERE sessionId = ?").get(sessionId)?.data ?? null); }
+    getCycleEvent(sessionId, eventId) {
+        return parse(this.db.prepare("SELECT data FROM task_cycle_events WHERE sessionId = ? AND eventId = ?").get(sessionId, eventId)?.data ?? null);
+    }
+    appendCycleEvent(event) {
+        this.db.prepare("INSERT INTO task_cycle_events (sessionId, eventId, createdAt, data) VALUES (?, ?, ?, ?)")
+            .run(event.sessionId, event.eventId, event.createdAt, JSON.stringify(event));
+        return clone(event);
+    }
+    getCycleProgress(sessionId) {
+        const count = Number(this.db.prepare("SELECT COUNT(*) AS count FROM task_cycle_events WHERE sessionId = ?").get(sessionId).count);
+        const last = parse(this.db.prepare("SELECT data FROM task_cycle_events WHERE sessionId = ? ORDER BY id DESC LIMIT 1").get(sessionId)?.data ?? null);
+        return { recordedCycles: count, eventCount: count, lastRecordedAt: last?.createdAt ?? null,
+            lastEventHash: last?.eventHash ?? null, source: "operator_recorded" };
+    }
+    // The cycle event and its final completion approval commit together.
+    transaction(work) { return this._transaction(work); }
     getFunding(walletAddress, deploymentId) {
         return parse(this.db.prepare("SELECT data FROM local_funding WHERE walletAddress = ? AND deploymentId = ?").get(walletAddress, deploymentId)?.data ?? null);
     }
@@ -169,7 +187,7 @@ class SqliteCustomerStore {
 
     _transaction(fn) {
         this.db.exec("BEGIN IMMEDIATE");
-        try { fn(); this.db.exec("COMMIT"); }
+        try { const result = fn(); this.db.exec("COMMIT"); return result; }
         catch (error) { try { this.db.exec("ROLLBACK"); } catch { /* the rollback error must not mask the cause */ } throw error; }
     }
 

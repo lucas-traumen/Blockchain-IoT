@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=metamask-6">
+    <link rel="stylesheet" href="style.css?v=sensor-activity-1">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -156,15 +156,17 @@
                 <label>Task title<input name="title" maxlength="120" required></label>
                 <label>Description<input name="description" maxlength="2000" required></label>
                 <label>Device ID<input name="deviceId" value="esp32_01" maxlength="80" required></label>
-                <label>Required cycles<input name="requiredCycles" type="number" min="1" max="100000" value="20" required></label>
+                <label>Required active seconds<input name="requiredActiveSeconds" type="number" min="1" max="86400" value="20" required></label>
                 <label>Minimum seconds<input name="minimumDurationS" type="number" min="30" max="86400" value="30" required></label>
                 <label>Full reward seconds<input name="maximumDurationS" type="number" min="30" max="86400" value="180" required></label>
                 <button type="submit" class="view-all-btn primary-action">Create draft</button>
             </form>
             <p id="ownerTaskStatus" class="view-message" role="status" aria-live="polite"></p>
+            <p class="wallet-account-hint">New tasks measure active movement automatically from distance changes. Standing still, small jitter and missing readings do not add active time. Earlier tasks keep their published completion rules.</p>
             <div id="ownerTaskList" class="wallet-task-list"></div>
             <form id="completionApprovalForm" class="owner-task-form completion-approval-form">
-                <h4>Approve completion evidence</h4>
+                <h4>Final manual completion approval</h4>
+                <p class="completion-form-note">This freezes the observed total. Use Record +1 above for ongoing progress. Counts below the target cannot earn a task reward.</p>
                 <label>Session ID<input name="sessionId" required></label>
                 <label>Task ID<input name="taskId" required></label>
                 <label>Observed cycles<input name="observedCycles" type="number" min="0" required></label>
@@ -177,7 +179,7 @@
                 <div>
                     <span class="panel-kicker">USER TRANSACTION AREA</span>
                     <h3 id="walletHeading">My Wallet / My Sessions</h3>
-                    <p>1. Approve the stake and start a selected task · 2. Have the operator verify completed cycles · 3. End to settle.</p>
+                    <p>1. Approve the stake and start a selected task · 2. Track active movement time · 3. End to settle.</p>
                 </div>
                 <div class="wallet-panel-controls"><button type="button" id="walletLogoutBtn" class="view-all-btn">Sign out</button><span id="walletRole" class="live-badge">WALLET NOT CONNECTED</span><button type="button" class="view-all-btn" data-wallet-refresh>Refresh wallet</button></div>
             </div>
@@ -211,6 +213,13 @@
                     </div>
                     <p id="walletApprovalStatus" class="wallet-session-state" role="status" aria-live="polite">Checking HRC allowance...</p>
                     <p id="walletStartStatus" class="wallet-session-state" role="status" aria-live="polite">Checking wallet and sensor readiness...</p>
+                    <section id="walletCyclePanel" class="wallet-cycle-panel" hidden aria-labelledby="walletCycleHeading">
+                        <div class="wallet-cycle-heading"><span id="walletCycleHeading" class="wallet-card-label">TASK PROGRESS</span><strong id="walletCycleCount">0 / --</strong></div>
+                        <span id="walletActivityState" role="status" aria-live="polite" hidden></span>
+                        <progress id="walletCycleProgress" max="1" value="0" aria-label="Completed robot cycles"></progress>
+                        <span id="walletCycleRemaining">Select a task to see its completion target.</span>
+                        <small id="walletCycleSource">Completion follows the selected task’s published rule.</small>
+                    </section>
                     <p id="walletCompletionStatus" class="wallet-session-state" role="status" aria-live="polite" hidden></p>
                     <p id="walletFundingStatus" class="wallet-account-hint" role="status" aria-live="polite">Local test funding status will appear after SIWE sign-in.</p>
                     <div class="wallet-session-timer">
@@ -896,6 +905,6 @@
 
     <script src="vendor/ethers.umd.min.js" defer></script>
     <script src="wallet.js?v=metamask-6" defer></script>
-    <script src="app.js?v=task-completion-reports-1" defer></script>
+    <script src="app.js?v=sensor-activity-1" defer></script>
 </body>
 </html>

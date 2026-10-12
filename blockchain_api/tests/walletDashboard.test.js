@@ -552,3 +552,114 @@ test('settled assignments stop presenting a stale selection and direct users to 
     assert.equal(f.elements.get('walletTaskList').children[0].children[1].disabled, true);
     assert.equal(f.elements.get('walletStartBtn').disabled, true);
 });
+
+
+test('cycle panel shows recorded and remaining actions without converting time or samples into cycles', () => {
+    const f = fixture(); f.select('user_1'); f.setWallet('user_1');
+    f.run(`wallet.rewardProtocolVersion='task-rewards-v2';
+        walletSessions=[{sessionId:'observed-session',taskId:'task-1',stage:'RUNNING',settled:false,sampleCount:1800,durationS:180,
+        taskSnapshot:{task:{completionRule:{requiredCycles:20}}},taskCompletion:{status:'MISSING',recordedCycles:0,remainingCycles:20}}];renderWallet()`);
+    assert.equal(f.elements.get('walletCyclePanel').hidden, false);
+    assert.equal(f.elements.get('walletCycleCount').textContent, '0 / 20');
+    assert.equal(f.elements.get('walletCycleProgress').value, 0);
+    f.run("walletSessions[0].taskCompletion={status:'TRACKING',requiredCycles:20,observedCycles:7,recordedCycles:7};renderWallet()");
+    assert.equal(f.elements.get('walletCycleCount').textContent, '7 / 20');
+    assert.match(f.elements.get('walletCycleRemaining').textContent, /13 cycles remaining/);
+    assert.match(f.elements.get('walletCompletionStatus').textContent, /automatically/);
+    assert.match(f.elements.get('walletCycleSource').textContent, /earlier task.*operator-recorded.*automatic movement task/);
+    f.run("walletSessions[0].taskCompletion={status:'APPROVED',requiredCycles:20,observedCycles:20};renderWallet()");
+    assert.equal(f.elements.get('walletCycleProgress').value, 20);
+    assert.match(f.elements.get('walletCycleRemaining').textContent, /0 cycles remaining/);
+    f.select('user_2'); f.run('walletSessions=[];renderWallet()');
+    assert.equal(f.elements.get('walletCyclePanel').hidden, true);
+});
+
+test('selected new task shows its target after the prior session settled', () => {
+    const f = fixture(); f.select('user_1'); f.setWallet('user_1');
+    f.run(`wallet.rewardProtocolVersion='task-rewards-v2';
+        walletSessions=[{sessionId:'old',taskId:'old-task',stage:'SETTLED',settled:true,
+          taskSnapshot:{task:{completionRule:{requiredCycles:20}}},taskCompletion:{status:'APPROVED',requiredCycles:20,observedCycles:20}}];
+        selectedTaskId='new-task';walletAssignments=[{taskId:'new-task',status:'ASSIGNED',policySnapshot:{task:{completionRule:{requiredCycles:3}}}}];renderWallet()`);
+    assert.equal(f.elements.get('walletCycleCount').textContent, '0 / 3');
+    assert.match(f.elements.get('walletCycleRemaining').textContent, /3 cycles remaining/);
+    assert.doesNotMatch(f.elements.get('walletCompletionStatus').textContent, /settlement is final/);
+});
+
+test('lost cycle response survives reload and rate limiting with the same event id', async () => {
+    const storage = new Map(); const bodies = [];
+    const session = { sessionId:'operator-session',taskId:'task-1',stage:'RUNNING',task:{title:'Actions',completionRule:{requiredCycles:3}} };
+    const first = fixture(async (url, options) => {
+        if (url.endsWith('/cycles')) { bodies.push(JSON.parse(options.body)); throw new Error('Response lost'); }
+        return reply({success:true,tasks:[],sessions:[]});
+    }, storage);
+    first.select('admin'); first.context.cycleSession=session;
+    await first.run('recordOwnerCycle(cycleSession)');
+    assert.equal(bodies.length,1);
+    assert.ok(storage.get('hrc-cycle-pending-admin-operator-session'));
+    let rateLimited=true;
+    const reload = fixture(async (url, options) => {
+        if (url.endsWith('/cycles')) {
+            bodies.push(JSON.parse(options.body));
+            if(rateLimited) return reply({success:false,error:'Too many requests'},429);
+            return reply({success:true,duplicate:true,progress:{recordedCycles:1},evidence:null});
+        }
+        return reply({success:true,tasks:[],sessions:[session]});
+    },storage);
+    reload.select('admin'); reload.context.cycleSession=session;
+    await reload.run('recordOwnerCycle(cycleSession)');
+    assert.ok(storage.get('hrc-cycle-pending-admin-operator-session'));
+    rateLimited=false;
+    await reload.run('recordOwnerCycle(cycleSession)');
+    assert.equal(bodies.length,3);
+    assert.ok(bodies.every(body => body.eventId===bodies[0].eventId));
+    assert.equal(storage.has('hrc-cycle-pending-admin-operator-session'),false);
+});
+
+test('operator double clicks record once and customer cannot use the recording action', async () => {
+    const hold = deferred(); let writes=0;
+    const f=fixture(async url => {
+        if(url.endsWith('/cycles')) { writes++; await hold.promise; return reply({success:true,progress:{recordedCycles:1},evidence:null}); }
+        return reply({success:true,tasks:[],sessions:[]});
+    });
+    f.context.cycleSession={sessionId:'cycles',taskId:'task-1',task:{completionRule:{requiredCycles:3}}};
+    f.select('user_1'); await f.run('recordOwnerCycle(cycleSession)'); assert.equal(writes,0);
+    f.select('admin');
+    const one=f.run('recordOwnerCycle(cycleSession)'), two=f.run('recordOwnerCycle(cycleSession)');
+    hold.resolve(); await Promise.all([one,two]); assert.equal(writes,1);
+});
+
+
+test('activity UI separates active and stationary seconds from elapsed duration, with an automatic target', () => {
+    const f = fixture(); f.select('user_1');
+    f.run(`wallet={...wallet,rewardProtocolVersion:'task-rewards-v2'};
+        walletSessions=[{sessionId:'movement',taskId:'movement-task',stage:'RUNNING',settled:false,sampleCount:3000,durationS:300,
+        taskSnapshot:{task:{completionRule:{type:'sensor_activity',requiredActiveSeconds:20}}},
+        taskCompletion:{type:'sensor_activity',status:'TRACKING',activeSeconds:7.39,requiredActiveSeconds:20,stationarySeconds:290,unknownSeconds:0.4,state:'STATIONARY'}}];renderWallet()`);
+    assert.equal(f.elements.get('walletCycleHeading').textContent, 'ACTIVE MOVEMENT TIME');
+    assert.equal(f.elements.get('walletCycleCount').textContent, '7.3s / 20s');
+    assert.match(f.elements.get('walletCycleRemaining').textContent, /12.7s active movement remaining/);
+    assert.match(f.elements.get('walletActivityState').textContent, /NO MOVEMENT.*Stationary 290.0s/);
+    assert.match(f.elements.get('walletCycleSource').textContent, /Automatic distance-based/);
+    assert.equal(f.elements.get('walletCycleProgress').value, 7.39);
+    f.run(`walletSessions[0].taskCompletion.state='UNKNOWN';renderWallet()`);
+    assert.match(f.elements.get('walletActivityState').textContent, /WAITING FOR VALID SENSOR DATA/);
+    assert.equal(f.elements.get('walletCycleCount').textContent, '7.3s / 20s');
+    f.run(`walletSessions[0].taskCompletion={...walletSessions[0].taskCompletion,status:'APPROVED',activeSeconds:20,state:'MOVING'};renderWallet()`);
+    assert.match(f.elements.get('walletCompletionStatus').textContent, /target reached automatically/);
+    assert.equal(f.elements.get('walletCycleProgress').value, 20);
+});
+test('activity sessions have no operator increment controls and selecting a new activity task clears old progress', () => {
+    const f = fixture(); f.select('admin');
+    f.run(`window.hrcRuntimeConfig={rewards:{version:'task-rewards-v2'}};ownerTaskSessions=[{sessionId:'movement',stage:'RUNNING',
+        task:{title:'Activity',completionRule:{type:'sensor_activity',requiredActiveSeconds:20}},taskCompletion:{activeSeconds:8,state:'MOVING'}}];renderOwnerTasks()`);
+    assert.equal(f.elements.get('completionApprovalForm').hidden, true);
+    const row=f.elements.get('ownerTaskList').children.at(-1);
+    assert.equal(row.children.length,1);
+    assert.match(row.children[0].children[1].textContent,/8.0s\/20s active.*automatically measured/);
+    f.select('user_1');
+    f.run(`wallet={...wallet,rewardProtocolVersion:'task-rewards-v2'};walletSessions=[{taskId:'old',settled:true,
+        taskSnapshot:{task:{completionRule:{type:'sensor_activity',requiredActiveSeconds:20}}},taskCompletion:{activeSeconds:20,status:'APPROVED',frozen:true}}];
+        selectedTaskId='new';walletAssignments=[{taskId:'new',status:'ASSIGNED',policySnapshot:{task:{completionRule:{type:'sensor_activity',requiredActiveSeconds:30}}}}];renderWallet()`);
+    assert.equal(f.elements.get('walletCycleCount').textContent,'0.0s / 30s');
+    assert.match(f.elements.get('walletCycleRemaining').textContent,/30.0s active movement remaining/);
+});

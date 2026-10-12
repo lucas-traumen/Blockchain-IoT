@@ -185,7 +185,9 @@ function walletResultLabel(session) {
 function walletOutcomeReason(session) {
     const reasons = {
         task_completion_evidence_missing: 'Operator did not approve completed cycles before End; stake refunded without reward',
-        task_completion_rule_not_met: 'Approved cycle count is below the task target; stake refunded without reward'
+        task_completion_rule_not_met: 'Approved cycle count is below the task target; stake refunded without reward',
+        task_activity_duration_below_target: 'Not enough active movement time; stake refunded without reward',
+        task_activity_session_mismatch: 'Movement evidence is unavailable for this session; stake refunded without reward'
     };
     return reasons[session.outcomeReason] || session.outcomeReason || '';
 }
@@ -194,21 +196,57 @@ function renderTaskCompletion(session) {
     const element = byId('walletCompletionStatus');
     if (!element) return;
     const selected = walletAssignments.find(row => row.taskId === selectedTaskId && ['ASSIGNED', 'ACTIVE'].includes(row.status));
-    const rule = session?.taskSnapshot?.task?.completionRule || selected?.policySnapshot?.task?.completionRule;
+    const rule = !session || session.settled ? selected?.policySnapshot?.task?.completionRule || session?.taskSnapshot?.task?.completionRule
+        : session.taskSnapshot?.task?.completionRule;
     const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
     element.hidden = !taskMode || walletSession.user?.role !== 'customer';
+    const panel = byId('walletCyclePanel');
+    if (panel) panel.hidden = element.hidden || !rule;
     if (element.hidden) return;
-    const completion = session?.taskCompletion;
-    if (session?.settled) {
+    const showingSelectedTask = Boolean(selected && (!session || (session.settled && session.taskId !== selected.taskId)));
+    const completion = showingSelectedTask ? null : session?.taskCompletion;
+    const activityMode = rule?.type === 'sensor_activity';
+    text('walletCycleHeading', activityMode ? 'ACTIVE MOVEMENT TIME' : 'COMPLETED ROBOT CYCLES');
+    const activityState = byId('walletActivityState');
+    if (activityState) activityState.hidden = !activityMode;
+    const bar = byId('walletCycleProgress');
+    if (bar) bar.setAttribute('aria-label', activityMode ? 'Active movement seconds' : 'Completed robot cycles');
+    if (activityMode) {
+        const active = completion?.activeSeconds ?? 0;
+        const target = completion?.requiredActiveSeconds ?? rule.requiredActiveSeconds;
+        const displayedActive = Math.floor(active * 10 + 1e-6) / 10;
+        const remaining = Math.ceil(Math.max(0, target - active) * 10 - 1e-6) / 10;
+        text('walletCycleCount', `${displayedActive.toFixed(1)}s / ${target}s`);
+        text('walletCycleRemaining', `${remaining.toFixed(1)}s active movement remaining${completion?.frozen ? ' · final' : ''}`);
+        text('walletActivityState', `${completion?.frozen ? 'FINAL' : ({MOVING:'MOVING', STATIONARY:'NO MOVEMENT', UNKNOWN:'WAITING FOR VALID SENSOR DATA'}[completion?.state] || 'WAITING FOR SENSOR')} · Stationary ${(completion?.stationarySeconds ?? 0).toFixed(1)}s · Unobserved ${(completion?.unknownSeconds ?? 0).toFixed(1)}s`);
+        text('walletCycleSource', 'Automatic distance-based movement. Small jitter, invalid readings and missing data add no active time. Move toward or away from the sensor while staying above the safety threshold.');
+        if (bar) { bar.max = target || 1; bar.value = Math.min(active, target || 1); }
+        element.textContent = session?.settled && !showingSelectedTask
+            ? walletOutcomeReason(session) || 'Session ended. Movement evidence and settlement are final.'
+            : completion?.status === 'APPROVED'
+                ? 'Activity target reached automatically. End settles using the duration, sensor safety and reward policy.'
+                : `Move in the monitored area to accumulate ${target}s of active time. Standing still does not add active time. Ending before the target returns the stake without reward.`;
+        return;
+    }
+    const count = completion?.observedCycles ?? completion?.recordedCycles ?? 0;
+    const target = completion?.requiredCycles ?? rule?.requiredCycles;
+    text('walletCycleCount', `${count} / ${target ?? '--'}`);
+    text('walletCycleRemaining', target == null ? 'Select a task to see its cycle target.'
+        : `${Math.max(0, target - count)} cycles remaining${session?.settled && !showingSelectedTask ? ' · final' : ''}`);
+    text('walletCycleSource', 'This earlier task uses operator-recorded robot cycles. Select an automatic movement task to track active time.');
+    if (bar) { bar.max = target || 1; bar.value = Math.min(count, target || 1); }
+    if (session?.settled && !showingSelectedTask) {
         element.textContent = walletOutcomeReason(session) || (completion?.status === 'APPROVED'
             ? `Completion verified: ${completion.observedCycles}/${completion.requiredCycles} cycles. The settlement is final.`
             : 'Session ended. The settlement is final.');
     } else if (completion?.status === 'APPROVED') {
         element.textContent = `Completion verified by the operator: ${completion.observedCycles}/${completion.requiredCycles} cycles. End settles the result using sensor evidence and the reward policy.`;
     } else if (completion?.status === 'INSUFFICIENT') {
-        element.textContent = `Operator recorded ${completion.observedCycles}/${completion.requiredCycles} cycles. The task target was not met; ending a clear session returns the stake without reward.`;
+        element.textContent = `Operator recorded ${completion.observedCycles}/${completion.requiredCycles} cycles. This final approval was below the task target; ending a clear session returns the stake without reward.`;
+    } else if (completion?.status === 'TRACKING') {
+        element.textContent = `Operator recorded ${count}/${target} completed cycles. ${Math.max(0, target - count)} more required. Completion is approved automatically when the recorded target is reached. End before that returns the stake with no reward.`;
     } else {
-        element.textContent = `Completion approval required${rule ? `: ${rule.requiredCycles} cycles` : ''}. An operator/admin must verify observed cycles while the session is running, before End. Ending a clear session without approval returns the stake with no reward.`;
+        element.textContent = `Completion approval required${rule ? `: ${rule.requiredCycles} cycles` : ''}. An operator/admin must record observed cycles while the session is running, before End. Reaching the target approves completion automatically. Ending a clear session without approval returns the stake with no reward.`;
     }
 }
 
@@ -364,6 +402,11 @@ function renderWalletSessionTimer() {
         : 'Start a session to measure elapsed time.');
 }
 
+function taskTargetLabel(rule) {
+    return rule?.type === 'sensor_activity' ? `${rule.requiredActiveSeconds}s active movement (automatic)`
+        : `${rule?.requiredCycles ?? '--'} robot cycles (operator recorded)`;
+}
+
 function renderWalletTasks() {
     const board = byId('walletTaskBoard');
     const list = byId('walletTaskList');
@@ -397,7 +440,7 @@ function renderWalletTasks() {
         const title = document.createElement('strong');
         title.textContent = task.title;
         const detail = document.createElement('span');
-        detail.textContent = `${task.description} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.completionRule?.minimumDurationS ?? 30}s minimum · full reward at ${task.completionRule?.maximumDurationS ?? 180}s (capped after) · Stake ${task.economics?.stakeHrc ?? '0.200'} HRC · Reward ${task.economics?.rewardHrc ?? '0.002'} HRC`;
+        detail.textContent = `${task.description} · ${taskTargetLabel(task.completionRule)} · ${task.completionRule?.minimumDurationS ?? 30}s minimum · full reward at ${task.completionRule?.maximumDurationS ?? 180}s (capped after) · Stake ${task.economics?.stakeHrc ?? '0.200'} HRC · Reward ${task.economics?.rewardHrc ?? '0.002'} HRC`;
         copy.append(title, detail);
         const button = document.createElement('button');
         button.type = 'button';
@@ -433,7 +476,7 @@ function renderOwnerTasks() {
         const title = document.createElement('strong');
         title.textContent = `${task.title} · ${task.status}`;
         const detail = document.createElement('span');
-        detail.textContent = `${task.taskId} · ${task.completionRule?.requiredCycles ?? '--'} cycles · minimum ${task.completionRule?.minimumDurationS ?? 30}s · full reward at ${task.completionRule?.maximumDurationS ?? 180}s · ${task.economics?.stakeHrc ?? '0.200'} HRC stake / ${task.economics?.rewardHrc ?? '0.002'} HRC max reward`;
+        detail.textContent = `${task.taskId} · ${taskTargetLabel(task.completionRule)} · minimum ${task.completionRule?.minimumDurationS ?? 30}s · full reward at ${task.completionRule?.maximumDurationS ?? 180}s · ${task.economics?.stakeHrc ?? '0.200'} HRC stake / ${task.economics?.rewardHrc ?? '0.002'} HRC max reward`;
         copy.append(title, detail);
         row.appendChild(copy);
         if (task.status === 'DRAFT' && !ownerOnly) {
@@ -448,6 +491,8 @@ function renderOwnerTasks() {
     const sessionHeading = document.createElement('h4');
     sessionHeading.textContent = 'Active task sessions';
     list.appendChild(sessionHeading);
+    const approvalForm = byId('completionApprovalForm');
+    if (approvalForm) approvalForm.hidden = !ownerTaskSessions.some(session => session.task.completionRule.type !== 'sensor_activity');
     if (!ownerTaskSessions.length) {
         const empty = document.createElement('p'); empty.textContent = 'No active task sessions require review.'; list.appendChild(empty);
         return;
@@ -458,19 +503,36 @@ function renderOwnerTasks() {
         const copy = document.createElement('div'); copy.className = 'wallet-task-copy';
         const title = document.createElement('strong'); title.textContent = `${session.task.title} · ${session.stage}`;
         const detail = document.createElement('span');
-        detail.textContent = `${session.sessionId} · ${session.task.completionRule.requiredCycles} cycles required · ${session.durationS == null ? 'not ended' : `${Math.floor(session.durationS)}s`} · ${session.sampleCount ?? '--'} samples${session.completionEvidence ? ' · completion evidence frozen' : ''}`;
+        if (session.task.completionRule.type === 'sensor_activity') {
+            const progress = session.taskCompletion;
+            const active = progress?.activeSeconds ?? 0;
+            detail.textContent = `${session.sessionId} · ${active.toFixed(1)}s/${session.task.completionRule.requiredActiveSeconds}s active · ${progress?.state || 'UNKNOWN'} · ${session.sampleCount ?? '--'} samples · automatically measured`;
+            copy.append(title, detail); row.appendChild(copy); list.appendChild(row);
+            continue;
+        }
+        const count = session.taskCompletion?.observedCycles ?? session.taskCompletion?.recordedCycles ?? session.completionEvidence?.observedCycles ?? 0;
+        const target = session.task.completionRule.requiredCycles;
+        detail.textContent = `${session.sessionId} · ${count}/${target} cycles · ${Math.max(0, target - count)} remaining · ${session.durationS == null ? 'not ended' : `${Math.floor(session.durationS)}s`} · ${session.sampleCount ?? '--'} samples${session.completionEvidence ? ' · completion evidence frozen' : ''}`;
         copy.append(title, detail); row.appendChild(copy);
+        const controls = document.createElement('div'); controls.className = 'wallet-cycle-controls';
+        const record = document.createElement('button');
+        record.type = 'button'; record.className = 'view-all-btn primary-action';
+        const pending = pendingCycleEvent(session.sessionId) || cycleEventsInFlight.get(pendingCycleKey(session.sessionId));
+        record.textContent = pending ? 'Retry recorded cycle' : 'Record +1 completed cycle';
+        record.disabled = Boolean(walletBusy) || (!pending && (session.stage !== 'RUNNING' || Boolean(session.completionEvidence) || session.taskCompletion?.reviewable === false));
+        record.addEventListener('click', () => { void recordOwnerCycle(session); });
+        controls.appendChild(record);
         const review = document.createElement('button');
         review.type = 'button'; review.className = 'view-all-btn'; review.textContent = session.completionEvidence ? 'Evidence recorded' : 'Review completion';
-        review.disabled = session.stage !== 'RUNNING' || Boolean(session.completionEvidence) || Boolean(walletBusy);
+        review.disabled = session.stage !== 'RUNNING' || session.taskCompletion?.reviewable === false || Boolean(session.completionEvidence) || Boolean(walletBusy);
         review.addEventListener('click', () => {
             const form = byId('completionApprovalForm');
             form.elements.sessionId.value = session.sessionId;
             form.elements.taskId.value = session.taskId;
-            form.elements.observedCycles.value = '';
+            form.elements.observedCycles.value = count || '';
             form.elements.observedCycles.focus();
         });
-        row.appendChild(review); list.appendChild(row);
+        controls.appendChild(review); row.appendChild(controls); list.appendChild(row);
     }
 }
 
@@ -485,12 +547,47 @@ async function refreshOwnerTasks() {
         if (ownerSession !== walletSession) return;
         ownerTasks = tasks.tasks || [];
         ownerTaskSessions = sessions.sessions || [];
-        text('ownerTaskStatus', 'Task and session review data updated. Approve completion before the worker ends the session.');
+        text('ownerTaskStatus', 'New tasks complete automatically from active movement time. Earlier robot-cycle tasks keep their operator-recorded completion rules.');
     } catch (error) {
         if (ownerSession !== walletSession) return;
         text('ownerTaskStatus', 'Owner task data unavailable: ' + error.message);
     }
     renderOwnerTasks();
+}
+
+function pendingCycleKey(sessionId) { return `hrc-cycle-pending-${walletSession.user?.userId}-${sessionId}`; }
+function pendingCycleEvent(sessionId) {
+    try { return sessionStorage.getItem(pendingCycleKey(sessionId)); } catch { return null; }
+}
+const cycleEventsInFlight = new Map();
+async function recordOwnerCycle(session) {
+    if (walletBusy || !walletSession.token || !['admin', 'operator'].includes(walletSession.user?.role)) return;
+    const ownerSession = walletSession;
+    const key = pendingCycleKey(session.sessionId);
+    const eventId = pendingCycleEvent(session.sessionId) || cycleEventsInFlight.get(key) || `cycle-${randomId()}`;
+    cycleEventsInFlight.set(key, eventId);
+    try { sessionStorage.setItem(key, eventId); } catch { /* Keep the event id in memory for retry. */ }
+    walletBusy = 'cycle';
+    renderOwnerTasks();
+    try {
+        const result = await walletRequest(`/api/sessions/${encodeURIComponent(session.sessionId)}/cycles`, {
+            method: 'POST', token: ownerSession.token, body: { taskId: session.taskId, eventId }
+        });
+        cycleEventsInFlight.delete(key);
+        try { sessionStorage.removeItem(key); } catch { /* The event is already confirmed. */ }
+        if (ownerSession !== walletSession) return;
+        await refreshOwnerTasks();
+        text('ownerTaskStatus', `${result.duplicate ? 'Already recorded' : 'Recorded'}: ${result.progress.recordedCycles}/${session.task.completionRule.requiredCycles} cycles.${result.evidence?.achieved ? ' Completion approved; sensor and duration checks still apply at End.' : ' Observe the next full action before recording another cycle.'}`);
+    } catch (error) {
+        if (error.status >= 400 && error.status < 500 && ![401, 429].includes(error.status)) {
+            cycleEventsInFlight.delete(key);
+            try { sessionStorage.removeItem(key); } catch { /* A rejected event did not change the count. */ }
+        }
+        if (ownerSession === walletSession) text('ownerTaskStatus', 'Cycle recording failed: ' + error.message + '. Retry reuses the same event and does not add a second cycle.');
+    } finally {
+        if (walletBusy === 'cycle') walletBusy = null;
+        if (ownerSession === walletSession) renderOwnerTasks();
+    }
 }
 
 async function publishOwnerTask(taskId) {
@@ -508,7 +605,7 @@ async function createOwnerTask(event) {
     try {
         await walletRequest('/api/tasks', { method: 'POST', token: walletSession.token, body: {
             title: values.get('title'), description: values.get('description'), deviceId: values.get('deviceId'),
-            completionRule: { type: 'robot_cycle_count', requiredCycles: Number(values.get('requiredCycles')),
+            completionRule: { type: 'sensor_activity', requiredActiveSeconds: Number(values.get('requiredActiveSeconds')),
                 minimumDurationS: Number(values.get('minimumDurationS')), maximumDurationS: Number(values.get('maximumDurationS')) }
         } });
         form.reset();
@@ -1302,12 +1399,12 @@ function renderRuntimeConfig(config) {
         text('walletPolicyStake', 'Lock ' + stake);
         text('walletPolicySafeTitle', 'COMPLETED SAFE TASK');
         text('walletPolicySafe', 'Return ' + stake + ' + ' + reward);
-        text('walletPolicySafeDetail', `Operator approval of completed cycles before End and at least ${policy.minimumSafeDuration || 30} seconds are required. Reward scales from ${formatPolicyWei(policy.baseReward)} to ${reward} at the task's full-reward duration, then stays capped. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
+        text('walletPolicySafeDetail', `The selected task's completion target and at least ${policy.minimumSafeDuration || 30} seconds are required. Reward scales from ${formatPolicyWei(policy.baseReward)} to ${reward} at the task's full-reward duration, then stays capped. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
         text('walletPolicyPenalty', 'Return 0.190 HRC · route ' + penalty + ' to treasury');
         text('walletPolicyRefund', 'Return ' + stake + ' · no reward or penalty');
         text('walletPolicyNoteTitle', 'Task-bound settlement');
-        text('walletPolicyNote', 'Before End, an operator/admin must approve the observed cycle count. A published task, valid sensor coverage and frozen policy snapshot are also required. Outcome and amounts are decided by backend evidence and contract policy.');
-        text('walletSessionTimerDetail', 'A completed task requires at least 30 seconds, its cycle target, and valid sensor evidence. Reward reaches its cap at the task full-reward duration and remains eligible beyond it.');
+        text('walletPolicyNote', 'Movement tasks measure active time automatically; standing still adds no active time. Earlier robot-cycle tasks keep their operator completion rule. Valid sensor coverage and the published task policy are required. End freezes the evidence and settles the result.');
+        text('walletSessionTimerDetail', 'A completed task requires at least 30 seconds, its completion target, and valid sensor evidence. Reward reaches its cap at the task full-reward duration and remains eligible beyond it.');
         text('walletSensorStatus', 'Sensor readiness is checked before the task stake is submitted.');
         const scale = byId('walletRewardScale'); if (scale) scale.hidden = true;
     } else {

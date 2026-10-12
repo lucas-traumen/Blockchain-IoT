@@ -226,6 +226,48 @@ describe("V2 task sensor-to-settlement lifecycle", function () {
         expect(await f.rewards.accountingInvariant()).to.equal(true);
     });
 
+    for (const recordedCycles of [1, 2]) {
+        it(`settles ${recordedCycles}/${REQUIRED_CYCLES} operator-recorded cycles from SQLite with exact reward and immutable retries`, async function () {
+            const f = await fixture({ completion: false, failSettlementOnce: true });
+            const identities = new SqliteCustomerStore(path.join(f.directory, 'cycles.db'));
+            sqliteStores.push(identities);
+            identities.saveAssignment({ ...f.assignment, createdAt: new Date().toISOString() });
+            f.identityStore = f.walletService.identityStore = f.live.completionStore = identities;
+            const id = await startSession(f);
+            const tasks = new TaskService({ store: identities, sessionStore: f.store });
+            const operator = { role: 'operator', walletAddress: f.owner.address };
+            for (let cycle = 1; cycle <= recordedCycles; cycle++) {
+                const input = { sessionId: id, taskId: TASK_ID, eventId: `action-${cycle}` };
+                const result = tasks.recordCycle(operator, input);
+                expect(result.progress.recordedCycles).to.equal(cycle);
+                expect(tasks.recordCycle(operator, input).duplicate).to.equal(true);
+            }
+            const beforeEnd = (await f.live.session(USER_ID, id)).session.taskCompletion;
+            expect(beforeEnd.remainingCycles).to.equal(REQUIRED_CYCLES - recordedCycles);
+            expect(beforeEnd.status).to.equal(recordedCycles === REQUIRED_CYCLES ? 'APPROVED' : 'TRACKING');
+            await f.live.end(USER_ID, id);
+            const frozen = f.store.get(id);
+            expect(frozen.evidence.cycleProgress.recordedCycles).to.equal(recordedCycles);
+            expect(frozen.settlementPayload.outcome).to.equal(recordedCycles === REQUIRED_CYCLES ? 'VALID_NO_VIOLATION' : 'INCOMPLETE');
+            identities.close();
+            const reopened = new SqliteCustomerStore(path.join(f.directory, 'cycles.db'));
+            sqliteStores.push(reopened);
+            f.identityStore = f.walletService.identityStore = f.live.completionStore = tasks.store = reopened;
+            await time.increase(60);
+            await f.live.end(USER_ID, id);
+            const chain = await f.rewards.sessions(sessionKey(id));
+            expect(chain.rewardPaid).to.equal(recordedCycles === REQUIRED_CYCLES ? ethers.parseEther('0.002') : 0n);
+            expect(chain.penaltyCollected).to.equal(0n);
+            expect(chain.evidenceHash).to.equal(frozen.settlementPayload.evidenceHash);
+            expect(await f.token.balanceOf(f.customer.address)).to.equal(ethers.parseEther(recordedCycles === REQUIRED_CYCLES ? '1.002' : '1'));
+            expect(tasks.recordCycle(operator, { sessionId: id, taskId: TASK_ID, eventId: 'action-1' }).duplicate).to.equal(true);
+            expect(() => tasks.recordCycle(operator, { sessionId: id, taskId: TASK_ID, eventId: 'after-end' })).to.throw('Cycles can only be recorded');
+            expect((await f.live.end(USER_ID, id)).duplicate).to.equal(true);
+            expect((await f.rewards.queryFilter(f.rewards.filters.SessionSettled(sessionKey(id)))).length).to.equal(1);
+            expect(await f.rewards.accountingInvariant()).to.equal(true);
+        });
+    }
+
     it("applies the fixed confirmed-violation penalty and keeps pool accounting exact", async function () {
         const f = await fixture({ outcome: "VIOLATION_CONFIRMED" });
         const sessionId = await startSession(f);
@@ -576,5 +618,52 @@ describe('V2 durable receipt recovery and HTTP authorization (isolated real chai
         expect(record.evidence.result.reasonCodes).to.include('confirmed_violation_evidence_missing');
         expect((await f.rewards.sessions(sessionKey(id))).penaltyCollected).to.equal(0n);
         expect(await f.token.balanceOf(f.customer.address)).to.equal(ethers.parseEther('1'));
+    });
+});
+
+
+describe('V2 automatic user activity through real Python evidence and contract (isolated)', function () {
+    this.timeout(40000);
+    for (const [scenario, durationS, earnsReward] of [
+        ['safe', 120, false], ['stationary_noise', 120, false], ['distance_spike', 120, false],
+        ['moving_then_still', 120, false], ['moving', 120, true], ['moving', 180, true]
+    ]) it(`${scenario} for ${durationS}s ${earnsReward ? 'earns capped reward' : 'refunds without reward'} without manual approval`, async function () {
+        const f = await fixture({ completion: false });
+        f.assignment.policySnapshot.task.completionRule = { type: 'sensor_activity', requiredActiveSeconds: 20,
+            activityPolicy: { ...require('../../blockchain_api/activityEvidencePolicy').ACTIVITY_POLICY },
+            minimumDurationS: 30, maximumDurationS: 120 };
+        await usePythonIot(f);
+        await useSqliteSessions(f);
+        const id = await startSession(f);
+        const collected = await f.httpFixture('collect', { sessionId: id, scenario, durationS });
+        const endedAt = Math.floor(Date.parse(collected.endedAt) / 1000);
+        await time.increaseTo(endedAt); f.clock.now = endedAt * 1000;
+        const progress = (await f.live.session(USER_ID, id)).session.taskCompletion;
+        expect(progress.requiredActiveSeconds).to.equal(20);
+        expect(progress.reviewable).to.equal(false);
+        expect(progress.status === 'APPROVED').to.equal(earnsReward);
+        expect(f.identityStore.getCompletionEvidence(id)).to.equal(null);
+        await f.live.end(USER_ID, id);
+        const saved = f.store.get(id);
+        expect(saved.stage, saved.lastError).to.equal('SETTLED');
+        expect(saved.evidence.completionEvidence.source).to.equal('sensor_activity');
+        expect(saved.evidence.completionEvidence.achieved).to.equal(earnsReward);
+        const chain = await f.rewards.sessions(sessionKey(id));
+        expect(Number(chain.outcome)).to.equal(earnsReward ? 0 : 3);
+        expect(chain.rewardPaid).to.equal(ethers.parseEther(earnsReward ? '0.002' : '0'));
+        expect(chain.penaltyCollected).to.equal(0n);
+        expect(await f.token.balanceOf(f.customer.address)).to.equal(ethers.parseEther(earnsReward ? '1.002' : '1'));
+        if (!earnsReward) expect(saved.evidence.result.reasonCodes).to.include('task_activity_duration_below_target');
+        const frozen = structuredClone(saved.evidence), hash = saved.settlementPayload.evidenceHash;
+        f.store.close();
+        const reopened = new SqliteSessionStore(path.join(f.directory, 'wallet.db')); sqliteStores.push(reopened);
+        f.walletService.store = f.store = reopened;
+        f.live = new LiveSessionService({ walletService: f.walletService, iot: f.iot, settler: f.settler,
+            completionStore: f.identityStore, clock: () => f.clock.now, logger: () => {} });
+        await f.live.end(USER_ID, id);
+        expect(reopened.get(id).evidence).to.deep.equal(frozen);
+        expect(reopened.get(id).settlementPayload.evidenceHash).to.equal(hash);
+        expect(await f.rewards.queryFilter(f.rewards.filters.SessionSettled(sessionKey(id)))).to.have.length(1);
+        expect(await f.rewards.accountingInvariant()).to.equal(true);
     });
 });
