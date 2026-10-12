@@ -1,0 +1,25 @@
+{
+  "python": {
+    "passed": 118,
+    "activityTests": 55,
+    "command": ".venv/bin/python -m pytest tests/test_activity.py tests/test_sessions.py tests/test_api.py tests/test_ingestion.py tests/test_rewards_policy.py tests/test_reward_bridge.py -q"
+  },
+  "blockchainApi": {
+    "passed": 233,
+    "command": "npm --prefix blockchain_api test"
+  },
+  "realContractLifecycle": {
+    "passed": 32,
+    "command": "cd smart_contracts && npx hardhat test test/HRCTaskLifecycle.integration.js",
+    "sensorTransport": "synthetic isolated"
+  },
+  "browser": {
+    "passed": 25,
+    "command": "HRC_UI_EVIDENCE_DIR=data/results/user-activity-r33 node scripts/verify_wallet_first_ui.mjs",
+    "broadcasts": 0,
+    "exceptions": []
+  },
+  "launcher": "bash syntax only; active chain was not reset",
+  "hardwareMovementTestPerformed": false,
+  "committed": false
+}

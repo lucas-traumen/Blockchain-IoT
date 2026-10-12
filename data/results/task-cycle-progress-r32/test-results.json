@@ -1,0 +1,21 @@
+{
+  "api": {
+    "passed": 224,
+    "failed": 0
+  },
+  "taskLifecycleIntegration": {
+    "passed": 26,
+    "failed": 0
+  },
+  "browser": {
+    "passed": 21,
+    "exceptions": [],
+    "walletBroadcasts": 0
+  },
+  "commands": [
+    "npm --prefix blockchain_api test",
+    "cd smart_contracts && npx hardhat test test/HRCTaskLifecycle.integration.js",
+    "HRC_UI_EVIDENCE_DIR=data/results/task-cycle-progress-r32 node scripts/verify_wallet_first_ui.mjs"
+  ],
+  "hardwareCycleCounting": "operator-recorded; automatic hardware cycle detection is not implemented"
+}

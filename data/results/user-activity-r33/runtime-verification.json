@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "apiPid": 616502,
+  "chainUnchanged": true,
+  "historicalSessionsUnchanged": true,
+  "sessionCount": 10,
+  "sessionDigest": "e46198064552b9c65f42d19d0ecf253393f56b0f3e40dae0da43c16f95d68445",
+  "chainGenesis": "0x870aa711c1f07b1f242753072b22126874f8672f63bd76d25d46e3fb471cf2e9",
+  "manifestDigest": "af8837494492fd76b163f342d831c3d361ce46213c83368eac3171235bf43eb0",
+  "chainId": 31337,
+  "rewardAddress": "0x0165878A594ca255338adfa4d48449f69242Eb8F",
+  "iotHealthy": true,
+  "iotMqtt": true,
+  "sensorSessionCount": 9,
+  "runningSensorSessions": 0,
+  "oldTaskCount": 8,
+  "oldTaskDefinitionsUnchanged": true,
+  "activityApiAvailable": true,
+  "liveActivityEvidenceCreated": false,
+  "sensorMovementHardwareTestPerformed": false,
+  "task": "task-8f158b8a-f1b1-43d9-8e8d-add83fccd546"
+}

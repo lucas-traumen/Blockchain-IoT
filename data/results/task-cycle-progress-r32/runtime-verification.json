@@ -1,0 +1,11 @@
+{
+  "apiReady": true,
+  "apiPid": 552842,
+  "chainId": 31337,
+  "chainGenesisUnchanged": true,
+  "rewardDeploymentUnchanged": true,
+  "sessionCount": 9,
+  "sessionDigestUnchanged": true,
+  "liveCycleEvents": 0,
+  "unauthenticatedCycleStatus": 401
+}

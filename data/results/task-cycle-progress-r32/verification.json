@@ -1,0 +1,30 @@
+{
+  "scenarios": [
+    "missing-wallet-desktop",
+    "missing-wallet-mobile",
+    "cancel-connect",
+    "wrong-network-add-chain",
+    "cancel-sign",
+    "retry-sign-in",
+    "late-wallet-siwe-mobile",
+    "approved-no-task-mobile",
+    "selected-task-ready-mobile",
+    "selected-task-sensor-unavailable-mobile",
+    "approved-no-task-desktop",
+    "selected-task-ready-desktop",
+    "selected-task-sensor-unavailable-desktop",
+    "session-timer-mobile",
+    "session-timer-desktop",
+    "cycle-progress-desktop",
+    "cycle-approved-desktop",
+    "cycle-progress-mobile",
+    "cycle-approved-mobile",
+    "operator-cycles-desktop",
+    "operator-cycles-mobile"
+  ],
+  "authMode": "siwe",
+  "chainId": 31337,
+  "walletAddress": "0xF08c92d0537882BaedEb7585618d7794367B01ab",
+  "broadcasts": 0,
+  "exceptions": []
+}
