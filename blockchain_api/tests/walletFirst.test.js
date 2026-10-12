@@ -10,6 +10,7 @@ const { CustomerService } = require("../customerService");
 const { DemoWalletService } = require("../demoWalletService");
 const { DemoSessionStore } = require("../demoSessionStore");
 const { buildWalletFirstService } = require("../walletFirstService");
+const { LiveSessionService } = require("../liveSessionService");
 
 const TOKENS = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40), HRC_APP_AUTH_MODE: "siwe" };
 
@@ -30,12 +31,24 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         symbol: "HRC", decimals: 18, stakeAmount: "2.0", requiredAllowance: "2.0"
     });
     const walletFirst = buildWalletFirstService(customerService, () => demoService);
+    const endCalls = [];
+    // Exercise the real End guards, ownership and duplicate handling at the HTTP seam.
+    // Sensor/chain settlement itself is covered by liveSessionService.test.js.
+    const lifecycle = new LiveSessionService({ walletService: demoService, iot: {}, settler: {}, logger: () => {} });
+    lifecycle.response = async (record, extra = {}) => ({ success: true, sessionId: record.sessionId, stage: record.stage, settled: record.stage === "SETTLED", ...extra });
+    lifecycle.advanceEnd = async record => {
+        endCalls.push(record.sessionId);
+        return lifecycle.response(demoService.store.update(record.sessionId, { stage: "SETTLED" }));
+    };
     const liveService = {
         async sessions(userId) { return { success: true, userId, count: 0, sessions: [] }; },
         async session(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
         async start() { return { success: true, mode: "backend" }; },
-        async confirmWalletStart(userId, sessionId, body) { return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash }; },
-        async end() { return { success: true, settled: true }; }
+        async confirmWalletStart(userId, sessionId, body) {
+            demoService.store.save({ sessionId, userId, source: "esp32", stage: "RUNNING", createdAt: new Date().toISOString() });
+            return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash };
+        },
+        end: lifecycle.end.bind(lifecycle)
     };
     const server = createApp({ service: {}, customerService, demoService, liveService, walletFirst, tokens: { ...TOKENS, HRC_APP_AUTH_MODE: authMode } }).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
@@ -55,7 +68,7 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         const result = await call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
         return { wallet, ...result };
     };
-    return { call, login, demoService };
+    return { call, login, demoService, endCalls };
 }
 
 test("wallet login issues an app token and a session token", async t => {
@@ -74,7 +87,7 @@ test("wallet login issues an app token and a session token", async t => {
     assert.equal((await f.call("/api/me/sessions", { token: login.body.token })).status, 401);
 });
 
-test("wallet-first sessions are prepared for the user to sign, never broadcast", async t => {
+test("wallet-first Approve and Start prepare signatures; End executes the operator lifecycle", async t => {
     const f = await fixture(t);
     const login = await f.login();
     const token = login.body.sessionToken;
@@ -95,20 +108,25 @@ test("wallet-first sessions are prepared for the user to sign, never broadcast",
     assert.match(start.body.data, /^0x[0-9a-f]{8}/);
     assert.equal(start.body.operatorOnly, undefined);
 
-    const end = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token, body: {} });
-    assert.equal(end.status, 200);
-    assert.equal(end.body.operatorOnly, true);
-    assert.equal(end.body.data, null);
-    assert.match(end.body.description, /operator/i);
-
     const confirmed = await f.call(`/api/me/sessions/${start.body.sessionId}/confirm-start`, {
         method: "POST", token, body: { transactionHash: "0x" + "b".repeat(64) }
     });
     assert.equal(confirmed.status, 200);
     assert.equal(confirmed.body.stage, "RUNNING");
+
+    const end = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token, body: {} });
+    assert.equal(end.status, 200);
+    assert.equal(end.body.settled, true);
+    assert.equal(end.body.stage, "SETTLED");
+    assert.equal(end.body.operatorOnly, undefined);
+    assert.deepEqual(f.endCalls, [start.body.sessionId]);
+    const repeated = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token, body: {} });
+    assert.equal(repeated.status, 200);
+    assert.equal(repeated.body.duplicate, true);
+    assert.equal(f.endCalls.length, 1);
 });
 
-test("a wallet cannot prepare a session for another wallet's session id", async t => {
+test("a wallet cannot End another wallet's session", async t => {
     const f = await fixture(t);
     const first = await f.login();
     const second = await f.login();
@@ -121,6 +139,7 @@ test("a wallet cannot prepare a session for another wallet's session id", async 
     const attack = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token: second.body.sessionToken, body: {} });
     assert.equal(attack.status, 403);
     assert.equal(attack.body.code, "SESSION_OWNER_MISMATCH");
+    assert.equal(f.endCalls.length, 0);
 });
 
 test("wallet mode keeps the same prepared-transaction flow", async t => {
@@ -136,4 +155,16 @@ test("the backend-managed demo users still broadcast their own transactions", as
     const f = await fixture(t);
     assert.equal(f.demoService.isWalletFirst("user_1"), false);
     assert.equal(f.demoService.isWalletFirst("wallet_deadbeef"), false);
+});
+
+
+test("wallet-first End rejects user-chosen outcomes and rewards", async t => {
+    const f = await fixture(t);
+    const login = await f.login();
+    const result = await f.call("/api/me/sessions/any-session/end", {
+        method: "POST", token: login.body.sessionToken, body: { outcome: "VALID_NO_VIOLATION", rewardPaid: "100" }
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, "INVALID_PAYLOAD");
+    assert.equal(f.endCalls.length, 0);
 });

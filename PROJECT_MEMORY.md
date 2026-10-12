@@ -925,3 +925,24 @@ safety outcome.
 - Two orphan sessions created before R20 were settled as `INCOMPLETE` with
   explicit recovery evidence; the test wallet returned to `20 HRC` and the
   reward contract escrow returned to zero.
+
+
+## Wallet-first End execution and session clock (R21, 2026-10-12)
+
+- POST `/api/me/sessions/:sessionId/end` always invokes LiveSessionService.end.
+  Approve/Start prepare user signatures; End executes backend STOP/outcome/operator
+  settlement. Returning prepareEndSession text from this POST left sessions running.
+- Real lifecycle guards apply to wallet-first End: owner isolation, empty body,
+  frozen evidence and idempotent retries. GET prepare/end remains descriptive.
+- Wallet panel shows HH:MM:SS from sensor started_at/ended_at, ticking each second
+  locally, frozen at the closed sensor boundary. Unknown timestamps use only
+  reported duration. Sample counts stay backend-derived. Account reads refresh
+  every 5 seconds in both SIWE/wallet and demo modes; Start is disabled while a
+  session is running/stopping/settling. Removed duplicate duration text.
+- Tests: blockchain API 135/135; Chromium verifier 9 scenarios including mobile
+  and desktop timer fixtures, no JS errors/overflow. Runtime End on the reported
+  wallet session closed the sensor, settled VIOLATION_CONFIRMED, collected 2 HRC
+  from escrow, and left available balance 18 HRC / locked 0. Repeat End did not
+  create a second settlement; contract token balance = reward pool + escrow.
+- API restart preserves chain, manifests and session records, but reward login
+  tokens are in-memory; reconnect/sign SIWE after an API restart.

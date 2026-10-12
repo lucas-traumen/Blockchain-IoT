@@ -295,6 +295,33 @@ function updateDemoAccountPicker() {
     text('demoAccountMessage', demoLoginMessage);
 }
 
+function demoSessionElapsedSeconds(session) {
+    if (!session) return null;
+    const sensor = session.iotSession;
+    const started = Date.parse(sensor?.started_at);
+    const ended = Date.parse(sensor?.ended_at);
+    if (Number.isFinite(started) && Number.isFinite(ended)) return Math.max(0, (ended - started) / 1000);
+    if (Number.isFinite(started) && !sensor?.ended_at && !session.settled && session.stage === 'RUNNING') {
+        return Math.max(0, (Date.now() - started) / 1000);
+    }
+    const duration = sensor?.durationS ?? session.durationS;
+    return typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, duration) : null;
+}
+
+function renderDemoSessionTimer() {
+    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
+    const session = demoSession.user?.role === 'customer' ? active || demoSessions[0] : null;
+    const elapsed = demoSessionElapsedSeconds(session);
+    const seconds = elapsed === null ? null : Math.floor(elapsed);
+    text('demoSessionTimer', seconds === null ? '--:--:--' : [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+        .map(value => String(value).padStart(2, '0')).join(':'));
+    const measuring = session?.stage === 'RUNNING' && !session.settled && !session.iotSession?.ended_at;
+    text('demoSessionTimerLabel', measuring ? 'Running time' : session ? 'Session duration' : 'Session time');
+    text('demoSessionTimerDetail', session
+        ? `${measuring ? 'Measuring' : 'Stopped'} · ${Number(session.sampleCount || 0).toLocaleString('en-US')} samples · Minimum 30s / 20 samples`
+        : 'Start a session to measure elapsed time.');
+}
+
 function renderDemoWallet() {
     const user = demoSession.user;
     const customer = user?.role === 'customer';
@@ -324,6 +351,7 @@ function renderDemoWallet() {
     if (trigger) trigger.disabled = busy || (walletFirst && Boolean(window.hrcWallet?.state.connecting || (appSession.inFlightKey && !appSession.key)));
     const approve = byId('demoApproveBtn');
     const start = byId('demoStartBtn');
+    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
     const ready = demoWallet && Number(demoWallet.allowance) >= Number(demoWallet.requiredAllowance);
     if (approve) {
         approve.hidden = !customer;
@@ -332,10 +360,9 @@ function renderDemoWallet() {
     }
     if (start) {
         start.hidden = !customer;
-        start.disabled = busy || !customer || !demoWallet || (!demoWallet.canStart && !demoSessionRef);
+        start.disabled = busy || !customer || !demoWallet || ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage) || (!demoWallet.canStart && !demoSessionRef);
         start.textContent = demoBusy === 'start' ? 'Starting...' : demoSessionRef ? 'Retry Start Session' : 'Start Session';
     }
-    const active = demoSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
     const end = byId('demoEndBtn');
     if (end) {
         end.hidden = !customer || !active;
@@ -347,8 +374,9 @@ function renderDemoWallet() {
     const last = active || demoSessions[0];
     text('demoSessionState', last ? last.settled
         ? `${demoResultLabel(last)} · Stake returned +${formatDemoAmount(last.stakeReturned)} · Reward +${formatDemoAmount(last.rewardPaid)} · Penalty ${formatDemoAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
-        : `${demoSessionStage(last)} · ${formatDemoAmount(last.stakedAmount)} locked · ${Math.floor(last.iotSession?.durationS || last.durationS || 0)} seconds / ${last.sampleCount || 0} samples${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
+        : `${demoSessionStage(last)} · ${formatDemoAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
         : demoWallet && !ready ? 'Step 1: approve 2 HRC. Approval does not change your balance.' : 'Ready to open a live sensor session and lock 2 HRC.');
+    renderDemoSessionTimer();
     const latest = [demoReceipt, demoTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
     text('demoTransactionStatus', latest ? `${demoTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
     updateDemoAccountPicker();
@@ -509,9 +537,7 @@ async function endDemoSession() {
     try {
         const result = await demoRequest('/api/me/sessions/' + encodeURIComponent(active.sessionId) + '/end', { method: 'POST', token: session.token, body: {} });
         if (session !== demoSession) return;
-        demoMessage = result.operatorOnly
-            ? result.description
-            : result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
+        demoMessage = result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
         await loadDemoAccountData({ fresh: true });
     } catch (error) { if (session === demoSession) demoMessage = 'End failed: ' + error.message + ' Retry keeps the same session.'; }
     finally { demoBusy = null; renderDemoWallet(); }
@@ -1633,8 +1659,11 @@ async function bootstrap() {
     renderDemoWallet();
     await Promise.allSettled([loadDashboard(), loadLiveRuntime(), loadDemoAccountData()]);
     connectLiveStream();
-    window.setInterval(() => {
-        if (!document.hidden && !demoBusy) void loadDemoAccountData();
-    }, 5000);
 }
+window.setInterval(() => {
+    if (!document.hidden) renderDemoSessionTimer();
+}, 1000);
+window.setInterval(() => {
+    if (!document.hidden && !demoBusy && demoSession.token) void loadDemoAccountData();
+}, 5000);
 void bootstrap();

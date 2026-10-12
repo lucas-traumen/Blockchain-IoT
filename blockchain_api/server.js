@@ -166,9 +166,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         await respond(res, () => getLiveService().confirmWalletStart(req.demoUser.userId, req.params.sessionId, req.body || {}), 400);
     });
     app.post('/api/me/sessions/:sessionId/end', requireDemoSession(getDemoService, 'customer'), async (req, res) => {
-        await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
-            ? getWalletFirstService().prepareEndSession(req.demoUser.userId, req.params.sessionId)
-            : getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
+        await respond(res, () => getLiveService().end(req.demoUser.userId, req.params.sessionId, req.body || {}));
     });
     app.get("/api/demo/admin/overview", requireDemoSession(getDemoService, "admin"), async (req, res) => {
         await respond(res, () => getLiveService().overview());

@@ -6,7 +6,7 @@
 
     <title>HRC Safety Log | Safety Control Center</title>
 
-    <link rel="stylesheet" href="style.css?v=wallet-connect-4">
+    <link rel="stylesheet" href="style.css?v=session-end-5">
 
     <!-- Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -185,6 +185,11 @@
                         <button type="button" id="demoApproveBtn" class="view-all-btn" disabled>Approve 2 HRC</button>
                         <button type="button" id="demoStartBtn" class="view-all-btn primary-action" disabled>Start Session</button>
                         <button type="button" id="demoEndBtn" class="view-all-btn primary-action" hidden disabled>End Session</button>
+                    </div>
+                    <div class="demo-session-timer">
+                        <span id="demoSessionTimerLabel" class="demo-card-label">Session time</span>
+                        <strong id="demoSessionTimer" class="mono">--:--:--</strong>
+                        <span id="demoSessionTimerDetail">Start a session to measure elapsed time.</span>
                     </div>
                     <p id="demoSensorStatus" class="demo-sensor-status" role="status">Checking live sensor...</p>
                     <p id="demoSessionState" class="demo-session-state" role="status">No session yet.</p>
@@ -905,7 +910,7 @@
 
 
     <script src="vendor/ethers.umd.min.js" defer></script>
-    <script src="wallet.js?v=wallet-connect-4" defer></script>
-    <script src="app.js?v=wallet-connect-4" defer></script>
+    <script src="wallet.js?v=session-end-5" defer></script>
+    <script src="app.js?v=session-end-5" defer></script>
 </body>
 </html>

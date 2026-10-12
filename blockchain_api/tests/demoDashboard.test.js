@@ -305,3 +305,37 @@ test('anonymous wallet mode preserves the connect label across dashboard refresh
     assert.equal(f.elements.get('demoAccountButtonLabel').textContent, 'Connect wallet');
     assert.equal(f.elements.get('connectedWalletAddress').textContent, 'Not connected');
 });
+
+
+test('session timer ticks from sensor start, freezes when closed and clears on account change', () => {
+    const f = fixture();
+    f.select('user_1');
+    f.context.now = Date.parse('2026-10-12T10:01:49Z');
+    f.run('Date.now = () => now');
+    f.context.active = { sessionId: 'timer-session', stage: 'RUNNING', settled: false, sampleCount: 1095,
+        iotSession: { started_at: '2026-10-12T10:00:00Z', ended_at: null, durationS: 109 } };
+    f.run('demoSessions = [active]; renderDemoWallet()');
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '00:01:49');
+    f.context.now += 1000;
+    f.run('renderDemoSessionTimer()');
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '00:01:50');
+    assert.match(f.elements.get('demoSessionTimerDetail').textContent, /1,095 samples/);
+    f.run("active.stage = 'SETTLEMENT_PENDING'; active.iotSession.ended_at = '2026-10-12T10:01:50Z'; renderDemoSessionTimer()");
+    f.context.now += 60000;
+    f.run('renderDemoSessionTimer()');
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '00:01:50');
+    assert.match(f.elements.get('demoSessionTimerDetail').textContent, /Stopped/);
+    f.run("active.stage = 'SETTLED'; active.settled = true; renderDemoSessionTimer()");
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '00:01:50');
+    f.run('clearDemoSession(); renderDemoWallet()');
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '--:--:--');
+});
+
+test('session timer never extrapolates missing or malformed sensor timestamps', () => {
+    const f = fixture();
+    f.select('user_1');
+    f.run("demoSessions = [{stage: 'RUNNING', settled: false, durationS: 45}]; renderDemoWallet()");
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '00:00:45');
+    f.run("demoSessions[0].iotSession = {started_at: 'invalid', durationS: NaN}; demoSessions[0].durationS = null; renderDemoSessionTimer()");
+    assert.equal(f.elements.get('demoSessionTimer').textContent, '--:--:--');
+});

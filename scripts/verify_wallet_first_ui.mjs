@@ -193,6 +193,22 @@ try {
     assert.equal(await evaluate('document.getElementById("accountTriggerLabel").textContent'), 'SIGNED IN');
     assert.ok((await evaluate('window.__walletCalls')).includes('personal_sign'));
     await check('late-wallet-siwe-mobile');
+    // Model a running session only for timer rendering/layout. No stake or End
+    // transaction is submitted by this connection verifier.
+    await evaluate(`demoSessions = [{sessionId: 'timer-ui-fixture', stage: 'RUNNING', settled: false,
+        sampleCount: 1095, stakedAmount: '2', iotSession: {started_at: new Date(Date.now() - 109000).toISOString()}}];
+        renderDemoWallet(); document.getElementById('demoSessionTimer').scrollIntoView({block: 'center'});`);
+    await wait("document.getElementById('demoSessionTimer').textContent === '00:01:50'");
+    assert.equal(await evaluate("document.getElementById('demoEndBtn').hidden"), false);
+    assert.equal(await evaluate("document.getElementById('demoStartBtn').disabled"), true);
+    await check('session-timer-mobile');
+    await call('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false});
+    await check('session-timer-desktop');
+    await evaluate(`demoSessions[0].stage = 'SETTLEMENT_PENDING';
+        demoSessions[0].iotSession.ended_at = new Date(Date.parse(demoSessions[0].iotSession.started_at) + 110000).toISOString();
+        renderDemoWallet();`);
+    assert.equal(await evaluate("document.getElementById('demoSessionTimer').textContent"), '00:01:50');
+    assert.match(await evaluate("document.getElementById('demoSessionTimerDetail').textContent"), /Stopped/);
     assert.deepEqual(exceptions, [], 'no JavaScript exceptions');
     await writeFile(join(evidence, 'verification.json'), JSON.stringify({ scenarios: results, authMode: config.app.authMode, chainId: config.chainId, walletAddress: wallet.address, broadcasts: 0, exceptions }, null, 2));
     console.log('Evidence: ' + evidence);

@@ -1511,3 +1511,28 @@ local hoặc cấp test funds tới đúng địa chỉ trước khi chạy Appr
 
 Evidence: blockchain API `132/132` pass; wallet test có coverage session
 reconcile; ví test hiện `20 HRC`, khoảng `1 ETH`, escrowed stake `0 HRC`.
+
+
+## R21 — Wallet End lifecycle và đồng hồ session — 2026-10-12
+
+Người dùng yêu cầu sửa End bị lỗi và thêm thời gian chạy; tiếp tục trong phạm vi
+đã được duyệt. Làm trực tiếp trong phiên Codex, không dùng subagent. Đã đọc state
+OpenCode local; checkpoint tool không khả dụng, không sửa con trỏ workflow cũ.
+
+| Task | Mục tiêu / phạm vi sửa | Tiêu chí và lệnh kiểm tra | Trạng thái |
+| --- | --- | --- | --- |
+| R21:orchestrator | server End route; dashboard app/index/style; walletFirst/demoDashboard tests; browser verifier; PLAN/MEMORY | POST End gọi live lifecycle có owner/empty-body/idempotence guards; timer HH:MM:SS tick mỗi giây và freeze theo sensor boundary; `npm --prefix blockchain_api test`, browser desktop/mobile, runtime End | done |
+
+Regression trước sửa: 21 pass / 4 fail ở walletFirst + demoDashboard. End nhận
+HTTP 200 nhưng không settled; body outcome/reward giả cũng được bỏ qua. Sau nối
+route vào LiveSessionService.end và thêm timer: API suite 135/135 pass.
+
+Runtime End evidence: phiên `hrc-e9a65572-demo-dbf840be-4b1b-4979-8ea8-ef9e358b4aa1`
+được xử lý theo yêu cầu End của người dùng bằng cùng LiveSessionService.end sau
+khi dừng API cũ (không có hai writer). Sensor `closed`, duration 726.856s, 7266
+samples, outcome `VIOLATION_CONFIRMED`; penalty 2 HRC, reward/stake return 0;
+available 18 → 18 HRC, locked 0. End duplicate true; pool/escrow invariant true.
+Tx `0xb25a50e57c6f2c133afe6cd1a8d0ec2fb9ecccb7e056eeb8843d3aa8898eccda`.
+API đã khởi động lại với đúng env/deployment cũ; login token in-memory cần ký
+đăng nhập lại. Browser verifier PASS 9 scenario, timer layout desktop/mobile có
+fixture UI (không broadcast), còn runtime End dùng dữ liệu IoT/chain thật.
