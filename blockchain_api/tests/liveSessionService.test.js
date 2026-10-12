@@ -19,6 +19,11 @@ const eventAbi = new ethers.Interface([
     'event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)',
     'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)'
 ]);
+const rewardAbi = new ethers.Interface([
+    'function startSession(bytes32 sessionId)',
+    'event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)',
+    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)'
+]);
 const empty = { beneficiary: ethers.ZeroAddress, startedAt: 0n, settledAt: 0n, stakedAmount: 0n, rewardPaid: 0n, penaltyCollected: 0n,
     outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash, outcomeTimestamp: 0n, started: false, settled: false };
 
@@ -30,7 +35,10 @@ function fixture(t) {
         tuples: new Map(), logs: [], stakes: 0, stops: 0, sensorStarts: 0, block: 1, settlementCalls: [], ready: true, busy: null,
         failStake: null, failSettlement: false, loseSensorStart: false, outcome: 'VALID_NO_VIOLATION', sensors: new Map() };
     const users = new Map([['user_1', USER1], ['user_2', USER2]].map(([userId, address]) => [userId, { userId, walletAddress: address, wallet: { address }, role: 'customer' }]));
-    const provider = { getNetwork: async () => ({ chainId: 31337 }), getBlockNumber: async () => state.block,
+    const provider = { getNetwork: async () => ({ chainId: 31337 }), getBalance: async () => unit('1'), getCode: async () => '0x1234',
+        getTransaction: async hash => state.walletTransactions?.[hash] || null,
+        getTransactionReceipt: async hash => state.walletReceipts?.[hash] || null,
+        getBlockNumber: async () => state.block,
         getLogs: async filter => state.logs.filter(log => log.address === filter.address && filter.topics.every((topic,i) => topic == null || (Array.isArray(topic) ? topic.includes(log.topics[i]) : topic === log.topics[i]))) };
     const token = { balanceOf: async address => state.balances.get(address), allowance: async address => state.allowances.get(address), symbol: async () => 'HRC', decimals: async () => 18 };
     const emit = (name,args) => { state.block++; state.logs.push({ ...eventAbi.encodeEventLog(eventAbi.getEvent(name),args), address: REWARDS, transactionHash: ethers.id('tx-'+state.block), blockNumber: state.block, index: 0 }); };
@@ -44,7 +52,9 @@ function fixture(t) {
                 emit('SessionStarted',[key,wallet.address,unit('2'),Math.floor(state.now/1000)]); return {blockNumber:state.block};
             }};
         } }) };
-    const walletService = new DemoWalletService({ provider, token, rewards, users, store: new DemoSessionStore(storePath), config: { tokenAddress: TOKEN, rewardAddress: REWARDS, deploymentBlock: 1 } });
+    const walletService = new DemoWalletService({ provider, token, rewards, users, store: new DemoSessionStore(storePath), config: { tokenAddress: TOKEN, rewardAddress: REWARDS, chainId: 31337, deploymentBlock: 1 } });
+    walletService.rewardInterface = rewardAbi;
+    users.get('user_1').walletFirst = true;
     const iot = {
         health: async () => ({ mqtt: state.ready }),
         latest: async () => ({ source_mode:'esp32',latest:{telemetry:{device_id:'esp32_01'},received_at:new Date(state.now).toISOString()} }),
@@ -95,12 +105,101 @@ test('wallet-first signed start is reconciled into the sensor session store', as
     const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'wallet-confirm' });
     const key = ethers.id(sessionId);
     f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
-    const result = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash: '0x' + 'a'.repeat(64) });
+    await f.live.reserveWalletStart('user_1', sessionId);
+    const transactionHash = ethers.id('wallet-first-start');
+    const event = rewardAbi.encodeEventLog(rewardAbi.getEvent('SessionStarted'), [key, USER1, unit('2'), 100]);
+    f.state.walletTransactions = { [transactionHash]: {
+        chainId: 31337, from: USER1, to: REWARDS,
+        data: rewardAbi.encodeFunctionData('startSession', [key]), value: 0n
+    } };
+    f.state.walletReceipts = { [transactionHash]: {
+        hash: transactionHash, status: 1, from: USER1, to: REWARDS, blockNumber: 2,
+        logs: [{ ...event, address: REWARDS }]
+    } };
+    const result = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash });
     assert.equal(result.stage, 'RUNNING');
-    assert.equal(result.transactionHash, '0x' + 'a'.repeat(64));
+    assert.equal(result.transactionHash, transactionHash);
     assert.equal(f.state.sensorStarts, 1);
     assert.equal(f.walletService.store.get(sessionId).source, 'esp32');
     assert.equal((await f.live.wallet('user_1')).activeSessionId, sessionId);
+});
+
+test('wallet start keeps a pending receipt reserved and opens the sensor only after the receipt and event confirm', async t => {
+    const f = fixture(t);
+    const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'pending-wallet-confirm' });
+    const key = ethers.id(sessionId);
+    f.state.tuples.set(key, { ...empty, beneficiary: USER1, started: true, startedAt: 100n, stakedAmount: unit('2') });
+    await f.live.reserveWalletStart('user_1', sessionId);
+    const transactionHash = ethers.id('pending-wallet-start');
+    const event = rewardAbi.encodeEventLog(rewardAbi.getEvent('SessionStarted'), [key, USER1, unit('2'), 100]);
+    f.state.walletTransactions = { [transactionHash]: {
+        chainId: 31337, from: USER1, to: REWARDS,
+        data: rewardAbi.encodeFunctionData('startSession', [key]), value: 0n
+    } };
+    f.state.walletReceipts = {};
+
+    const pending = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash });
+    assert.equal(pending.pending, true);
+    assert.equal(f.state.sensorStarts, 0);
+    assert.equal(f.walletService.store.get(sessionId).stage, 'WALLET_INTENT');
+
+    f.state.walletReceipts[transactionHash] = {
+        hash: transactionHash, status: 1, from: USER1, to: REWARDS, blockNumber: 3,
+        logs: [{ ...event, address: REWARDS }]
+    };
+    const confirmed = await f.live.confirmWalletStart('user_1', sessionId, { transactionHash });
+    assert.equal(confirmed.stage, 'RUNNING');
+    assert.equal(f.state.sensorStarts, 1);
+});
+
+test('wallet start rejects mismatched receipt fields before opening the sensor', async t => {
+    for (const mismatch of ['chain', 'from', 'to', 'status', 'calldata', 'event']) {
+        await t.test(mismatch, async st => {
+            const f = fixture(st);
+            const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'bad-' + mismatch });
+            const key = ethers.id(sessionId);
+            await f.live.reserveWalletStart('user_1', sessionId);
+            const transactionHash = ethers.id('bad-wallet-' + mismatch);
+            const event = rewardAbi.encodeEventLog(rewardAbi.getEvent('SessionStarted'), [key, USER1, unit('2'), 100]);
+            const transaction = { chainId: 31337, from: USER1, to: REWARDS,
+                data: rewardAbi.encodeFunctionData('startSession', [key]), value: 0n };
+            const receipt = { hash: transactionHash, status: 1, from: USER1, to: REWARDS,
+                logs: [{ ...event, address: REWARDS }] };
+            if (mismatch === 'chain') transaction.chainId = 1;
+            if (mismatch === 'from') transaction.from = USER2;
+            if (mismatch === 'to') receipt.to = TOKEN;
+            if (mismatch === 'status') receipt.status = 0;
+            if (mismatch === 'calldata') transaction.data = '0x';
+            if (mismatch === 'event') receipt.logs = [];
+            f.state.walletTransactions = { [transactionHash]: transaction };
+            f.state.walletReceipts = { [transactionHash]: receipt };
+            await assert.rejects(f.live.confirmWalletStart('user_1', sessionId, { transactionHash }));
+            assert.equal(f.state.sensorStarts, 0);
+        });
+    }
+});
+
+test('wallet intent lease prevents a second wallet session from reserving the shared sensor', async t => {
+    const f = fixture(t);
+    const firstId = f.walletService._sessionId('user_1', { sessionRef: 'lease-first' });
+    const secondId = f.walletService._sessionId('user_2', { sessionRef: 'lease-second' });
+    f.walletService._user('user_2').walletFirst = true;
+    await f.live.reserveWalletStart('user_1', firstId);
+    await assert.rejects(f.live.reserveWalletStart('user_2', secondId), { code: 'DEVICE_BUSY' });
+    assert.equal(f.walletService.store.get(secondId), null);
+});
+
+test('unsubmitted wallet intents expire and release the shared sensor lease', async t => {
+    const f = fixture(t);
+    const firstId = f.walletService._sessionId('user_1', { sessionRef: 'lease-expiring' });
+    const secondId = f.walletService._sessionId('user_2', { sessionRef: 'lease-after-expiry' });
+    f.walletService._user('user_2').walletFirst = true;
+    await f.live.reserveWalletStart('user_1', firstId);
+    f.state.now += 121000;
+    await f.live.drain();
+    assert.equal(f.walletService.store.get(firstId).stage, 'INTENT_EXPIRED');
+    const next = await f.live.reserveWalletStart('user_2', secondId);
+    assert.equal(next.stage, 'WALLET_INTENT');
 });
 
 test('offline or busy sensor is rejected before moving any HRC', async t => {

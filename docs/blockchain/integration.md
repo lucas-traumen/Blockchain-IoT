@@ -9,11 +9,13 @@ on-chain events and hashes are not rewritten or reconstructed.
 Set these environment variables in the **blockchain_api process**, before starting it:
 
 - `HRC_INGEST_API_TOKEN`: random secret of at least 32 characters, for the gateway.
-- `HRC_ADMIN_API_TOKEN`: a different random secret of at least 32 characters, for
-  administrative unlock and archived payload access.
+- `HRC_ADMIN_API_TOKEN`: a different random secret of at least 32 characters,
+  retained for local demo and robot integrations.
 - `HRC_EVENT_STORE_PATH`: optional directory; default `blockchain_api/data/events`.
-- `HRC_CUSTOMER_STORE_PATH`: optional JSON file for application users, wallet
-  bindings, app sessions and behavior; default `blockchain_api/data/customers.json`.
+- `HRC_APP_STORE`: `sqlite` by default; set `json` only for legacy local runs.
+  Application users, hashed sessions and behavior use `HRC_APP_DB_PATH` (default
+  derived from `HRC_CUSTOMER_STORE_PATH`). Sessions have a configurable TTL and
+  are revoked by `POST /api/auth/logout`.
 - `HRC_BLOCKCHAIN_NETWORK`: `localhost`, `sepolia` or `amoy`; it deliberately
   does not use the generic host variable `NETWORK`.
 - `HRC_APP_CHAIN_ID`: chain used by wallet challenge login. If omitted, it follows
@@ -30,8 +32,14 @@ the API. Ingestion token does not grant admin access, and admin token does not g
 ingestion access. Keep tokens distinct and outside source control.
 
 `POST /api/safety-event` requires ingestion token.
-`POST /api/robots/:deviceId/unlock` requires admin token.
-`GET /api/events/:eventId/payload` requires admin token.
+In local `demo` mode, `POST /api/robots/:deviceId/unlock` and
+`GET /api/events/:eventId/payload` require the admin token. In production, set
+`NODE_ENV=production`, `HRC_APP_AUTH_MODE=siwe`, an explicit
+`HRC_APP_ADMIN_WALLETS` allowlist and `HRC_TRUST_PROXY=true` behind the TLS
+terminator. Production refuses demo auth and plaintext HTTP. HSTS is emitted for
+HTTPS API requests. The dashboard Nginx config adds CSP, frame, MIME, referrer
+and permissions headers. Rate limits are per process/IP; multi-instance setups
+must also enforce limits at their shared ingress.
 Existing public event and robot status GET routes do not need a token.
 
 The dashboard does **not** send an admin or ingest token. Robot API clients still
@@ -49,11 +57,12 @@ read errors appear in the wallet workspace. **My Wallet / My Sessions** lives
 inside Dashboard and Reports. Navigation remains Dashboard, Live Monitoring,
 Safety Events and Reports.
 
-The two wallets derive from fixed Hardhat indexes in `demo_wallets.js`. The
+The two local demo wallets derive from fixed Hardhat indexes in `demo_wallets.js`. The
 backend keeps their private keys; the whitelist does not register arbitrary
 wallets as demo customers. New deployments seed 20 HRC per user. Restarting the
-API preserves identity, session references and transactions; app tokens are
-in memory and require another login. Admin sees both users with no transaction
+API preserves identity, session references and transactions. SIWE sessions are
+SQLite-backed; fixed demo login tokens remain in memory and require another
+login. Admin sees both users with no transaction
 controls and cannot call customer Approve/Start/End routes.
 
 Configuration:
@@ -61,8 +70,11 @@ Configuration:
 - `HRC_APP_AUTH_MODE`: one of `demo` (default, fixed accounts only; arbitrary
   wallet registration is disabled), `wallet` (EIP-191 challenge text) or `siwe`
   (strict EIP-4361/SIWE message).
-- `RPC_URL`: the existing local Hardhat RPC, normally `http://127.0.0.1:8545`.
+- `RPC_URL`: RPC endpoint matching the selected deployment.
 - `HRC_REWARD_DEPLOYMENT`: manifest for that node's token/reward deployment.
+  Set `HRC_BLOCKCHAIN_NETWORK=sepolia` or `amoy`, `RPC_URL`, and the matching
+  deployment manifest for wallet-first reads/transaction preparation on chain
+  IDs 11155111 or 80002. Fixed mnemonic-backed demo accounts stay on 31337.
 - `HRC_DEMO_MNEMONIC`: local Hardhat mnemonic, retained on the backend.
 - `HRC_DEMO_INITIAL_BALANCE`: initial funding for a new deployment, default 20.
 - `HRC_DEMO_SESSION_STORE_PATH`: durable reference/evidence/transaction store,
@@ -106,17 +118,21 @@ Users cannot submit outcome, beneficiary, reward or penalty. The protected
 `POST /api/session-outcome` operator route remains available to backend clients;
 a demo app token cannot call it.
 
-For wallet-first users, `POST /api/me/sessions/start` only prepares the unsigned
+For wallet-first users, a single SIWE token authorizes application and reward
+routes. Its hash, expiry and revocation are stored in SQLite by default; both
+layers use the same wallet-derived user ID. Legacy `wallet_<address>` session
+ownership is migrated on the first verified login. `POST /api/me/sessions/start`
+creates a short device lease and policy snapshot before preparing the unsigned
 stake transaction. After MetaMask returns a transaction hash, the dashboard
-calls `confirm-start`; the backend verifies the on-chain session, creates the
-durable sensor record and opens ESP32 measurement. If sensor startup fails after
+calls `confirm-start`; the backend verifies the receipt and `SessionStarted`
+event before opening ESP32 measurement. If sensor startup fails after
 the stake is confirmed, the session is settled as `INCOMPLETE` so the stake is
 not left locked without a sensor record.
 
 `HRCSessionRewards` decides all amounts: valid returns 2 HRC and pays up to 3 HRC
 once per beneficiary per UTC day if the pool allows; confirmed violation moves
 the locked 2 HRC to treasury; fault/incomplete returns the stake without reward.
-A valid session requires at least 30 seconds and 20 samples, with valid coverage
+A valid session requires at least 30 seconds and 270 samples at 10 Hz, with valid coverage
 and no confirmed violation. The UI shows the reason and daily limit separately.
 **Recent wallet activity** is visible without expanding transaction history:
 approve has no wallet delta, stake has -2 available/+2 locked, and settlement
@@ -200,8 +216,10 @@ Routes:
 - `GET /api/customers` — admin-wallet-only customer directory.
 - `GET /api/customers/:userId/behavior` — admin-wallet-only customer activity.
 
-Admin reward operations (admin token required, every call is written to the
-append-only audit trail with actor, action, transaction hash and status):
+Admin reward operations use SIWE admin-wallet RBAC in `wallet`/`siwe` modes;
+local demo mode retains the admin API token. Calls are written to the audit
+trail with actor, action, transaction hash and status. The actor is the verified
+wallet or a fixed token principal; `x-hrc-actor` is ignored:
 
 - `GET /api/admin/reward/status` — operator/owner, pause state, pool balance, cap.
 - `POST /api/admin/reward/pause` / `.../unpause` — halt or resume new stakes and
@@ -214,8 +232,10 @@ append-only audit trail with actor, action, transaction hash and status):
 - `POST /api/admin/reward/treasury` — `{treasury}` to rotate the penalty address.
 - `GET /api/admin/audit?limit=` — recent privileged actions, newest first.
 
-Set `x-hrc-actor` to label the caller in the audit trail; it defaults to
-`admin-token`.
+For production policy changes, transfer contract ownership to a reviewed Safe or
+timelock before enabling governance operations. This code change does not deploy
+that governance contract or transfer ownership; those remain explicit deployment
+steps and the current contract deployment is unchanged.
 
 Behavior records are off-chain product telemetry, not safety evidence. Safety
 telemetry, blockchain event payloads and reward evidence keep their existing

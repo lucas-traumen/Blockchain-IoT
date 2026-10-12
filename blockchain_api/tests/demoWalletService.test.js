@@ -28,7 +28,7 @@ function fixture(t) {
     const state = { chainId: 31337, starts: 0, approvals: 0, tuples: new Map(), logs: [], allowance: ethers.parseEther('2') };
     const users = new Map([['user_1', { userId: 'user_1', role: 'customer', walletAddress: USER1, wallet: {} }], ['user_2', { userId: 'user_2', role: 'customer', walletAddress: USER2, wallet: {} }]]);
     const provider = {
-        getNetwork: async () => ({ chainId: state.chainId }), getBlockNumber: async () => 30,
+        getNetwork: async () => ({ chainId: state.chainId }), getBlockNumber: async () => 30, getCode: async () => '0x1234',
         getLogs: async filter => state.logs.filter(item => item.address === filter.address && item.blockNumber >= filter.fromBlock && item.blockNumber <= filter.toBlock && filter.topics.every((topic, index) => topic == null || (Array.isArray(topic) ? topic.includes(item.topics[index]) : topic === item.topics[index])))
     };
     const token = {
@@ -96,6 +96,17 @@ test('demo signing fails closed on a network other than local chain 31337', asyn
     await assert.rejects(f.service.approve('user_1'), { code: 'LOCAL_CHAIN_REQUIRED' });
     await assert.rejects(f.service.startSession('user_1', { sessionRef: 'wrong-chain' }), { code: 'LOCAL_CHAIN_REQUIRED' });
     assert.equal(f.state.starts, 0); assert.equal(f.state.approvals, 0);
+});
+
+test('wallet-first reads use configured Sepolia or Amoy chain while fixed demo signers stay local-only', async t => {
+    const f = fixture(t);
+    const walletUser = f.service.walletUser('0x0000000000000000000000000000000000000099');
+    f.service.config.chainId = 80002;
+    f.state.chainId = 80002;
+    await f.service._requireConfiguredChain(walletUser.userId);
+    await assert.rejects(f.service._requireConfiguredChain('user_1'), { code: 'LOCAL_CHAIN_REQUIRED' });
+    f.state.chainId = 11155111;
+    await assert.rejects(f.service._requireConfiguredChain(walletUser.userId), { code: 'WRONG_CHAIN' });
 });
 
 test('fixed user wallet mapping survives service recreation and exposes no private keys', t => {

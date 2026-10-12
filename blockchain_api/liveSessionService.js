@@ -1,11 +1,12 @@
 const crypto = require('node:crypto');
 const { ApiError, identifier, canonicalJson } = require('./eventPayload');
-const { normalizeOutcome } = require('./rewardPolicy');
+const { normalizeOutcome, sessionKey } = require('./rewardPolicy');
 const { IotSessionClient } = require('./iotSessionClient');
 
-const FINAL = new Set(['SETTLED', 'START_FAILED']);
+const FINAL = new Set(['SETTLED', 'START_FAILED', 'INTENT_EXPIRED']);
 const TERMINAL_ERRORS = new Set(['SETTLEMENT_CONFLICT', 'STORE_INTEGRITY_ERROR', 'BENEFICIARY_MISMATCH', 'TRANSACTION_REVERTED', 'IOT_SESSION_MISMATCH']);
 const NO_STAKE_ERRORS = new Set(['APPROVAL_REQUIRED', 'INSUFFICIENT_HRC_BALANCE', 'TRANSACTION_PREPARE_FAILED', 'TRANSACTION_REVERTED', 'SENSOR_UNAVAILABLE']);
+const WALLET_INTENT_TTL_MS = 120000;
 
 class LiveSessionService {
     constructor({ walletService, iot, settler, deviceId = 'esp32_01', clock = Date.now, logger = message => console.log(message) }) {
@@ -34,13 +35,106 @@ class LiveSessionService {
             throw new ApiError(400, 'INVALID_PAYLOAD', 'Only the session reference is accepted; outcome, beneficiary and amounts are calculated on the backend');
         }
     }
-    async checkOperator() {
-        await this.walletService._requireLocalChain();
+    async checkOperator(userId) {
+        await this.walletService._requireConfiguredChain(userId);
         const address = await this.settler.contract.getAddress();
         if (address.toLowerCase() !== this.walletService.config.rewardAddress.toLowerCase()
             || !await this.settler.contract.operators(await this.settler.wallet.getAddress())) {
             throw new ApiError(503, 'OPERATOR_NOT_CONFIGURED', 'The backend operator is not configured for this reward contract');
         }
+    }
+    reserveWalletStart(userId, sessionId) {
+        return this.serial(async () => {
+            const user = this.walletService._user(userId);
+            if (!user.walletFirst) throw new ApiError(400, 'NOT_WALLET_FIRST', 'Wallet intent is only for wallet-first users');
+            const id = identifier(sessionId, 'sessionId');
+            const existing = this.store.get(id);
+            if (existing) {
+                if (existing.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
+                if (existing.stage === 'WALLET_INTENT' && existing.intentExpiresAt > this.clock()) return existing;
+                if (existing.stage === 'WALLET_INTENT') throw new ApiError(409, 'SESSION_INTENT_EXPIRED', 'This session intent expired; prepare a new session reference');
+                if (!FINAL.has(existing.stage)) throw new ApiError(409, 'SESSION_IN_PROGRESS', 'This session is already being processed');
+            }
+
+            await this.checkOperator(userId);
+            const [wallet, device] = await Promise.all([
+                this.walletService.getWallet(userId), this.deviceState({ fresh: true })
+            ]);
+            if (!device.ready) throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason);
+            const lease = this.store.list().find(row => {
+                if (row.sessionId === id || FINAL.has(row.stage)) return false;
+                if (row.stage === 'WALLET_INTENT') return row.intentExpiresAt > this.clock();
+                return Boolean(row.source === 'esp32' && row.stage);
+            });
+            if (device.busySessionId || lease) throw new ApiError(409, 'DEVICE_BUSY', 'The sensor is reserved by another session');
+            if (Number(wallet.balance) < Number(wallet.stakeAmount)) throw new ApiError(409, 'INSUFFICIENT_HRC_BALANCE', 'Not enough HRC for the stake');
+            if (Number(wallet.allowance) < Number(wallet.requiredAllowance)) throw new ApiError(409, 'APPROVAL_REQUIRED', 'Approve the stake before starting');
+
+            const network = await this.walletService.provider.getNetwork();
+            if (Number(network.chainId) !== Number(wallet.chainId)) throw new ApiError(503, 'WRONG_CHAIN', 'Reward wallet and configured chain do not match');
+            const gasBalance = await this.walletService.provider.getBalance(user.walletAddress);
+            if (gasBalance <= 0n) throw new ApiError(409, 'INSUFFICIENT_GAS', 'Wallet needs native gas currency before starting');
+            const policySnapshot = {};
+            for (const [key, method] of Object.entries({
+                stakeAmount: 'stakeAmount', rewardAmount: 'rewardAmount', penaltyAmount: 'penaltyAmount',
+                minRewardDuration: 'MIN_REWARD_DURATION', fullBonusDuration: 'FULL_BONUS_DURATION',
+                maxRewardBonusPercent: 'MAX_REWARD_BONUS_PERCENT'
+            })) {
+                if (typeof this.walletService.rewards[method] === 'function') {
+                    policySnapshot[key] = String(await this.walletService.rewards[method]());
+                }
+            }
+            const now = this.clock();
+            return this.store.save({
+                sessionId: id, sessionRef: null, userId, beneficiary: user.walletAddress,
+                createdAt: new Date(now).toISOString(), source: 'esp32', deviceId: this.deviceId,
+                stage: 'WALLET_INTENT', intentExpiresAt: now + WALLET_INTENT_TTL_MS,
+                policySnapshot, leaseId: crypto.randomUUID(), startAttempts: 0
+            });
+        });
+    }
+    async verifyWalletStartReceipt(user, sessionId, transactionHash, record) {
+        const provider = this.walletService.provider;
+        const expectedChainId = Number(this.walletService.config.chainId);
+        const network = await provider.getNetwork();
+        if (Number(network.chainId) !== expectedChainId) throw new ApiError(409, 'WRONG_CHAIN', 'Start transaction was sent to the wrong chain');
+        const [transaction, receipt] = await Promise.all([
+            provider.getTransaction(transactionHash), provider.getTransactionReceipt(transactionHash)
+        ]);
+        if (!transaction || !receipt) return null;
+        const expectedAddress = this.walletService.config.rewardAddress.toLowerCase();
+        if (Number(transaction.chainId) !== expectedChainId
+            || String(transaction.from || '').toLowerCase() !== user.walletAddress.toLowerCase()
+            || String(transaction.to || '').toLowerCase() !== expectedAddress
+            || Number(receipt.status) !== 1
+            || String(receipt.from || '').toLowerCase() !== user.walletAddress.toLowerCase()
+            || String(receipt.to || '').toLowerCase() !== expectedAddress
+            || String(receipt.hash || receipt.transactionHash || '').toLowerCase() !== transactionHash.toLowerCase()) {
+            throw new ApiError(409, 'START_RECEIPT_MISMATCH', 'Transaction receipt does not match the wallet, chain or reward contract');
+        }
+        let parsedTransaction;
+        try { parsedTransaction = this.walletService.rewardInterface.parseTransaction({ data: transaction.data, value: transaction.value }); }
+        catch { parsedTransaction = null; }
+        const expectedSessionKey = sessionKey(sessionId);
+        if (!parsedTransaction || parsedTransaction.name !== 'startSession'
+            || String(parsedTransaction.args[0]).toLowerCase() !== expectedSessionKey.toLowerCase()) {
+            throw new ApiError(409, 'START_TRANSACTION_MISMATCH', 'Transaction calldata does not start this session');
+        }
+        let startedEvent = null;
+        for (const log of receipt.logs || []) {
+            if (String(log.address || '').toLowerCase() !== expectedAddress) continue;
+            try {
+                const parsed = this.walletService.rewardInterface.parseLog({ topics: log.topics, data: log.data });
+                if (parsed?.name === 'SessionStarted') startedEvent = parsed;
+            } catch { /* Ignore unrelated logs from the reward contract. */ }
+        }
+        if (!startedEvent
+            || String(startedEvent.args.sessionId).toLowerCase() !== expectedSessionKey.toLowerCase()
+            || String(startedEvent.args.beneficiary).toLowerCase() !== user.walletAddress.toLowerCase()
+            || (record.policySnapshot?.stakeAmount && String(startedEvent.args.amount) !== record.policySnapshot.stakeAmount)) {
+            throw new ApiError(409, 'SESSION_STARTED_EVENT_MISSING', 'Successful receipt lacks the expected SessionStarted event');
+        }
+        return { receipt, event: startedEvent };
     }
     invalidateDeviceState() { this.deviceVersion++; this.deviceCache = null; this.deviceRead = null; }
     async deviceState({ fresh = false } = {}) {
@@ -59,11 +153,14 @@ class LiveSessionService {
                 else if (latest.source_mode !== 'esp32') reason = 'The active source is not ESP32';
                 else if (!health.mqtt || sampleDevice !== this.deviceId || !Number.isFinite(ageMs) || ageMs < -1000 || ageMs > 5000) reason = 'No recent sensor telemetry is available';
                 const data = { ready: !reason, reason, deviceId: this.deviceId, source: latest.source_mode, latestReceivedAt: sample?.received_at || null,
-                    busySessionId: running?.session_id || null, minDurationS: 30, minSamples: 20 };
+                    busySessionId: running?.session_id || null, minDurationS: 30, sampleRateHz: 10,
+                    minSamplesAtMinimumDuration: 270 };
                 if (version === this.deviceVersion) this.deviceCache = { at: this.clock(), data };
                 return data;
             } catch (error) {
-                const data = { ready: false, reason: error.message, deviceId: this.deviceId, busySessionId: null, minDurationS: 30, minSamples: 20 };
+                const data = { ready: false, reason: error.message, deviceId: this.deviceId,
+                    busySessionId: null, minDurationS: 30, sampleRateHz: 10,
+                    minSamplesAtMinimumDuration: 270 };
                 if (version === this.deviceVersion) this.deviceCache = { at: this.clock(), data };
                 return data;
             }
@@ -75,7 +172,7 @@ class LiveSessionService {
         const [wallet, device] = await Promise.all([this.walletService.getWallet(userId), this.deviceState()]);
         const record = this.store.list(userId).find(row => row.stage && !FINAL.has(row.stage));
         let operatorReady = true;
-        try { await this.checkOperator(); } catch { operatorReady = false; }
+        try { await this.checkOperator(userId); } catch { operatorReady = false; }
         return { ...wallet, device: { ...device, operatorReady }, activeSessionId: record?.sessionId || null,
             canEnd: Boolean(record?.source === 'esp32' && ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(record.stage)),
             canStart: wallet.canStart && device.ready && operatorReady && !device.busySessionId };
@@ -134,7 +231,7 @@ class LiveSessionService {
                 if (record.endRequested) return this.advanceEnd(record);
                 return this.advanceStart(record);
             }
-            await this.checkOperator();
+            await this.checkOperator(userId);
             const [wallet, device] = await Promise.all([this.walletService.getWallet(userId), this.deviceState({ fresh: true })]);
             if (!device.ready) throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason);
             if (device.busySessionId || this.store.list().some(row => row.source === 'esp32' && ['OPENING_SENSOR', 'START_PENDING', 'RUNNING', 'STOPPING_SENSOR', 'COMPENSATING'].includes(row.stage))) {
@@ -162,26 +259,37 @@ class LiveSessionService {
             const user = this.walletService._user(userId);
             const id = identifier(sessionId, 'sessionId');
             let record = this.store.get(id);
-            if (record && record.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
-
-            const chain = (await this.walletService.getSession(userId, id)).session;
-            if (!chain.started) {
+            if (!record) throw new ApiError(409, 'SESSION_INTENT_REQUIRED', 'A live sensor lease must be prepared before signing the stake');
+            if (record.userId !== userId) throw new ApiError(403, 'SESSION_OWNER_MISMATCH', 'This session belongs to another user');
+            if (record.transactionHash && record.transactionHash.toLowerCase() !== body.transactionHash.toLowerCase()) {
+                throw new ApiError(409, 'SESSION_TRANSACTION_CONFLICT', 'A different start transaction is already linked to this session');
+            }
+            const verified = await this.verifyWalletStartReceipt(user, id, body.transactionHash, record);
+            if (!verified) {
+                record = this.store.update(id, { transactionHash: body.transactionHash, stage: 'WALLET_INTENT' });
                 return { success: true, httpStatus: 202, pending: true, sessionId: id, transactionHash: body.transactionHash, stage: 'START_PENDING' };
             }
+            if (record.intentExpiresAt <= this.clock()) {
+                record = this.store.update(id, { stage: 'START_PENDING', transactionHash: body.transactionHash,
+                    receiptBlockNumber: verified.receipt.blockNumber, expiredAt: this.clock() });
+                return this.freezeIncomplete(record, 'wallet_start_lease_expired');
+            }
+            record = this.store.update(id, {
+                stage: 'START_PENDING', transactionHash: body.transactionHash,
+                receiptBlockNumber: verified.receipt.blockNumber,
+                startedEvent: {
+                    sessionKey: String(verified.event.args.sessionId),
+                    beneficiary: String(verified.event.args.beneficiary),
+                    amount: String(verified.event.args.amount),
+                    startedAt: String(verified.event.args.startedAt)
+                }
+            });
+
+            const chain = (await this.walletService.getSession(userId, id)).session;
+            if (!chain.started) throw new ApiError(409, 'START_CHAIN_STATE_MISMATCH', 'Confirmed SessionStarted event is not reflected by the contract state');
             if (chain.beneficiary.toLowerCase() !== user.walletAddress.toLowerCase()) {
                 throw new ApiError(409, 'BENEFICIARY_MISMATCH', 'The on-chain session belongs to another wallet');
             }
-
-            record ||= this.store.save({
-                sessionId: id,
-                sessionRef: null,
-                userId,
-                beneficiary: user.walletAddress,
-                createdAt: new Date(this.clock()).toISOString(),
-                source: 'esp32',
-                deviceId: this.deviceId,
-                stage: 'START_PENDING'
-            });
             if (chain.settled) {
                 record = this.store.update(id, { stage: 'SETTLED', lastError: null, nextRetryAt: null });
                 return this.response(record, { duplicate: true, transactionHash: body.transactionHash });
@@ -191,7 +299,13 @@ class LiveSessionService {
                 let info = await this.iot.get(id);
                 if (!info) {
                     const device = await this.deviceState({ fresh: true });
-                    if (!device.ready || (device.busySessionId && device.busySessionId !== id)) {
+                    const competingLease = this.store.list().find(row => row.sessionId !== id
+                        && !FINAL.has(row.stage)
+                        && (row.stage !== 'WALLET_INTENT' || row.intentExpiresAt > this.clock()));
+                    if (!device.ready || (device.busySessionId && device.busySessionId !== id) || competingLease) {
+                        if (record.intentExpiresAt <= this.clock() || competingLease) {
+                            return this.freezeIncomplete(record, 'wallet_start_lease_expired_or_lost');
+                        }
                         throw new ApiError(503, 'SENSOR_UNAVAILABLE', device.reason || 'The sensor is busy');
                     }
                     info = await this.iot.start(id);
@@ -308,7 +422,7 @@ class LiveSessionService {
                     session: outcome.session, stats: outcome.stats, result: outcome.result });
                 this.log('SESSION_OUTCOME', record, { outcome: outcome.result.outcome, reason: outcome.result.reason });
             }
-            await this.checkOperator();
+            await this.checkOperator(record.userId);
             const result = await this.settler.processSessionOutcome(record.settlementPayload);
             if (result.pending) return this.response(record, { transactionHash: result.transactionHash });
             record = this.store.update(id, { stage: 'SETTLED', settlementResult: result, lastError: null, nextRetryAt: null });
@@ -323,7 +437,7 @@ class LiveSessionService {
         })).session;
         if (!chain.started) { this.store.update(record.sessionId, { stage: 'START_FAILED', recoveryReason: 'legacy_session_not_on_chain' }); return; }
         if (chain.settled) { this.store.update(record.sessionId, { stage: 'SETTLED', source: 'legacy' }); return; }
-        await this.checkOperator();
+        await this.checkOperator(record.userId);
         const info = await this.iot.get(record.sessionId);
         if (!info) { await this.freezeIncomplete(record, 'missing_iot_session'); return; }
         record = this.store.update(record.sessionId, { source: 'esp32', stage: 'RUNNING', iotSession: this.sensorInfo(info) });
@@ -334,6 +448,11 @@ class LiveSessionService {
             for (let record of this.store.list()) {
                 if (FINAL.has(record.stage) || record.stage === 'RECOVERY_REQUIRED' || (record.nextRetryAt && record.nextRetryAt > this.clock())) continue;
                 try {
+                    if (record.stage === 'WALLET_INTENT') {
+                        if (record.transactionHash) continue;
+                        if (record.intentExpiresAt <= this.clock()) this.store.update(record.sessionId, { stage: 'INTENT_EXPIRED', expiredAt: this.clock() });
+                        continue;
+                    }
                     if (!record.source) { await this.recoverLegacy(record); continue; }
                     if (record.stage === 'RUNNING') {
                         const chain = (await this.walletService.getSession(record.userId, record.sessionId)).session;

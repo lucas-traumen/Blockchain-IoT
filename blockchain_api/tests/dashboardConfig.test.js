@@ -41,6 +41,14 @@ test("dashboard proxies return JSON when an upstream API is unreachable", () => 
     assert.match(nginxConfig, /error_page 502 504 = @chain_api_unavailable/);
 });
 
+test("dashboard proxy sets CSP and browser security headers", () => {
+    assert.match(nginxConfig, /Content-Security-Policy/);
+    assert.match(source, /270 samples at 10 Hz/);
+    assert.match(nginxConfig, /X-Frame-Options "DENY"/);
+    assert.match(nginxConfig, /X-Content-Type-Options "nosniff"/);
+    assert.match(nginxConfig, /Referrer-Policy "no-referrer"/);
+});
+
 test("local demo validates proxy JSON before announcing readiness", () => {
     assert.match(demoScript, /wait_for_dashboard_chain_proxy/);
     assert.match(demoScript, /JSON\.parse\(fs\.readFileSync/);

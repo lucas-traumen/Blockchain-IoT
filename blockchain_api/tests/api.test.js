@@ -5,7 +5,7 @@ const { createApp } = require("../server");
 const { preparePayload, TYPES } = require("../eventPayload");
 const { fixture, payload, ADDRESS, CHAIN_ID } = require("./helpers");
 
-async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40) }) {
+async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40) }, customerService) {
     const f = fixture(t);
     const service = {
         getAdminAccess: () => require("../adminAccess").getAdminAccess({ contract: f.contract, wallet: f.owner }),
@@ -30,7 +30,7 @@ async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN
                 safety: { address: ADDRESS, deploymentBlock: 10 }, rewards: { tokenAddress: null, address: null, deploymentBlock: 0 } };
         }
     };
-    const server = createApp({ service, tokens }).listen(0, "127.0.0.1");
+    const server = createApp({ service, tokens, customerService }).listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => new Promise(resolve => server.close(resolve)));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -40,7 +40,7 @@ async function api(t, tokens = { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN
         if (origin) headers.Origin = origin;
         if (body !== undefined || raw !== undefined) headers["Content-Type"] = "application/json";
         const response = await fetch(base + path, { method, headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
-        return { status: response.status, body: await response.json(), allowOrigin: response.headers.get("access-control-allow-origin") };
+        return { status: response.status, body: await response.json(), headers: response.headers, allowOrigin: response.headers.get("access-control-allow-origin") };
     };
     return { ...f, tokens, call, base };
 }
@@ -129,6 +129,23 @@ test("HTTP validation, malformed JSON, size limit, conflict and pending statuses
     assert.equal(conflict.body.code, "IDEMPOTENCY_CONFLICT");
     const missing = await f.call("/api/events/historical/payload", { token: f.tokens.HRC_ADMIN_API_TOKEN });
     assert.equal(missing.status, 404);
+});
+
+test("API responses include security headers and wallet challenges are rate limited", async t => {
+    const f = await api(t, { HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_ADMIN_API_TOKEN: "a".repeat(40), HRC_APP_AUTH_MODE: "siwe" }, {
+        createChallenge: () => ({ success: true }), authenticateToken: () => null
+    });
+    const first = await f.call("/api/config");
+    assert.equal(first.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(first.headers.get("x-frame-options"), "DENY");
+    assert.match(first.headers.get("content-security-policy"), /default-src 'none'/);
+    let limited;
+    for (let index = 0; index < 21; index += 1) {
+        limited = await f.call("/api/auth/challenge", { method: "POST", body: { walletAddress: "0x0000000000000000000000000000000000000011", chainId: 31337 } });
+    }
+    assert.equal(limited.status, 429);
+    assert.equal(limited.body.code, "RATE_LIMITED");
+    assert.ok(limited.headers.get("retry-after"));
 });
 test("HTTP registered device signatures are verified before broadcast", async t => {
     const f = await api(t);

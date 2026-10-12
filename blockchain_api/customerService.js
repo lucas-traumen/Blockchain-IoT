@@ -98,7 +98,7 @@ class CustomerService {
         const configuredAdmins = String(env.HRC_APP_ADMIN_WALLETS || "")
             .split(",").map(value => value.trim()).filter(Boolean);
         const network = configuredNetwork(env);
-        const store = env.HRC_APP_STORE === "sqlite"
+        const store = env.HRC_APP_STORE !== "json"
             ? (() => { const { SqliteCustomerStore } = require("./sqliteStores"); return new SqliteCustomerStore(env.HRC_APP_DB_PATH || file.replace(/\.json$/, ".db")); })()
             : new CustomerStore(file);
         const service = new CustomerService({

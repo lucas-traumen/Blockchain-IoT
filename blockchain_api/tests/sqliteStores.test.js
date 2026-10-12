@@ -52,6 +52,9 @@ test("sqlite session store keeps session ownership and transaction snapshots", t
     assert.equal(store.list("user_1").length, 1);
     assert.equal(store.list("user_2").length, 0);
     assert.throws(() => store.save({ sessionId: "hrc-abc-demo", userId: "user_2" }), /Cannot change the owner/);
+    assert.equal(store.reassignOwner("user_1", "usr_wallet"), true);
+    assert.equal(store.list("user_1").length, 0);
+    assert.equal(store.get("hrc-abc-demo").userId, "usr_wallet");
 
     store.saveTransaction({ key: "stake:hrc-abc-demo", transactionHash: "0x1" });
     store.saveTransaction({ key: "stake:hrc-abc-demo", blockNumber: 7 });

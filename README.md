@@ -401,6 +401,9 @@ HRC_CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
 
 # App login/customer activity (MetaMask signs a short challenge; no private key leaves MetaMask)
 HRC_CUSTOMER_STORE_PATH=./data/customers.json
+HRC_APP_STORE=sqlite
+# HRC_APP_DB_PATH=./data/customers.db
+HRC_APP_AUTH_MODE=demo
 HRC_APP_CHAIN_ID=31337
 HRC_AUTH_CHALLENGE_TTL_S=300
 HRC_APP_SESSION_TTL_S=86400

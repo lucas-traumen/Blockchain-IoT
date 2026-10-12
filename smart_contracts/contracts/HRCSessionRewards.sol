@@ -70,6 +70,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     error RewardPoolCapExceeded(uint256 maximum, uint256 requested);
     error InsufficientSurplus(uint256 requested, uint256 available);
     error InvalidPolicy();
+    error ActiveStakesPreventPolicyChange();
     error TokenTransferFailed();
 
     // ======================================================
@@ -216,8 +217,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     // POLICY AND EMERGENCY CONTROLS
     // ======================================================
 
-    /// @notice Update the reward policy. Existing unsettled sessions keep their
-    ///         staked amount and are settled with the new policy.
+    /// @notice Update policy only when no session stake is escrowed.
     function setPolicy(
         uint256 newStakeAmount,
         uint256 newRewardAmount,
@@ -226,6 +226,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 newFullBonusDuration,
         uint256 newMaxRewardBonusPercent
     ) external onlyOwner {
+        if (escrowedStakeTotal > 0) revert ActiveStakesPreventPolicyChange();
         if (
             newStakeAmount == 0 ||
             newRewardAmount == 0 ||
@@ -450,27 +451,30 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             _transferTo(beneficiary, current.stakedAmount);
             stakeReturned = current.stakedAmount;
 
-            uint256 rewardDay = _rewardDay(block.timestamp);
-            uint256 sessionReward = rewardAmountForDuration(
-                block.timestamp - current.startedAt
-            );
-            if (lastRewardDay[beneficiary] == rewardDay) {
-                settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
-            } else if (rewardPoolBalance < sessionReward) {
-                settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
+            uint256 duration = block.timestamp - current.startedAt;
+            if (duration < MIN_REWARD_DURATION) {
+                settlementStatus = SETTLEMENT_NO_REWARD;
             } else {
-                rewardPoolBalance -= sessionReward;
-                _transferTo(beneficiary, sessionReward);
-                lastRewardDay[beneficiary] = rewardDay;
-                rewardPaid = sessionReward;
-                settlementStatus = SETTLEMENT_REWARDED;
+                uint256 rewardDay = _rewardDay(block.timestamp);
+                uint256 sessionReward = rewardAmountForDuration(duration);
+                if (lastRewardDay[beneficiary] == rewardDay) {
+                    settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
+                } else if (rewardPoolBalance < sessionReward) {
+                    settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
+                } else {
+                    rewardPoolBalance -= sessionReward;
+                    _transferTo(beneficiary, sessionReward);
+                    lastRewardDay[beneficiary] = rewardDay;
+                    rewardPaid = sessionReward;
+                    settlementStatus = SETTLEMENT_REWARDED;
 
-                emit RewardPaid(
-                    sessionId,
-                    beneficiary,
-                    sessionReward,
-                    rewardDay
-                );
+                    emit RewardPaid(
+                        sessionId,
+                        beneficiary,
+                        sessionReward,
+                        rewardDay
+                    );
+                }
             }
         } else if (outcome == OUTCOME_VIOLATION_CONFIRMED) {
             _transferTo(penaltyTreasury, penaltyAmount);
@@ -536,20 +540,25 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         }
 
         if (outcome == OUTCOME_VALID_NO_VIOLATION) {
-            stakeReturned = stakeAmount;
-            dailyLimitReached =
-                lastRewardDay[beneficiary] == _rewardDay(block.timestamp);
-            rewardPaid = current.started
-                ? rewardAmountForDuration(block.timestamp - current.startedAt)
-                : rewardAmount;
-            poolEmpty = rewardPoolBalance < rewardPaid;
-
-            if (dailyLimitReached) {
-                settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
-            } else if (poolEmpty) {
-                settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
+            stakeReturned = current.started ? current.stakedAmount : stakeAmount;
+            uint256 duration = current.started
+                ? block.timestamp - current.startedAt
+                : 0;
+            if (duration < MIN_REWARD_DURATION) {
+                settlementStatus = SETTLEMENT_NO_REWARD;
             } else {
-                settlementStatus = SETTLEMENT_REWARDED;
+                dailyLimitReached =
+                    lastRewardDay[beneficiary] == _rewardDay(block.timestamp);
+                rewardPaid = rewardAmountForDuration(duration);
+                poolEmpty = rewardPoolBalance < rewardPaid;
+
+                if (dailyLimitReached) {
+                    settlementStatus = SETTLEMENT_REWARD_DAILY_LIMIT;
+                } else if (poolEmpty) {
+                    settlementStatus = SETTLEMENT_REWARD_POOL_EMPTY;
+                } else {
+                    settlementStatus = SETTLEMENT_REWARDED;
+                }
             }
         } else if (outcome == OUTCOME_VIOLATION_CONFIRMED) {
             settlementStatus = SETTLEMENT_PENALTY;
@@ -608,6 +617,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         view
         returns (uint256)
     {
+        if (durationSeconds < MIN_REWARD_DURATION) return 0;
         if (durationSeconds <= MIN_REWARD_DURATION) return rewardAmount;
 
         uint256 bonusSeconds = durationSeconds - MIN_REWARD_DURATION;

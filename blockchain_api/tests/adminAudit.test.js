@@ -10,16 +10,16 @@ const { AuditLog } = require("../auditLog");
 
 const ADMIN_TOKEN = "a".repeat(40);
 
-async function fixture(t, { rewardService } = {}) {
+async function fixture(t, { rewardService, authMode = "demo", adminWallets = [] } = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "hrc-admin-"));
     const store = new CustomerStore(path.join(directory, "customers.json"));
-    const customerService = new CustomerService({ store, chainId: 31337, authMode: "wallet" });
+    const customerService = new CustomerService({ store, chainId: 31337, authMode: authMode === "demo" ? "wallet" : authMode, adminWallets });
     const app = createApp({
         service: { getAdminAccess: async () => ({ success: true, owner: "0xowner", backendAddress: "0xbackend", isOwner: true }) },
         customerService,
         rewardService,
         auditLog: new AuditLog({ store }),
-        tokens: { HRC_ADMIN_API_TOKEN: ADMIN_TOKEN, HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_APP_AUTH_MODE: "demo" }
+        tokens: { HRC_ADMIN_API_TOKEN: ADMIN_TOKEN, HRC_INGEST_API_TOKEN: "i".repeat(40), HRC_APP_AUTH_MODE: authMode }
     });
     const server = app.listen(0, "127.0.0.1");
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
@@ -34,6 +34,13 @@ async function fixture(t, { rewardService } = {}) {
         return { status: response.status, body: await response.json() };
     };
     return { call, store, auditLog: new AuditLog({ store }) };
+}
+
+async function walletToken(f, wallet) {
+    const challenge = await f.call("/api/auth/challenge", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337 }, token: null });
+    const signature = await wallet.signMessage(challenge.body.message);
+    const login = await f.call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature }, token: null });
+    return login.body.token;
 }
 
 function fakeRewardService(overrides = {}) {
@@ -93,9 +100,24 @@ test("admin reward routes require the admin token and are audited", async t => {
     assert.deepEqual(audit.body.entries.map(entry => entry.action), [
         "reward.treasury", "reward.pool.sweep", "reward.pool.fund", "reward.policy", "reward.unpause", "reward.pause"
     ]);
-    assert.equal(audit.body.entries[0].actor, "bob");
+    assert.equal(audit.body.entries[0].actor, "admin-api-token");
+    assert.ok(audit.body.entries.every(entry => entry.actor !== "alice" && entry.actor !== "bob"));
     assert.equal(audit.body.entries[0].status, "ok");
     assert.equal(audit.body.entries[3].details.stakeAmount, "2000000000000000000");
+});
+
+test("SIWE admin RBAC derives audit actor from the verified wallet and ignores actor headers", async t => {
+    const { ethers } = require("ethers");
+    const admin = ethers.Wallet.createRandom();
+    const customer = ethers.Wallet.createRandom();
+    const f = await fixture(t, { authMode: "siwe", adminWallets: [admin.address], rewardService: fakeRewardService() });
+    const adminToken = await walletToken(f, admin);
+    const customerToken = await walletToken(f, customer);
+    assert.equal((await f.call("/api/admin/reward/status", { token: ADMIN_TOKEN })).status, 401);
+    assert.equal((await f.call("/api/admin/reward/status", { token: customerToken })).status, 403);
+    assert.equal((await f.call("/api/admin/reward/pause", { method: "POST", token: adminToken, actor: "forged-actor" })).status, 200);
+    const entry = f.store.listAudit()[0];
+    assert.equal(entry.actor.toLowerCase(), admin.address.toLowerCase());
 });
 
 test("a failing privileged action is audited as an error and returns 503", async t => {

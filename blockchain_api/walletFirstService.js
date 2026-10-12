@@ -39,14 +39,11 @@ class WalletFirstService {
         const user = demo.loginWithWallet(authenticated.user.walletAddress);
         return {
             success: true,
-            // token: application identity (used by /api/me and the behavior API).
-            // sessionToken: reward-session identity for the /api/me/sessions routes.
             token: authenticated.token,
-            sessionToken: user.token,
             mode: authenticated.mode,
             expiresAt: authenticated.expiresAt,
-            user: user.user,
-            appUser: authenticated.user
+            user: authenticated.user,
+            rewardUser: user.user
         };
     }
 

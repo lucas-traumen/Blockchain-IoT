@@ -1,7 +1,7 @@
 // Isolated Hardhat integration: actual API, signed ERC-20/reward transactions and
 // event ledger. Sensor HTTP responses are explicitly test fixtures, never live data.
 const { expect } = require('chai');
-const { ethers } = require('hardhat');
+const { ethers, network } = require('hardhat');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -73,6 +73,8 @@ describe('Account sensor session API and contract ledger (isolated sensor fixtur
         expect(await f.token.balanceOf(f.user1.address)).to.equal(initial);
         const start=await f.call('/api/me/sessions/start','user_1',{sessionRef:'complete'});expect(start.status).to.equal(200);expect(start.data.stage).to.equal('RUNNING');
         expect(f.state.rows.has(start.data.sessionId)).to.equal(true);expect(await f.token.balanceOf(f.user1.address)).to.equal(initial-ethers.parseEther('2'));
+        const chainSession=await f.rewards.sessions(ethers.id(start.data.sessionId));
+        await network.provider.send('evm_setNextBlockTimestamp',[Number(chainSession.startedAt)+30]);
         const end=await f.call('/api/me/sessions/'+start.data.sessionId+'/end','user_1',{});expect(end.data.settled).to.equal(true);expect(end.data.rewardPaid).to.equal('3.0');
         expect(await f.token.balanceOf(f.user1.address)).to.equal(initial+ethers.parseEther('3'));
         const history=(await f.call('/api/me/wallet/transactions')).data.transactions;
@@ -107,7 +109,7 @@ describe('Account sensor session API and contract ledger (isolated sensor fixtur
         expect((await f.call('/api/me/wallet/transactions')).data.transactions.find(row=>row.action==='SETTLEMENT').walletDelta).to.equal('2.0');
     });
     it('the daily limit returns stake on a second valid session and the ledger shows zero additional reward',async()=>{
-        for(const ref of ['first','second']){await f.call('/api/me/wallet/approve','user_1',{});const start=(await f.call('/api/me/sessions/start','user_1',{sessionRef:ref})).data;await f.call('/api/me/sessions/'+start.sessionId+'/end','user_1',{});}
+        for(const ref of ['first','second']){await f.call('/api/me/wallet/approve','user_1',{});const start=(await f.call('/api/me/sessions/start','user_1',{sessionRef:ref})).data;const chainSession=await f.rewards.sessions(ethers.id(start.sessionId));await network.provider.send('evm_setNextBlockTimestamp',[Number(chainSession.startedAt)+30]);await f.call('/api/me/sessions/'+start.sessionId+'/end','user_1',{});}
         const latest=(await f.call('/api/me/wallet/transactions')).data.transactions.find(row=>row.action==='SETTLEMENT');expect(latest.walletDelta).to.equal('2.0');expect(latest.settlementStatusCode).to.equal(1);
         expect(await f.token.balanceOf(f.user1.address)).to.equal(ethers.parseEther('23'));
     });

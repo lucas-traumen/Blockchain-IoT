@@ -48,6 +48,16 @@ class DemoSessionStore {
         return Object.values(this.state.sessions).filter(record => !userId || record.userId === userId)
             .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(record => structuredClone(record));
     }
+    reassignOwner(fromUserId, toUserId) {
+        let changed = false;
+        for (const [sessionId, record] of Object.entries(this.state.sessions)) {
+            if (record.userId !== fromUserId) continue;
+            this.state.sessions[sessionId] = { ...record, userId: toUserId };
+            changed = true;
+        }
+        if (changed) this._write();
+        return changed;
+    }
     getTransaction(key) { return this.state.transactions[key] ? structuredClone(this.state.transactions[key]) : null; }
     saveTransaction(record) {
         this.state.transactions[record.key] = { ...this.state.transactions[record.key], ...record };

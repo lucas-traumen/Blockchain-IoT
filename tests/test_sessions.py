@@ -349,15 +349,16 @@ def test_session_stats(store, safety_configs):
     manager = SessionManager(store, "esp32_01")  # DB rỗng → mọi mẫu gán được
     info = manager.start_session()
     service = make_service(store, safety_configs, manager)
-    service.handle_message(TOPIC, json.dumps(make_payload(sequence=1)))  # CLEAR
+    service.handle_message(TOPIC, json.dumps(make_payload(sequence=1, monotonic_us=1_000_000)))  # CLEAR
     service.handle_message(
-        TOPIC, json.dumps(make_payload(sequence=2, distance_mm=400))
+        TOPIC, json.dumps(make_payload(sequence=2, monotonic_us=1_100_000, distance_mm=400))
     )  # VIOLATION
     service.handle_message(
         TOPIC,
         json.dumps(
             make_payload(
                 sequence=3,
+                monotonic_us=1_200_000,
                 valid=False,
                 distance_mm=None,
                 echo_us=None,
@@ -365,10 +366,16 @@ def test_session_stats(store, safety_configs):
             )
         ),
     )  # UNKNOWN
-    service.handle_message(TOPIC, json.dumps(make_payload(sequence=5)))  # CLEAR, gap 4
+    service.handle_message(TOPIC, json.dumps(make_payload(sequence=5, monotonic_us=1_300_000)))  # CLEAR, sequence gap
 
     stats = store.session_stats(info.session_id)
     assert stats["sample_count"] == 4
+    assert stats["raw_count"] == 4
+    assert stats["processed_count"] == 4
+    assert stats["processed_coverage"] == 1.0
+    assert stats["timing_span_s"] == pytest.approx(0.3)
+    assert stats["max_timing_gap_s"] == pytest.approx(0.1)
+    assert stats["mean_cadence_hz"] == pytest.approx(10.0)
     assert stats["late_count"] == 0
     assert stats["gap_count"] == 1
     assert stats["clear_count"] == 2

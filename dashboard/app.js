@@ -49,12 +49,10 @@ let rewardSummary = null;
 let rewardSessions = [];
 let rewardMessage = "Loading reward data...";
 let rewardsLoading = false;
-// sessionToken authenticates the reward-session routes for a wallet-first login;
-// token authenticates the application identity routes.
-let appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: null, error: null };
+let appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
 // Local, dependency-free view of the wallet-first state so the reward panel can
 // be exercised in isolation.
-function walletFirstActive() { return Boolean(appSession.sessionToken) && (appAuthMode === "wallet" || appAuthMode === "siwe"); }
+function walletFirstActive() { return Boolean(appSession.token) && (appAuthMode === "wallet" || appAuthMode === "siwe"); }
 let appAuthGeneration = 0;
 let pendingBehavior = [];
 let behaviorFlushTimer = null;
@@ -370,7 +368,7 @@ function renderDemoWallet() {
         end.textContent = demoBusy === 'end' ? 'Ending...' : active?.stage === 'SETTLEMENT_PENDING' ? 'Retry Settlement' : 'End Session';
     }
     const sensor = demoWallet?.device;
-    text('demoSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least 30 seconds / 20 samples${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
+    text('demoSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least 30 seconds / 270 samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
     const last = active || demoSessions[0];
     text('demoSessionState', last ? last.settled
         ? `${demoResultLabel(last)} · Stake returned +${formatDemoAmount(last.stakeReturned)} · Reward +${formatDemoAmount(last.rewardPaid)} · Penalty ${formatDemoAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
@@ -378,7 +376,9 @@ function renderDemoWallet() {
         : demoWallet && !ready ? 'Step 1: approve 2 HRC. Approval does not change your balance.' : 'Ready to open a live sensor session and lock 2 HRC.');
     renderDemoSessionTimer();
     const latest = [demoReceipt, demoTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
-    text('demoTransactionStatus', latest ? `${demoTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
+    text('demoTransactionStatus', demoReceipt?.stage
+        ? `${demoReceipt.stage} · ${demoReceipt.sessionId || 'session'} · tx ${demoReceipt.transactionHash || 'awaiting receipt'}`
+        : latest ? `${demoTransactionEvents(latest)} · block ${latest.blockNumber ?? '--'} · tx ${latest.transactionHash || '--'}` : 'No transaction recorded for this account.');
     updateDemoAccountPicker();
     renderDemoSessions();
     renderDemoTransactions();
@@ -404,6 +404,8 @@ async function loadDemoAccounts() {
 }
 
 function clearDemoSession() {
+    const token = demoSession.token;
+    if (token) void demoRequest('/api/demo/logout', { method: 'POST', token }).catch(() => {});
     demoSession = { token: null, user: null };
     demoWallet = null; demoSessions = []; demoTransactions = []; demoAdminOverview = null; demoReceipt = null; demoSessionRef = null;
     try { sessionStorage.removeItem('hrc-demo-session'); } catch { /* memory-only fallback */ }
@@ -485,7 +487,7 @@ async function approveDemoWallet() {
     const session = demoSession;
     demoBusy = 'approve'; demoMessage = 'Submitting HRC approval...'; renderDemoWallet();
     try {
-        const result = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))
+        const result = walletFirstActive()
             ? await sendWalletPrepared(await demoRequest('/api/me/wallet/prepare/approve', { token: session.token }))
             : await demoRequest('/api/me/wallet/approve', { method: 'POST', token: session.token });
         if (session !== demoSession) return;
@@ -511,14 +513,16 @@ async function startDemoSession() {
     demoBusy = 'start'; demoMessage = 'Submitting the 2 HRC session stake...'; renderDemoWallet();
     try {
         const prepared = await demoRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: demoSessionRef } });
-        const signed = (appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe')) ? await sendWalletPrepared(prepared) : prepared;
+        demoReceipt = { stage: 'PREPARED', sessionId: prepared.sessionId };
+        renderDemoWallet();
+        const signed = walletFirstActive() ? await sendWalletPrepared(prepared) : prepared;
         const result = prepared.mode === 'wallet-first'
             ? await demoRequest('/api/me/sessions/' + encodeURIComponent(prepared.sessionId) + '/confirm-start', {
                 method: 'POST', token: session.token, body: { transactionHash: signed.transactionHash }
             })
             : signed;
         if (session !== demoSession) return;
-        demoReceipt = result;
+        demoReceipt = { ...result, stage: result.pending ? 'START_PENDING' : result.stage === 'RUNNING' ? 'RUNNING' : 'CONFIRMED' };
         demoMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';
         if (!result.pending) {
             demoSessionRef = null;
@@ -534,9 +538,11 @@ async function endDemoSession() {
     if (demoBusy || demoSession.user?.role !== 'customer' || !active || !['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active.stage)) return;
     const session = demoSession;
     demoBusy = 'end'; demoMessage = 'Closing the sensor session and calculating its result...'; renderDemoWallet();
+    demoReceipt = { stage: 'SETTLING', sessionId: active.sessionId };
     try {
         const result = await demoRequest('/api/me/sessions/' + encodeURIComponent(active.sessionId) + '/end', { method: 'POST', token: session.token, body: {} });
         if (session !== demoSession) return;
+        demoReceipt = { ...result, stage: result.settled ? 'SETTLED' : 'SETTLING' };
         demoMessage = result.pending ? 'Settlement is pending. The backend will retry with the same evidence.' : 'Session settled. Stake return, reward and penalty are shown in the activity log.';
         await loadDemoAccountData({ fresh: true });
     } catch (error) { if (session === demoSession) demoMessage = 'End failed: ' + error.message + ' Retry keeps the same session.'; }
@@ -607,13 +613,15 @@ function renderAppIdentity() {
 }
 
 function saveAppSession() {
-    try { sessionStorage.setItem("hrc-app-session", JSON.stringify({ token: appSession.token, sessionToken: appSession.sessionToken, user: appSession.user })); }
+    try { sessionStorage.setItem("hrc-app-session", JSON.stringify({ token: appSession.token, user: appSession.user })); }
     catch { /* Private browsing can disable sessionStorage; memory auth still works. */ }
 }
 
 function clearAppSession() {
+    const token = appSession.token;
+    if (token) void appRequest('/api/auth/logout', { method: 'POST', token }).catch(() => {});
     appAuthGeneration++;
-    appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: null, error: null };
+    appSession = { token: null, user: null, key: null, inFlightKey: null, error: null };
     userBehavior = [];
     customerRows = [];
     customerMessage = "Connect an admin wallet to view customers.";
@@ -626,7 +634,7 @@ function clearAppSession() {
 function restoreAppSession() {
     try {
         const stored = JSON.parse(sessionStorage.getItem("hrc-app-session") || "null");
-        if (stored?.token && stored?.user) appSession = { ...appSession, token: stored.token, sessionToken: stored.sessionToken || null, user: stored.user };
+        if (stored?.token && stored?.user) appSession = { ...appSession, token: stored.token, user: stored.user };
     } catch { clearAppSession(); }
 }
 
@@ -734,7 +742,7 @@ async function syncWalletApplication(state) {
             } catch (error) {
                 if (!authFlowIsCurrent(run, key)) return;
                 if (error.status === 401) {
-                    appSession = { token: null, sessionToken: null, user: null, key: null, inFlightKey: key, error: "Sign the application login message in MetaMask." };
+                    appSession = { token: null, user: null, key: null, inFlightKey: key, error: "Sign the application login message in MetaMask." };
                     renderAppIdentity();
                 } else throw error;
             }
@@ -750,14 +758,13 @@ async function syncWalletApplication(state) {
             message: challenge.message, signature
         }});
         if (!authFlowIsCurrent(run, key)) return;
-        appSession = { token: login.token, sessionToken: login.sessionToken || null, user: login.user, key, inFlightKey: key, error: null };
+        appSession = { token: login.token, user: login.user, key, inFlightKey: key, error: null };
         saveAppSession();
         renderAppIdentity();
-        if ((appSession.sessionToken && (appAuthMode === 'wallet' || appAuthMode === 'siwe'))) {
-            // Wallet-first: the same signed login also authorizes the reward-session
-            // routes, so the panel reads the wallet's own history.
+        if (walletFirstActive()) {
+            // The SIWE session authorizes both application and reward-session routes.
             demoSession = {
-                token: appSession.sessionToken,
+                token: appSession.token,
                 user: { userId: login.user.userId, role: "customer", walletAddress: login.user.walletAddress, walletFirst: true }
             };
             demoSessionRef = pendingDemoSession(login.user.userId);

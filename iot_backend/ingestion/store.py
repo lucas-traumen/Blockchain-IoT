@@ -542,7 +542,9 @@ class Store:
     ) -> dict:
         """Thống kê một session: sample/late/gap/violation/clear/unknown counts.
 
-        - sample_count: số mẫu đã gán.
+        - sample_count/raw_count: số mẫu boundary/raw đã gán.
+        - processed_count/processed_coverage: số và tỷ lệ có assessment.
+        - timing_span_s/mean_cadence_hz/max_timing_gap_s: nhịp monotonic.
         - late_count: mẫu gán có is_late=1 trong raw_samples.
         - gap_count: tổng độ dài các khoảng sequence thiếu giữa min-max của
           các mẫu đã gán, tính riêng từng boot.
@@ -552,7 +554,8 @@ class Store:
         """
         with self._lock:
             sample_rows = self._conn.execute(
-                "SELECT ss.boot_id, ss.sequence, r.is_late FROM session_samples ss "
+                "SELECT ss.boot_id, ss.sequence, r.is_late, r.monotonic_us "
+                "FROM session_samples ss "
                 "LEFT JOIN raw_samples r "
                   "ON r.device_id=ss.device_id AND r.boot_id=ss.boot_id "
                  "AND r.sequence=ss.sequence "
@@ -581,6 +584,7 @@ class Store:
                 ).fetchall()
 
         late_count = sum(1 for row in sample_rows if row["is_late"])
+        raw_count = sum(1 for row in sample_rows if row["is_late"] is not None)
         gap_count = 0
         prev_boot: str | None = None
         prev_seq: int | None = None
@@ -590,6 +594,28 @@ class Store:
                 continue
             gap_count += row["sequence"] - prev_seq - 1
             prev_seq = row["sequence"]
+
+        monotonic_by_boot: dict[str, list[int]] = {}
+        for row in sample_rows:
+            value = row["monotonic_us"]
+            if value is not None:
+                monotonic_by_boot.setdefault(row["boot_id"], []).append(int(value))
+        timing_intervals = [
+            (current - previous) / 1_000_000
+            for values in monotonic_by_boot.values()
+            for previous, current in zip(values, values[1:])
+            if current > previous
+        ]
+        timing_span_s = max(
+            (max(values) - min(values)) / 1_000_000
+            for values in monotonic_by_boot.values()
+            if len(values) > 1
+        ) if any(len(values) > 1 for values in monotonic_by_boot.values()) else 0.0
+        max_timing_gap_s = max(timing_intervals, default=0.0)
+        mean_cadence_hz = (
+            (len(timing_intervals) / sum(timing_intervals))
+            if timing_intervals and sum(timing_intervals) > 0 else None
+        )
 
         counts = {STATUS_CLEAR: 0, STATUS_VIOLATION: 0, STATUS_UNKNOWN: 0}
         for row in processed_rows:
@@ -617,8 +643,16 @@ class Store:
 
         return {
             "sample_count": len(sample_rows),
+            "raw_count": raw_count,
+            "processed_count": len(processed_rows),
+            "processed_coverage": (
+                len(processed_rows) / raw_count if raw_count else 0.0
+            ),
             "late_count": late_count,
             "gap_count": gap_count,
+            "timing_span_s": timing_span_s,
+            "mean_cadence_hz": mean_cadence_hz,
+            "max_timing_gap_s": max_timing_gap_s,
             "violation_count": counts[STATUS_VIOLATION],
             "clear_count": counts[STATUS_CLEAR],
             "unknown_count": counts[STATUS_UNKNOWN],

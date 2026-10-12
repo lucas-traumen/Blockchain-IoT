@@ -29,9 +29,40 @@ function requireUserRole(customerService, role) {
     };
 }
 
+function rateLimit({ windowMs = 60000, max = 20 } = {}) {
+    const clients = new Map();
+    let requests = 0;
+    return (req, res, next) => {
+        const now = Date.now();
+        const key = req.ip || req.socket.remoteAddress || "unknown";
+        let client = clients.get(key);
+        if (!client || client.resetAt <= now) client = { count: 0, resetAt: now + windowMs };
+        client.count += 1;
+        clients.set(key, client);
+        requests += 1;
+        if ((requests & 255) === 0) {
+            for (const [address, entry] of clients) if (entry.resetAt <= now) clients.delete(address);
+        }
+        if (client.count > max) {
+            res.set("Retry-After", String(Math.max(1, Math.ceil((client.resetAt - now) / 1000))));
+            return res.status(429).json({ success: false, code: "RATE_LIMITED", error: "Too many requests; retry later" });
+        }
+        next();
+    };
+}
+
 function requireDemoSession(demoService, role) {
     return (req, res, next) => {
-        const authenticated = demoService().authenticateToken(appToken(req));
+        const token = appToken(req);
+        let authenticated = demoService().authenticateToken(token);
+        if (!authenticated) {
+            const appAuth = requireUserSessionFromToken(req, token);
+            if (appAuth) {
+                const rewardUser = demoService().walletUser(appAuth.user.walletAddress);
+                authenticated = { user: rewardUser, session: appAuth.session };
+                req.appSession = appAuth.session;
+            }
+        }
         if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "Choose a demo account first" });
         if (role && authenticated.user.role !== role) {
             return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This demo account is read-only for the requested operation" });
@@ -42,7 +73,18 @@ function requireDemoSession(demoService, role) {
     };
 }
 
+function requireUserSessionFromToken(req, token) {
+    const customerService = req.app.locals.customerService;
+    const authenticated = customerService?.authenticateToken(token);
+    if (!authenticated) return null;
+    req.appUser = authenticated.user;
+    return authenticated;
+}
+
 function createApp({ service, customerService, demoService, liveService, rewardService, auditLog, tokens = process.env } = {}) {
+    if (tokens.NODE_ENV === "production" && !["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) {
+        throw new Error("Production requires HRC_APP_AUTH_MODE=siwe or wallet for RBAC admin access");
+    }
     service ||= require("./safetyService");
     let resolvedCustomerService = customerService;
     const getCustomerService = () => resolvedCustomerService || (resolvedCustomerService = require("./customerService").getCustomerService(tokens));
@@ -57,8 +99,26 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         .buildWalletFirstService(getCustomerService(), () => { try { return getDemoService(); } catch { return null; } }));
     let resolvedAuditLog = auditLog || null;
     const getAuditLog = () => resolvedAuditLog || (resolvedAuditLog = new (require("./auditLog").AuditLog)({ store: getCustomerService().store }));
-    const adminActor = req => req.get("x-hrc-actor") || "admin-token";
+    const prepareWalletStart = async (userId, input) => {
+        const prepared = await getWalletFirstService().prepareStartSession(userId, input);
+        await getLiveService().reserveWalletStart(userId, prepared.sessionId);
+        return { ...prepared, stage: "PREPARED", intentTtlMs: 120000 };
+    };
+    const adminActor = req => req.appUser?.walletAddress || "admin-api-token";
+    const requireExternalPolicyGovernance = (req, res, next) => {
+        if (tokens.NODE_ENV === "production") {
+            return res.status(501).json({ success: false, code: "POLICY_MULTISIG_REQUIRED",
+                error: "Policy changes must be submitted by the configured contract multisig or timelock" });
+        }
+        next();
+    };
+    const requireAdmin = (req, res, next) => {
+        if (["wallet", "siwe"].includes(tokens.HRC_APP_AUTH_MODE)) return requireUserRole(getCustomerService, "admin")(req, res, next);
+        return requireToken("admin", tokens)(req, res, next);
+    };
     const app = express();
+    app.set("trust proxy", tokens.HRC_TRUST_PROXY === "true" ? 1 : false);
+    app.locals.customerService = { authenticateToken: token => getCustomerService().authenticateToken(token) };
     app.locals.startLiveRecovery = () => getLiveService().startRecovery();
     app.locals.stopLiveRecovery = () => resolvedLiveService?.stopRecovery();
     const allowedOrigins = String(tokens.HRC_CORS_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080")
@@ -75,7 +135,25 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         if (/^\/api\/(auth|demo|me|behavior|customers|tasks)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
         next();
     });
+    app.use((req, res, next) => {
+        res.set({
+            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+        });
+        if (tokens.NODE_ENV === "production" && req.secure) {
+            res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+        }
+        if (tokens.NODE_ENV === "production" && !req.secure) {
+            return res.status(426).json({ success: false, code: "HTTPS_REQUIRED", error: "HTTPS is required" });
+        }
+        next();
+    });
     app.use(express.json({ limit: "64kb", strict: true }));
+    const authRateLimit = rateLimit({ windowMs: 60000, max: 20 });
+    const adminRateLimit = rateLimit({ windowMs: 60000, max: 60 });
     const respond = async (res, operation, defaultFailure = 503) => {
         const result = await operation();
         const { httpStatus, ...body } = result;
@@ -107,20 +185,20 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         }
         next();
     };
-    app.post("/api/auth/challenge", requireWalletLogin, async (req, res) => {
+    app.post("/api/auth/challenge", authRateLimit, requireWalletLogin, async (req, res) => {
         await respond(res, () => getCustomerService().createChallenge(req.body));
     });
-    app.post("/api/auth/wallet", requireWalletLogin, async (req, res) => {
+    app.post("/api/auth/wallet", authRateLimit, requireWalletLogin, async (req, res) => {
         await respond(res, () => getWalletFirstService().login(req.body || {}), 401);
     });
     app.get("/api/demo/accounts", async (req, res) => {
         await respond(res, () => ({ success: true, accounts: getDemoService().listAccounts() }));
     });
-    app.post("/api/demo/login", async (req, res) => {
+    app.post("/api/demo/login", authRateLimit, async (req, res) => {
         await respond(res, () => getDemoService().login(req.body?.userId), 401);
     });
     // Alias kept short for the dashboard and local smoke scripts.
-    app.post("/api/auth/demo", async (req, res) => {
+    app.post("/api/auth/demo", authRateLimit, async (req, res) => {
         await respond(res, () => getDemoService().login(req.body?.userId), 401);
     });
     app.post("/api/demo/logout", requireDemoSession(getDemoService), async (req, res) => {
@@ -142,7 +220,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         await respond(res, () => getWalletFirstService().prepareApproval(req.demoUser.userId), 400);
     });
     app.get("/api/me/wallet/prepare/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
-        await respond(res, () => getWalletFirstService().prepareStartSession(req.demoUser.userId, req.query), 400);
+        await respond(res, () => prepareWalletStart(req.demoUser.userId, req.query), 400);
     });
     app.get("/api/me/wallet/prepare/end/:sessionId", requireDemoSession(getDemoService, "customer"), async (req, res) => {
         await respond(res, () => getWalletFirstService().prepareEndSession(req.demoUser.userId, req.params.sessionId), 400);
@@ -156,7 +234,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
     });
     app.post("/api/me/sessions/start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
         await respond(res, () => getDemoService().isWalletFirst(req.demoUser.userId)
-            ? getWalletFirstService().prepareStartSession(req.demoUser.userId, req.body || {})
+            ? prepareWalletStart(req.demoUser.userId, req.body || {})
             : getLiveService().start(req.demoUser.userId, req.body || {}));
     });
     app.post("/api/me/sessions/:sessionId/confirm-start", requireDemoSession(getDemoService, "customer"), async (req, res) => {
@@ -231,43 +309,43 @@ function createApp({ service, customerService, demoService, liveService, rewardS
     app.get("/api/transactions", async (req, res) => {
         await respond(res, () => service.getAllTransactions());
     });
-    app.get("/api/admin/access", requireToken("admin", tokens), async (req, res) => {
+    app.get("/api/admin/access", adminRateLimit, requireAdmin, async (req, res) => {
         res.set("Cache-Control", "no-store");
         await respond(res, () => service.getAdminAccess());
     });
-    app.get("/api/admin/reward/status", requireToken("admin", tokens), async (req, res) => {
+    app.get("/api/admin/reward/status", adminRateLimit, requireAdmin, async (req, res) => {
         res.set("Cache-Control", "no-store");
         await respond(res, () => getRewardService().getAdminStatus());
     });
-    app.post("/api/admin/reward/pause", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/pause", adminRateLimit, requireAdmin, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pause" },
             () => getRewardService().setPaused(true)));
     });
-    app.post("/api/admin/reward/unpause", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/unpause", adminRateLimit, requireAdmin, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.unpause" },
             () => getRewardService().setPaused(false)));
     });
-    app.post("/api/admin/reward/policy", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/policy", adminRateLimit, requireAdmin, requireExternalPolicyGovernance, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.policy", details: req.body || {} },
             () => getRewardService().setPolicy(req.body || {})));
     });
-    app.post("/api/admin/reward/pool/fund", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/pool/fund", adminRateLimit, requireAdmin, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pool.fund", details: { amount: req.body?.amount } },
             () => getRewardService().fundRewardPool(req.body?.amount)));
     });
-    app.post("/api/admin/reward/pool/sweep", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/pool/sweep", adminRateLimit, requireAdmin, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.pool.sweep", target: req.body?.to, details: { amount: req.body?.amount } },
             () => getRewardService().sweepExcessToken(req.body?.to, req.body?.amount)));
     });
-    app.post("/api/admin/reward/treasury", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/admin/reward/treasury", adminRateLimit, requireAdmin, async (req, res) => {
         await respond(res, () => getAuditLog().run({ actor: adminActor(req), action: "reward.treasury", target: req.body?.treasury },
             () => getRewardService().setPenaltyTreasury(req.body?.treasury)));
     });
-    app.get("/api/admin/audit", requireToken("admin", tokens), async (req, res) => {
+    app.get("/api/admin/audit", adminRateLimit, requireAdmin, async (req, res) => {
         res.set("Cache-Control", "no-store");
         await respond(res, () => getAuditLog().list(req.query.limit));
     });
-    app.get("/api/events/:eventId/payload", requireToken("admin", tokens), async (req, res) => {
+    app.get("/api/events/:eventId/payload", adminRateLimit, requireAdmin, async (req, res) => {
         identifier(req.params.eventId, "eventId");
         await respond(res, () => service.getStoredPayload(req.params.eventId));
     });
@@ -279,7 +357,7 @@ function createApp({ service, customerService, demoService, liveService, rewardS
         identifier(req.params.deviceId, "deviceId");
         await respond(res, () => service.getRobotStatus(req.params.deviceId));
     });
-    app.post("/api/robots/:deviceId/unlock", requireToken("admin", tokens), async (req, res) => {
+    app.post("/api/robots/:deviceId/unlock", adminRateLimit, requireAdmin, async (req, res) => {
         identifier(req.params.deviceId, "deviceId");
         await respond(res, () => service.unlockRobot(req.params.deviceId));
     });

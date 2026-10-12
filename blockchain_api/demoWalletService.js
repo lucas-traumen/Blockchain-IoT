@@ -10,6 +10,7 @@ const { sessionKey } = require("./rewardPolicy");
 const { DemoSessionStore } = require("./demoSessionStore");
 const { DurableContractWriter } = require("./durableContractWriter");
 const { withSignerWrite } = require("./signerQueue");
+const { configuredNetwork, chainIdForNetwork } = require("./networkConfig");
 const { DEMO_WALLETS, HARDHAT_MNEMONIC } = require("../demo_wallets");
 
 const DEFAULT_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
@@ -150,6 +151,11 @@ class DemoWalletService {
         }
         const tokenArtifact = readJson(env.HRC_REWARD_TOKEN_ABI || DEFAULT_TOKEN_ABI);
         const rewardArtifact = readJson(env.HRC_REWARD_ABI || DEFAULT_REWARD_ABI);
+        const networkName = configuredNetwork(env, deployment.network || "localhost");
+        const chainId = Number(deployment.chainId || chainIdForNetwork(networkName));
+        if (chainId !== chainIdForNetwork(networkName)) {
+            throw new ApiError(503, "REWARD_NETWORK_MISMATCH", "Reward deployment chainId does not match HRC_BLOCKCHAIN_NETWORK");
+        }
         const provider = createRpcProvider(env.RPC_URL || "http://127.0.0.1:8545", { cacheTimeout: -1 });
         const users = new Map(DEMO_WALLETS.map(spec => {
             const wallet = deriveWallet(spec.derivationIndex, provider, env);
@@ -157,7 +163,7 @@ class DemoWalletService {
         }));
         const config = {
             tokenAddress, rewardAddress,
-            chainId: Number(deployment.chainId || env.HRC_APP_CHAIN_ID || 31337),
+            chainId,
             deploymentTransactions: deployment.deployTxHashes || {},
             deploymentBlock: positiveSafeInteger(env.HRC_REWARD_DEPLOYMENT_BLOCK ?? deployment.deploymentBlock ?? 0, "HRC_REWARD_DEPLOYMENT_BLOCK"),
             tokenAbi: tokenArtifact?.abi || TOKEN_ABI,
@@ -166,7 +172,7 @@ class DemoWalletService {
         const token = new ethers.Contract(tokenAddress, config.tokenAbi, provider);
         const rewards = new ethers.Contract(rewardAddress, config.rewardAbi, provider);
         const sessionFile = env.HRC_DEMO_SESSION_STORE_PATH || path.join(__dirname, "data", "demo-sessions.json");
-        const store = env.HRC_APP_STORE === "sqlite"
+        const store = env.HRC_APP_STORE !== "json"
             ? (() => { const { SqliteDemoSessionStore } = require("./sqliteStores"); return new SqliteDemoSessionStore(env.HRC_APP_SESSION_DB_PATH || sessionFile.replace(/\.json$/, ".db")); })()
             : new DemoSessionStore(sessionFile);
         const transactionSender = new DurableContractWriter({ provider, store });
@@ -182,7 +188,9 @@ class DemoWalletService {
     ///         chain state and prepare transactions for the wallet to sign.
     walletUser(walletAddress) {
         const address = ethers.getAddress(walletAddress);
-        const userId = "wallet_" + address.slice(2).toLowerCase();
+        const userId = "usr_" + crypto.createHash("sha256").update(address.toLowerCase()).digest("hex").slice(0, 24);
+        const legacyUserId = "wallet_" + address.slice(2).toLowerCase();
+        this.store.reassignOwner?.(legacyUserId, userId);
         const existing = this.users.get(userId);
         if (existing) return existing;
         const user = {
@@ -199,9 +207,7 @@ class DemoWalletService {
 
     loginWithWallet(walletAddress) {
         const user = this.walletUser(walletAddress);
-        const token = crypto.randomBytes(32).toString("base64url");
-        this.sessionsByToken.set(token, { userId: user.userId, createdAt: Date.now() });
-        return { success: true, token, user: this.publicUser(user) };
+        return { success: true, user: this.publicUser(user) };
     }
 
     login(userId) {
@@ -254,11 +260,24 @@ class DemoWalletService {
         return Boolean(this.users.get(userId)?.walletFirst);
     }
 
-    async _requireLocalChain() {
+    async _requireConfiguredChain(userId) {
         let network;
         try { network = await this.provider.getNetwork(); }
-        catch { throw new ApiError(503, "LOCAL_CHAIN_UNAVAILABLE", "Hardhat local RPC is unavailable. Transactions are paused; session references are preserved."); }
-        if (Number(network.chainId) !== 31337) throw new ApiError(503, "LOCAL_CHAIN_REQUIRED", "Demo wallets require Hardhat local chain 31337");
+        catch { throw new ApiError(503, "REWARD_CHAIN_UNAVAILABLE", "Configured reward RPC is unavailable. Transactions are paused; session references are preserved."); }
+        const walletFirst = userId ? this.isWalletFirst(userId) : false;
+        const expectedChainId = userId && !walletFirst ? 31337 : Number(this.config.chainId);
+        if (Number(network.chainId) !== expectedChainId) {
+            throw new ApiError(503, walletFirst ? "WRONG_CHAIN" : "LOCAL_CHAIN_REQUIRED",
+                walletFirst ? `Wallet reward service requires configured chain ${expectedChainId}` : "Demo wallets require Hardhat local chain 31337");
+        }
+        if (walletFirst) {
+            const [tokenCode, rewardCode] = await Promise.all([
+                this.provider.getCode(this.config.tokenAddress), this.provider.getCode(this.config.rewardAddress)
+            ]);
+            if (tokenCode === "0x" || rewardCode === "0x") {
+                throw new ApiError(503, "REWARD_DEPLOYMENT_MISSING", "Configured reward contracts are not deployed on this chain");
+            }
+        }
         const anchors = Object.entries(this.config.deploymentTransactions || {}).map(([name, hash]) => ({ hash,
             address: name === "token" ? this.config.tokenAddress : this.config.rewardAddress }));
         const confirmed = this.store.listTransactions().filter(row => row.status === "CONFIRMED")
@@ -278,7 +297,7 @@ class DemoWalletService {
         this._user(userId);
         const previous = this.pendingWrites.get(userId) || Promise.resolve();
         const current = previous.catch(() => {}).then(async () => {
-            await this._requireLocalChain();
+            await this._requireConfiguredChain(userId);
             return withSignerWrite(this._user(userId).walletAddress, operation);
         });
         this.pendingWrites.set(userId, current);
@@ -289,7 +308,7 @@ class DemoWalletService {
     async getWallet(userId) {
         const user = this._user(userId);
         const [network, balance, allowance, stakeAmount, symbol, decimals] = await Promise.all([
-            this._requireLocalChain(), this.token.balanceOf(user.walletAddress),
+            this._requireConfiguredChain(userId), this.token.balanceOf(user.walletAddress),
             this.token.allowance(user.walletAddress, this.config.rewardAddress),
             this.rewards.stakeAmount(), this.token.symbol(), this.token.decimals()
         ]);
@@ -384,7 +403,7 @@ class DemoWalletService {
 
     async getTransactions(userId) {
         const user = this._user(userId);
-        await this._requireLocalChain();
+        await this._requireConfiguredChain(userId);
         const ownerTopic = ethers.zeroPadValue(user.walletAddress, 32);
         const transferTopic = ethers.id("Transfer(address,address,uint256)");
         const groups = await Promise.all([

@@ -946,3 +946,38 @@ safety outcome.
   create a second settlement; contract token balance = reward pool + escrow.
 - API restart preserves chain, manifests and session records, but reward login
   tokens are in-memory; reconnect/sign SIWE after an API restart.
+
+## Reward duration, policy and telemetry coverage (R22a/b, 2026-10-12)
+
+- `HRCSessionRewards.setPolicy()` rejects changes while `escrowedStakeTotal > 0`.
+  This preserves the stake/pool accounting invariant without per-session policy
+  snapshots. Policy changes remain possible after every stake settles.
+- A valid session below `MIN_REWARD_DURATION` returns its stake but receives no
+  reward; `previewSettlement()` and `rewardAmountForDuration()` use the same
+  minimum. Confirmed violation still follows the penalty outcome.
+- Reward eligibility expects 10 Hz telemetry: at least 90% of expected samples
+  (minimum 270 for 30 seconds), >=95% processed/raw coverage, 8–12 Hz average
+  cadence, monotonic timing span >=90% of wall duration, and no timing gap above
+  500 ms. Missing coverage/timing metadata fails closed as INCOMPLETE.
+- Evidence: Hardhat 83 passing, Python full suite 449 passed/12 skipped,
+  blockchain API 135 passing. These are source-level changes; `HRCSessionRewards`
+  is not a proxy, so every deployed contract needs a new deployment before the
+  protections apply on-chain. Do not overwrite a running deployment implicitly.
+
+## Wallet start and remaining hardening (R22c–f, 2026-10-12)
+
+- Wallet-first preparation creates a persisted `WALLET_INTENT` with a 120-second
+  sensor lease and policy snapshot before unsigned calldata is returned. A
+  successful receipt must match configured chain, `from`, reward-contract `to`,
+  transaction hash, `startSession(sessionKey)` calldata and `SessionStarted`
+  event/session/beneficiary/stake. Pending receipts do not start the sensor; a
+  late confirmed stake after lease expiry is frozen as incomplete for recovery.
+- Focused lifecycle tests now exercise pending then confirmed receipts, wrong
+  chain/sender/recipient/status/calldata/event, competing lease and TTL expiry.
+  Focused result: 21 passing.
+- Identity consolidation, configured-chain routing and admin/security controls
+  have partial source changes and tests only. Do not represent R22d–f as done:
+  actual SQLite migration, Sepolia/Amoy deployment/RPC, production reverse-proxy
+  TLS/HSTS behavior, browser CSP compatibility and multisig/timelock ownership
+  transfer remain unverified or undeployed. This work did not deploy contracts,
+  alter a running chain, transfer ownership or configure external TLS.

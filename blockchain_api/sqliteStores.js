@@ -140,6 +140,22 @@ class SqliteDemoSessionStore {
             : this.db.prepare("SELECT data FROM demo_sessions ORDER BY createdAt DESC").all();
         return rows.map(row => parse(row.data));
     }
+    reassignOwner(fromUserId, toUserId) {
+        const records = this.list(fromUserId);
+        if (!records.length) return false;
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const update = this.db.prepare("UPDATE demo_sessions SET userId = ?, data = ? WHERE sessionId = ? AND userId = ?");
+            for (const record of records) {
+                update.run(toUserId, JSON.stringify({ ...record, userId: toUserId }), record.sessionId, fromUserId);
+            }
+            this.db.exec("COMMIT");
+        } catch (error) {
+            try { this.db.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
+            throw error;
+        }
+        return true;
+    }
     getTransaction(key) { return parse(this.db.prepare("SELECT data FROM demo_transactions WHERE key = ?").get(key)?.data ?? null); }
     saveTransaction(record) {
         const next = { ...this.getTransaction(record.key), ...record };

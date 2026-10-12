@@ -83,6 +83,14 @@ async function settle(
     outcome,
     labelSuffix = label
 ) {
+    if (outcome === VALID) {
+        const current = await rewards.getSession(sessionId(label));
+        const minimumEnd = Number(current.startedAt) + Number(await rewards.MIN_REWARD_DURATION());
+        const block = await ethers.provider.getBlock("latest");
+        if (Number(block.timestamp) < minimumEnd) {
+            await ethers.provider.send("evm_setNextBlockTimestamp", [minimumEnd]);
+        }
+    }
     return rewards.connect(operator).submitSessionOutcome(
         sessionId(label),
         beneficiary.address,
@@ -158,15 +166,7 @@ describe("HRCSessionRewards policy", function () {
         expect(await token.balanceOf(user.address)).to.equal(userBefore - COIN("2"));
         expect(await rewards.escrowedStakeTotal()).to.equal(COIN("2"));
 
-        await expect(
-            rewards.connect(operator).submitSessionOutcome(
-                id,
-                user.address,
-                VALID,
-                hash,
-                1_791_532_800
-            )
-        )
+        await expect(settle(rewards, operator, "valid", user, VALID))
             .to.emit(rewards, "RewardPaid")
             .withArgs(id, user.address, COIN("3"), anyValue)
             .and.to.emit(rewards, "SessionSettled")
@@ -186,6 +186,34 @@ describe("HRCSessionRewards policy", function () {
         expect(await rewards.rewardPoolBalance()).to.equal(COIN("997"));
         expect(await rewards.escrowedStakeTotal()).to.equal(0);
         expect(await rewards.hasSettled(id)).to.equal(true);
+    });
+
+    it("does not pay a reward for a session shorter than the minimum duration", async function () {
+        const { token, rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("short-session");
+        const before = await token.balanceOf(user.address);
+
+        await start(rewards, user, "short-session");
+        const started = await rewards.getSession(id);
+        await time.increaseTo(Number(started.startedAt) + 1);
+
+        const preview = await rewards.previewSettlement(id, user.address, VALID);
+        expect(preview.settlementStatus).to.equal(4);
+        expect(preview.rewardPaid).to.equal(0);
+
+        await expect(rewards.connect(operator).submitSessionOutcome(
+            id, user.address, VALID, evidence("short-session"), 1_791_532_800
+        ))
+            .to.emit(rewards, "SessionSettled")
+            .withArgs(id, user.address, VALID, 4, COIN("2"), 0, 0, evidence("short-session"), anyValue)
+            .and.to.not.emit(rewards, "RewardPaid");
+
+        expect(await token.balanceOf(user.address)).to.equal(before);
+        expect(await rewards.rewardPoolBalance()).to.equal(COIN("1000"));
+        expect(await rewards.escrowedStakeTotal()).to.equal(0);
+        expect(await token.balanceOf(await rewards.getAddress())).to.equal(
+            await rewards.rewardPoolBalance()
+        );
     });
 
     it("scales a valid reward from three to six coins and caps the bonus at 100 percent", async function () {
@@ -373,6 +401,9 @@ describe("HRCSessionRewards policy", function () {
 
     it("preview reports the same fixed policy before settlement", async function () {
         const { rewards, user } = await loadFixture(deploySystem);
+        await start(rewards, user, "preview");
+        const started = await rewards.getSession(sessionId("preview"));
+        await time.increaseTo(Number(started.startedAt) + 30);
         const preview = await rewards.previewSettlement(
             sessionId("preview"),
             user.address,
@@ -451,9 +482,27 @@ describe("HRCSessionRewards owner controls", function () {
         expect(await rewards.FULL_BONUS_DURATION()).to.equal(20);
         expect(await rewards.MAX_REWARD_BONUS_PERCENT()).to.equal(50);
         // base reward below the threshold, half bonus at the midpoint, capped after
-        expect(await rewards.rewardAmountForDuration(9)).to.equal(COIN("5"));
+        expect(await rewards.rewardAmountForDuration(9)).to.equal(0);
+        expect(await rewards.rewardAmountForDuration(10)).to.equal(COIN("5"));
         expect(await rewards.rewardAmountForDuration(15)).to.equal(COIN("6.25"));
         expect(await rewards.rewardAmountForDuration(20)).to.equal(COIN("7.5"));
+    });
+
+    it("prevents policy changes while stake is escrowed and preserves accounting", async function () {
+        const { token, rewards, owner, operator, user, treasury } = await loadFixture(deploySystem);
+        const rewardsAddress = await rewards.getAddress();
+        await start(rewards, user, "policy-escrow");
+
+        await expect(rewards.connect(owner).setPolicy(
+            COIN("10"), COIN("3"), COIN("10"), 30, 60, 100
+        )).to.be.revertedWithCustomError(rewards, "ActiveStakesPreventPolicyChange");
+
+        await settle(rewards, operator, "policy-escrow", user, VIOLATION);
+        expect(await token.balanceOf(rewardsAddress)).to.equal(
+            (await rewards.rewardPoolBalance()) + (await rewards.escrowedStakeTotal())
+        );
+        expect(await token.balanceOf(treasury.address)).to.equal(COIN("2"));
+        expect(await rewards.rewardPoolBalance()).to.equal(COIN("1000"));
     });
 
     it("rejects an invalid policy", async function () {

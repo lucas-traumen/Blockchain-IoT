@@ -1536,3 +1536,48 @@ Tx `0xb25a50e57c6f2c133afe6cd1a8d0ec2fb9ecccb7e056eeb8843d3aa8898eccda`.
 API đã khởi động lại với đúng env/deployment cũ; login token in-memory cần ký
 đăng nhập lại. Browser verifier PASS 9 scenario, timer layout desktop/mobile có
 fixture UI (không broadcast), còn runtime End dùng dữ liệu IoT/chain thật.
+
+## R22 — Reward session integrity and production hardening — 2026-10-12
+
+Người dùng duyệt triển khai các vấn đề P0–P2. Phạm vi được chia thành các
+milestone có kiểm thử riêng; ưu tiên xử lý trực tiếp P0 trước. Checkpoint/task
+tool OpenCode không khả dụng trong phiên Codex này; không tạo session/ID giả.
+
+| Milestone | Phạm vi | Tiêu chí nghiệm thu | Trạng thái |
+| --- | --- | --- | --- |
+| R22a P0 contract | `HRCSessionRewards.sol`, `HRCReward.js`, `DemoLiveSessions.js` | Không đổi policy khi còn escrow; settlement/preview không thưởng dưới min duration; token balance = pool + escrow sau settlement | source/tests done; redeploy pending |
+| R22b P0 telemetry policy | reward policy, ingestion stats, live session API và tests | 10 Hz/30s cần xấp xỉ 300 raw mẫu; tolerance, cadence/max-gap/timing-span và processed/raw coverage; API metadata khớp evaluator | done (source/tests) |
+| R22c P1 start flow | `confirm-start`, wallet preparation, SQLite session store, IoT lease/intent | Receipt/event/chain/to/from được xác minh; intent + device TTL lease và policy snapshot trước khi trả tx; chỉ mở sensor sau xác minh | done (source/tests); production persistence/concurrency verification pending |
+| R22d P1 identity/session | customer/demo auth, SQLite, dashboard | Một identity theo wallet; không phát reward token riêng; app session hash/TTL/revoke; logout đồng bộ | partial; full completion pending production migration/session lifecycle review |
+| R22e P1 chain support | wallet/reward services và config/tests | Demo local tách production; Sepolia/Amoy theo deployment config, không hard-code chain 31337 trên production path | partial; real deployment/RPC verification pending |
+| R22f P2 admin/security | admin auth/routes, governance, dashboard/nginx | SIWE/RBAC thay token tĩnh/actor header; policy multisig/timelock; CSP/HSTS/frame protection/rate limit/HTTPS guidance | partial; TLS terminator, multisig/timelock deployment and browser CSP verification pending |
+
+R22a cần redeploy và cập nhật deployment artifact khi xác minh trên chain;
+không reset chain hoặc ghi đè deployment đang dùng trước khi kiểm tra runtime.
+R22c–R22f cần review API compatibility và migration trước khi thay đổi
+identity/session hiện hữu.
+
+R22a/R22b/R22c evidence: `npm --prefix smart_contracts test` **83 passing**;
+`.venv/bin/python -m pytest tests/ -q` **449 passed, 12 skipped**;
+`npm --prefix blockchain_api test` **150 passed**; focused live-session tests
+**21 passed**; `git diff --check` PASS.
+Contract dùng guard `escrowedStakeTotal > 0`, không snapshot policy. Reward dưới
+30 giây là 0; stake vẫn được trả với outcome hợp lệ. Reward policy yêu cầu tối
+thiểu 90% mẫu kỳ vọng 10 Hz (270 mẫu/30 giây), processed coverage 95%, cadence
+8–12 Hz, timing span 90% thời lượng và max gap 500 ms. Public chain và local
+deployment hiện hữu chưa được redeploy.
+
+R22c evidence: wallet receipt checks now validate configured chain, sender,
+contract destination, successful receipt, transaction hash, `startSession`
+calldata/session key, and matching `SessionStarted` beneficiary/amount. Start
+preparation reserves a 120-second device intent and records a policy snapshot
+before returning calldata. Tests cover pending receipts, malformed/mismatched
+receipt fields, lease contention and expiry. Focused live-session tests: **21
+passed**.
+
+R22d–f code is partial and must not be described as production-complete. SIWE
+identity/session changes, chain-config routing, admin RBAC and local security
+headers have source/tests, but real SQLite migration on deployment, Sepolia/Amoy
+RPC plus deployed contracts, browser CSP under the actual proxy, HTTPS/TLS
+termination, and Safe/timelock ownership transfer have not been verified. No
+chain deployment or governance transfer was performed. Keep these gates open.

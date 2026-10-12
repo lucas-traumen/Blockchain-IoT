@@ -41,12 +41,16 @@ async function fixture(t, { authMode = "siwe" } = {}) {
         return lifecycle.response(demoService.store.update(record.sessionId, { stage: "SETTLED" }));
     };
     const liveService = {
+        async wallet(userId) { return { success: true, userId }; },
         async sessions(userId) { return { success: true, userId, count: 0, sessions: [] }; },
         async session(userId, sessionId) { return { success: true, session: { userId, sessionId } }; },
         async start() { return { success: true, mode: "backend" }; },
         async confirmWalletStart(userId, sessionId, body) {
             demoService.store.save({ sessionId, userId, source: "esp32", stage: "RUNNING", createdAt: new Date().toISOString() });
             return { success: true, userId, sessionId, stage: "RUNNING", transactionHash: body.transactionHash };
+        },
+        async reserveWalletStart(userId, sessionId) {
+            demoService.store.save({ sessionId, userId, source: "esp32", stage: "WALLET_INTENT", intentExpiresAt: Date.now() + 120000, createdAt: new Date().toISOString() });
         },
         end: lifecycle.end.bind(lifecycle)
     };
@@ -71,26 +75,39 @@ async function fixture(t, { authMode = "siwe" } = {}) {
     return { call, login, demoService, endCalls };
 }
 
-test("wallet login issues an app token and a session token", async t => {
+test("wallet login issues one durable app token for both application and reward routes", async t => {
     const f = await fixture(t);
     const login = await f.login();
     assert.equal(login.status, 200);
     assert.equal(login.body.mode, "siwe");
     assert.ok(login.body.token, "application token");
-    assert.ok(login.body.sessionToken, "reward session token");
-    assert.match(login.body.user.userId, /^wallet_/);
-    assert.equal(login.body.user.walletFirst, true);
+    assert.equal(login.body.sessionToken, undefined);
+    assert.match(login.body.user.userId, /^usr_/);
+    assert.equal(login.body.rewardUser.userId, login.body.user.userId);
 
     assert.equal((await f.call("/api/me", { token: login.body.token })).status, 200);
-    assert.equal((await f.call("/api/me/sessions", { token: login.body.sessionToken })).status, 200);
-    // Tokens are not interchangeable across the two surfaces.
+    assert.equal((await f.call("/api/me/sessions", { token: login.body.token })).status, 200);
+    assert.equal((await f.call("/api/me/wallet", { token: login.body.token })).status, 200);
+    const logout = await f.call("/api/auth/logout", { method: "POST", token: login.body.token });
+    assert.equal(logout.status, 200);
     assert.equal((await f.call("/api/me/sessions", { token: login.body.token })).status, 401);
+});
+
+test("wallet login migrates legacy reward session ownership to the verified canonical wallet identity", async t => {
+    const f = await fixture(t);
+    const wallet = ethers.Wallet.createRandom();
+    const legacyUserId = "wallet_" + wallet.address.slice(2).toLowerCase();
+    f.demoService.store.save({ sessionId: "legacy-session", userId: legacyUserId, stage: "SETTLED", createdAt: new Date().toISOString() });
+    const challenge = await f.call("/api/auth/challenge", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337 } });
+    const signature = await wallet.signMessage(challenge.body.message);
+    const login = await f.call("/api/auth/wallet", { method: "POST", body: { walletAddress: wallet.address, chainId: 31337, message: challenge.body.message, signature } });
+    assert.equal(f.demoService.store.get("legacy-session").userId, login.body.user.userId);
 });
 
 test("wallet-first Approve and Start prepare signatures; End executes the operator lifecycle", async t => {
     const f = await fixture(t);
     const login = await f.login();
-    const token = login.body.sessionToken;
+    const token = login.body.token;
 
     const approve = await f.call("/api/me/wallet/prepare/approve", { token });
     assert.equal(approve.status, 200);
@@ -130,13 +147,13 @@ test("a wallet cannot End another wallet's session", async t => {
     const f = await fixture(t);
     const first = await f.login();
     const second = await f.login();
-    const start = await f.call("/api/me/sessions/start", { method: "POST", token: first.body.sessionToken, body: { sessionRef: "mine" } });
+    const start = await f.call("/api/me/sessions/start", { method: "POST", token: first.body.token, body: { sessionRef: "mine" } });
     // Record the session for the first wallet through the live session service path.
     f.demoService.store.save({
         sessionId: start.body.sessionId, userId: first.body.user.userId, sessionRef: "mine",
         createdAt: new Date().toISOString(), stage: "RUNNING"
     });
-    const attack = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token: second.body.sessionToken, body: {} });
+    const attack = await f.call(`/api/me/sessions/${start.body.sessionId}/end`, { method: "POST", token: second.body.token, body: {} });
     assert.equal(attack.status, 403);
     assert.equal(attack.body.code, "SESSION_OWNER_MISMATCH");
     assert.equal(f.endCalls.length, 0);
@@ -146,7 +163,7 @@ test("wallet mode keeps the same prepared-transaction flow", async t => {
     const f = await fixture(t, { authMode: "wallet" });
     const login = await f.login();
     assert.equal(login.body.mode, "wallet");
-    const start = await f.call("/api/me/sessions/start", { method: "POST", token: login.body.sessionToken, body: { sessionRef: "legacy-mode" } });
+    const start = await f.call("/api/me/sessions/start", { method: "POST", token: login.body.token, body: { sessionRef: "legacy-mode" } });
     assert.equal(start.status, 200);
     assert.equal(start.body.mode, "wallet-first");
 });
@@ -162,7 +179,7 @@ test("wallet-first End rejects user-chosen outcomes and rewards", async t => {
     const f = await fixture(t);
     const login = await f.login();
     const result = await f.call("/api/me/sessions/any-session/end", {
-        method: "POST", token: login.body.sessionToken, body: { outcome: "VALID_NO_VIOLATION", rewardPaid: "100" }
+        method: "POST", token: login.body.token, body: { outcome: "VALID_NO_VIOLATION", rewardPaid: "100" }
     });
     assert.equal(result.status, 400);
     assert.equal(result.body.code, "INVALID_PAYLOAD");
