@@ -24,6 +24,12 @@ class SqliteCustomerStore {
             CREATE TABLE IF NOT EXISTS behavior (id INTEGER PRIMARY KEY AUTOINCREMENT, userId TEXT NOT NULL, idempotencyKey TEXT, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS behavior_user ON behavior (userId, id);
             CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks (taskId TEXT PRIMARY KEY, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS tasks_status_created ON tasks (status, createdAt);
+            CREATE TABLE IF NOT EXISTS task_assignments (assignmentId TEXT PRIMARY KEY, taskId TEXT NOT NULL, userId TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(taskId, userId));
+            CREATE INDEX IF NOT EXISTS assignments_user_created ON task_assignments (userId, createdAt);
+            CREATE TABLE IF NOT EXISTS completion_evidence (sessionId TEXT PRIMARY KEY, data TEXT NOT NULL, createdAt TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS local_funding (walletAddress TEXT NOT NULL, deploymentId TEXT NOT NULL, status TEXT NOT NULL, updatedAt TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(walletAddress, deploymentId));
         `);
     }
 
@@ -97,6 +103,69 @@ class SqliteCustomerStore {
         return clone(entry);
     }
     listAudit(limit = 100) { return this.db.prepare("SELECT data FROM audit ORDER BY id DESC LIMIT ?").all(limit).map(row => parse(row.data)); }
+
+    saveTask(task) {
+        this.db.prepare("INSERT INTO tasks (taskId, status, createdAt, updatedAt, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(taskId) DO UPDATE SET status = excluded.status, updatedAt = excluded.updatedAt, data = excluded.data")
+            .run(task.taskId, task.status, task.createdAt, task.updatedAt, JSON.stringify(task));
+        return clone(task);
+    }
+    getTask(taskId) { return parse(this.db.prepare("SELECT data FROM tasks WHERE taskId = ?").get(taskId)?.data ?? null); }
+    listTasks(status, limit = 100) {
+        const rows = status
+            ? this.db.prepare("SELECT data FROM tasks WHERE status = ? ORDER BY createdAt DESC LIMIT ?").all(status, limit)
+            : this.db.prepare("SELECT data FROM tasks ORDER BY createdAt DESC LIMIT ?").all(limit);
+        return rows.map(row => parse(row.data));
+    }
+    saveAssignment(assignment) {
+        this.db.prepare("INSERT INTO task_assignments (assignmentId, taskId, userId, status, createdAt, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(taskId, userId) DO NOTHING")
+            .run(assignment.assignmentId, assignment.taskId, assignment.userId, assignment.status, assignment.createdAt, JSON.stringify(assignment));
+        return this.getAssignmentForUser(assignment.taskId, assignment.userId);
+    }
+    getAssignment(assignmentId) { return parse(this.db.prepare("SELECT data FROM task_assignments WHERE assignmentId = ?").get(assignmentId)?.data ?? null); }
+    getAssignmentForUser(taskId, userId) { return parse(this.db.prepare("SELECT data FROM task_assignments WHERE taskId = ? AND userId = ?").get(taskId, userId)?.data ?? null); }
+    listAssignments(userId, limit = 100) {
+        return this.db.prepare("SELECT data FROM task_assignments WHERE userId = ? ORDER BY createdAt DESC LIMIT ?").all(userId, limit).map(row => parse(row.data));
+    }
+    updateAssignment(assignmentId, fields) {
+        const previous = this.getAssignment(assignmentId);
+        if (!previous) return null;
+        const next = { ...previous, ...fields };
+        this.db.prepare("UPDATE task_assignments SET status = ?, data = ? WHERE assignmentId = ?")
+            .run(next.status, JSON.stringify(next), assignmentId);
+        return clone(next);
+    }
+    saveCompletionEvidence(evidence) {
+        this.db.prepare("INSERT INTO completion_evidence (sessionId, data, createdAt) VALUES (?, ?, ?) ON CONFLICT(sessionId) DO NOTHING")
+            .run(evidence.sessionId, JSON.stringify(evidence), evidence.createdAt);
+        return this.getCompletionEvidence(evidence.sessionId);
+    }
+    getCompletionEvidence(sessionId) { return parse(this.db.prepare("SELECT data FROM completion_evidence WHERE sessionId = ?").get(sessionId)?.data ?? null); }
+    getFunding(walletAddress, deploymentId) {
+        return parse(this.db.prepare("SELECT data FROM local_funding WHERE walletAddress = ? AND deploymentId = ?").get(walletAddress, deploymentId)?.data ?? null);
+    }
+    claimFunding(walletAddress, deploymentId, now) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const existing = this.getFunding(walletAddress, deploymentId);
+            if (existing) { this.db.exec("COMMIT"); return { claimed: false, record: existing }; }
+            const record = { walletAddress, deploymentId, status: "PREPARING", updatedAt: now, transactionHashes: [] };
+            this.db.prepare("INSERT INTO local_funding (walletAddress, deploymentId, status, updatedAt, data) VALUES (?, ?, ?, ?, ?)")
+                .run(walletAddress, deploymentId, record.status, now, JSON.stringify(record));
+            this.db.exec("COMMIT");
+            return { claimed: true, record };
+        } catch (error) {
+            try { this.db.exec("ROLLBACK"); } catch { /* Keep the primary error. */ }
+            throw error;
+        }
+    }
+    updateFunding(walletAddress, deploymentId, fields) {
+        const previous = this.getFunding(walletAddress, deploymentId);
+        if (!previous) return null;
+        const next = { ...previous, ...fields, updatedAt: new Date().toISOString() };
+        this.db.prepare("UPDATE local_funding SET status = ?, updatedAt = ?, data = ? WHERE walletAddress = ? AND deploymentId = ?")
+            .run(next.status, next.updatedAt, JSON.stringify(next), walletAddress, deploymentId);
+        return next;
+    }
 
     _transaction(fn) {
         this.db.exec("BEGIN IMMEDIATE");

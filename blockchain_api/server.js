@@ -29,6 +29,17 @@ function requireUserRole(customerService, role) {
     };
 }
 
+function requireAnyUserRole(customerService, roles) {
+    return (req, res, next) => {
+        const authenticated = customerService().authenticateToken(appToken(req));
+        if (!authenticated) return res.status(401).json({ success: false, code: "UNAUTHORIZED", error: "A valid wallet session is required" });
+        if (!roles.includes(authenticated.user.role)) return res.status(403).json({ success: false, code: "FORBIDDEN", error: "This wallet does not have the required application role" });
+        req.appUser = authenticated.user;
+        req.appSession = authenticated.session;
+        next();
+    };
+}
+
 function rateLimit({ windowMs = 60000, max = 20 } = {}) {
     const clients = new Map();
     let requests = 0;
@@ -84,9 +95,18 @@ function createApp({ service, customerService, walletService, liveService, rewar
         .buildWalletFirstService(getCustomerService(), () => { try { return getWalletService(); } catch { return null; } }));
     let resolvedAuditLog = auditLog || null;
     const getAuditLog = () => resolvedAuditLog || (resolvedAuditLog = new (require("./auditLog").AuditLog)({ store: getCustomerService().store }));
-    const prepareWalletStart = async (userId, input) => {
-        const prepared = await getWalletFirstService().prepareStartSession(userId, input);
-        await getLiveService().reserveWalletStart(userId, prepared.sessionId);
+    let resolvedTaskService = null;
+    const getTaskService = () => resolvedTaskService || (resolvedTaskService = new (require("./taskService").TaskService)({ store: getCustomerService().store }));
+    let resolvedFundingService = null;
+    const getFundingService = () => resolvedFundingService || (resolvedFundingService = require("./localFundingService").LocalFundingService.fromEnv(getWalletService(), tokens));
+    const prepareWalletStart = async (userId, input, appUser = null) => {
+        const assignment = input.taskId ? getTaskService().assignmentSnapshot(appUser || { userId }, input.taskId) : null;
+        if (assignment && getWalletService().config.rewardProtocolVersion !== "task-rewards-v2") {
+            throw new ApiError(409, "TASK_REWARD_CONTRACT_REQUIRED", "Task assignments require the versioned task reward contract; this deployment is still V1");
+        }
+        const prepared = await getWalletFirstService().prepareStartSession(userId, assignment
+            ? { ...input, taskSnapshot: assignment.policySnapshot } : input);
+        await getLiveService().reserveWalletStart(userId, prepared.sessionId, assignment);
         return { ...prepared, stage: "PREPARED", intentTtlMs: 120000 };
     };
     const adminActor = req => req.appUser.walletAddress;
@@ -114,7 +134,7 @@ function createApp({ service, customerService, walletService, liveService, rewar
         const requestId = require("node:crypto").randomUUID();
         res.set("X-Request-ID", requestId);
         req.requestId = requestId;
-        if (/^\/api\/(auth|me|behavior|customers|tasks)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
+        if (/^\/api\/(auth|me|behavior|customers|tasks|admin)(\/|$)/.test(req.path)) res.set("Cache-Control", "no-store");
         next();
     });
     app.use((req, res, next) => {
@@ -164,7 +184,16 @@ function createApp({ service, customerService, walletService, liveService, rewar
         await respond(res, () => getCustomerService().createChallenge(req.body));
     });
     app.post("/api/auth/wallet", authRateLimit, async (req, res) => {
-        await respond(res, () => getWalletFirstService().login(req.body || {}), 401);
+        await respond(res, async () => {
+            const login = await getWalletFirstService().login(req.body || {});
+            try { login.funding = await getFundingService().fund(login.user.walletAddress); }
+            catch (error) { login.funding = { enabled: false, status: "UNAVAILABLE", reason: error.message }; }
+            return login;
+        }, 401);
+    });
+    app.get("/api/me/funding", requireWalletSession(getCustomerService, getWalletService, null), async (req, res) => {
+        const funding = getFundingService().status(req.appUser.walletAddress);
+        res.json({ success: true, funding });
     });
     app.get("/api/me/wallet", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         await respond(res, () => getLiveService().wallet(req.walletUser.userId));
@@ -177,7 +206,7 @@ function createApp({ service, customerService, walletService, liveService, rewar
         await respond(res, () => getWalletFirstService().prepareApproval(req.walletUser.userId), 400);
     });
     app.get("/api/me/wallet/prepare/start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
-        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.query), 400);
+        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.query, req.appUser), 400);
     });
     app.get("/api/me/wallet/prepare/end/:sessionId", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         await respond(res, () => getWalletFirstService().prepareEndSession(req.walletUser.userId, req.params.sessionId), 400);
@@ -185,12 +214,54 @@ function createApp({ service, customerService, walletService, liveService, rewar
     app.get("/api/me/sessions", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         await respond(res, () => getLiveService().sessions(req.walletUser.userId));
     });
+    app.get("/api/tasks", async (req, res) => {
+        res.json(getTaskService().listOpen(req.query.limit));
+    });
+    app.post("/api/tasks", adminRateLimit, requireUserRole(getCustomerService, "admin"), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "task.create", details: { title: req.body?.title } },
+            () => getTaskService().create(req.appUser, req.body || {})), 400);
+    });
+    app.get("/api/admin/tasks", requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+        const tasks = getCustomerService().store.listTasks(req.query.status || null, 200);
+        res.json({ success: true, tasks });
+    });
+    app.get("/api/admin/task-sessions", requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+        const store = getWalletService().store;
+        const sessions = store.list().filter(row => row.taskSnapshot?.task && !["SETTLED", "START_FAILED", "INTENT_EXPIRED"].includes(row.stage))
+            .map(row => ({ sessionId: row.sessionId, taskId: row.taskId, assignmentId: row.assignmentId,
+                userId: row.userId, beneficiary: row.beneficiary, stage: row.stage, startedAt: row.startedEvent?.startedAt || null,
+                endedAt: row.iotSession?.ended_at || null, durationS: row.iotSession?.durationS ?? null,
+                sampleCount: row.iotSession?.sample_count ?? null, task: row.taskSnapshot.task,
+                completionEvidence: getCustomerService().store.getCompletionEvidence(row.sessionId) }))
+            .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")));
+        res.json({ success: true, sessions });
+    });
+    app.patch("/api/tasks/:taskId", adminRateLimit, requireUserRole(getCustomerService, "admin"), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "task.update", target: req.params.taskId },
+            () => getTaskService().update(req.appUser, req.params.taskId, req.body || {})), 400);
+    });
+    app.post("/api/tasks/:taskId/publish", adminRateLimit, requireUserRole(getCustomerService, "admin"), async (req, res) => {
+        await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "task.publish", target: req.params.taskId },
+            () => getTaskService().publish(req.appUser, req.params.taskId)), 400);
+    });
+    app.post("/api/tasks/:taskId/accept", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        await respond(res, () => getTaskService().accept(req.appUser, req.params.taskId, req.get("Idempotency-Key")), 400);
+    });
+    app.get("/api/me/assignments", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
+        res.json(getTaskService().assignments(req.appUser));
+    });
+    app.post("/api/sessions/:sessionId/completion-evidence", adminRateLimit, requireAnyUserRole(getCustomerService, ["operator", "admin"]), async (req, res) => {
+        getTaskService().sessionStore = getWalletService().store;
+        await respond(res, () => getAuditLog().run({ actor: req.appUser.walletAddress, action: "session.completion.approve", target: req.params.sessionId,
+            details: { reason: req.body?.reason, taskId: req.body?.taskId, userId: req.body?.userId } },
+        () => getTaskService().approveCompletion(req.appUser, { ...req.body, sessionId: req.params.sessionId })), 400);
+    });
     app.get("/api/me/sessions/:sessionId", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         identifier(req.params.sessionId, "sessionId");
         await respond(res, () => getLiveService().session(req.walletUser.userId, req.params.sessionId), 404);
     });
     app.post("/api/me/sessions/start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
-        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.body || {}));
+        await respond(res, () => prepareWalletStart(req.walletUser.userId, req.body || {}, req.appUser));
     });
     app.post("/api/me/sessions/:sessionId/confirm-start", requireWalletSession(getCustomerService, getWalletService), async (req, res) => {
         await respond(res, () => getLiveService().confirmWalletStart(req.walletUser.userId, req.params.sessionId, req.body || {}), 400);

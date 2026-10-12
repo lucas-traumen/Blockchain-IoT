@@ -128,6 +128,14 @@ test('Start/End bind one sensor session to the user, and concurrent retries do n
     assert.equal((await f.live.wallet('user_1')).balance,'23.0');assert.equal((await f.live.wallet('user_1')).lockedBalance,'0.0');
 });
 
+test('V2 sensor readiness reports the task minimum and 90-percent 10 Hz sample count', async t => {
+    const f = fixture(t);
+    f.live.walletService.config.rewardProtocolVersion = 'task-rewards-v2';
+    const device = await f.live.deviceState({ fresh: true });
+    assert.equal(device.minDurationS, 120);
+    assert.equal(device.minSamplesAtMinimumDuration, 1080);
+});
+
 test('wallet-first signed start is reconciled into the sensor session store', async t => {
     const f = fixture(t);
     const sessionId = f.walletService._sessionId('user_1', { sessionRef: 'wallet-confirm' });

@@ -67,6 +67,12 @@ let walletSessionRef = null;
 let walletBusy = null;
 let walletReadTask = null;
 let walletReceipt = null;
+let walletFunding = null;
+let walletTasks = [];
+let walletAssignments = [];
+let selectedTaskId = null;
+let ownerTasks = [];
+let ownerTaskSessions = [];
 
 function randomId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -121,8 +127,9 @@ async function fetchChainJson(path, options) {
     }
 }
 
-async function walletRequest(path, { method = 'GET', body, token = walletSession.token } = {}) {
+async function walletRequest(path, { method = 'GET', body, token = walletSession.token, extraHeaders = {} } = {}) {
     const headers = { Accept: 'application/json' };
+    Object.assign(headers, extraHeaders);
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers.Authorization = 'Bearer ' + token;
     const { response, data } = await fetchChainJson(path, {
@@ -140,11 +147,19 @@ async function walletRequest(path, { method = 'GET', body, token = walletSession
 function formatWalletAmount(value) {
     if (value === undefined || value === null || value === '') return '-- HRC';
     const number = Number(value);
-    return Number.isFinite(number) ? number.toFixed(2).replace(/\.00$/, '') + ' HRC' : '-- HRC';
+    return Number.isFinite(number) ? number.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + ' HRC' : '-- HRC';
+}
+
+function formatPolicyWei(value) {
+    if (!/^\d+$/.test(String(value ?? ''))) return '-- HRC';
+    const raw = BigInt(value);
+    const whole = raw / 1000000000000000000n;
+    const fraction = (raw % 1000000000000000000n).toString().padStart(18, '0').slice(0, 4).replace(/0+$/, '');
+    return (fraction ? `${whole}.${fraction}` : String(whole)) + ' HRC';
 }
 
 function walletOutcomeName(code) {
-    return ['VALID / NO VIOLATION', 'VIOLATION CONFIRMED', 'SENSOR FAULT', 'INCOMPLETE'][Number(code)] || '--';
+    return ['VALID / NO VIOLATION', 'VIOLATION CONFIRMED', 'SENSOR FAULT', 'INCOMPLETE', 'OWNER CANCELLED', 'SYSTEM CANCELLED'][Number(code)] || '--';
 }
 
 function walletSessionStage(session) {
@@ -155,6 +170,12 @@ function walletSessionStage(session) {
 
 function walletResultLabel(session) {
     if (!session.settled) return 'PENDING SETTLEMENT';
+    if (session.rewardProtocolVersion === 'task-rewards-v2' || session.taskId) {
+        if (Number(session.penaltyCollected) > 0) return 'PENALTY';
+        if (Number(session.rewardPaid) > 0) return 'REWARDED';
+        return Number(session.outcomeCode) === 0 ? 'COMPLETED · NO REWARD' : 'REFUNDED · NO REWARD';
+    }
+    if (session.settlementStatusCode == null) return 'NO REWARD';
     return ['REWARDED', 'DAILY LIMIT', 'POOL EMPTY', 'PENALTY', 'NO REWARD'][Number(session.settlementStatusCode)] || 'NO REWARD';
 }
 
@@ -265,6 +286,17 @@ function walletSessionElapsedSeconds(session) {
     return typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, duration) : null;
 }
 
+function walletSessionRequirements(session) {
+    const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
+    if (!taskMode) return { durationS: 30, minimumSamples: 270 };
+    const configuredDuration = window.hrcRuntimeConfig?.rewards?.policy?.minimumSafeDuration;
+    const sessionDuration = session?.taskSnapshot?.task?.completionRule?.minimumDurationS
+        ?? session?.policySnapshot?.minimumSafeDuration;
+    const parsedDuration = Number(sessionDuration ?? configuredDuration ?? 120);
+    const durationS = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 120;
+    return { durationS, minimumSamples: Math.ceil(durationS * 10 * 0.9) };
+}
+
 function renderWalletSessionTimer() {
     const active = walletSessions.find(session => !session.settled && !['START_FAILED', 'SETTLED'].includes(session.stage));
     const session = walletSession.user?.role === 'customer' ? active || walletSessions[0] : null;
@@ -274,9 +306,200 @@ function renderWalletSessionTimer() {
         .map(value => String(value).padStart(2, '0')).join(':'));
     const measuring = session?.stage === 'RUNNING' && !session.settled && !session.iotSession?.ended_at;
     text('walletSessionTimerLabel', measuring ? 'Running time' : session ? 'Session duration' : 'Session time');
+    const requirements = walletSessionRequirements(session);
     text('walletSessionTimerDetail', session
-        ? `${measuring ? 'Measuring' : 'Stopped'} · ${Number(session.sampleCount || 0).toLocaleString('en-US')} samples · Minimum 30s / about 270 samples at 10 Hz`
+        ? `${measuring ? 'Measuring' : 'Stopped'} · ${Number(session.sampleCount || 0).toLocaleString('en-US')} samples · Minimum ${requirements.durationS}s / about ${requirements.minimumSamples.toLocaleString('en-US')} samples at 10 Hz`
         : 'Start a session to measure elapsed time.');
+}
+
+function renderWalletTasks() {
+    const board = byId('walletTaskBoard');
+    const list = byId('walletTaskList');
+    const visible = walletSession.user?.role === 'customer' && wallet?.rewardProtocolVersion === 'task-rewards-v2';
+    if (board) board.hidden = !visible;
+    if (!list || !visible) return;
+    text('walletTaskRewardPool', wallet
+        ? `Reward pool ${formatWalletAmount(wallet.rewardPoolBalance)} · ${formatWalletAmount(wallet.rewardPaidToday)} paid today${wallet.canEarnSafeReward ? '' : ' · Daily cap reached; no safe reward is currently available'}`
+        : 'Reward pool status is loading.');
+    const assigned = new Map(walletAssignments.map(row => [row.taskId, row]));
+    const rows = new Map(walletTasks.map(task => [task.taskId, task]));
+    for (const item of walletAssignments) {
+        const task = item.policySnapshot?.task;
+        if (task) rows.set(item.taskId, task);
+    }
+    text('walletTaskCount', `${walletTasks.length} OPEN`);
+    list.replaceChildren();
+    if (!rows.size) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No open tasks are available.';
+        list.appendChild(empty);
+        return;
+    }
+    for (const task of rows.values()) {
+        const assignment = assigned.get(task.taskId);
+        const row = document.createElement('div');
+        row.className = 'wallet-task-row';
+        const copy = document.createElement('div');
+        copy.className = 'wallet-task-copy';
+        const title = document.createElement('strong');
+        title.textContent = task.title;
+        const detail = document.createElement('span');
+        detail.textContent = `${task.description} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.completionRule?.minimumDurationS ?? 120}s minimum · Stake ${task.economics?.stakeHrc ?? '0.200'} HRC · Reward ${task.economics?.rewardHrc ?? '0.002'} HRC`;
+        copy.append(title, detail);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'view-all-btn' + (assignment ? ' primary-action' : '');
+        button.disabled = Boolean(walletBusy) || (!assignment && task.status !== 'OPEN');
+        button.textContent = assignment ? (selectedTaskId === task.taskId ? 'Selected' : 'Select task') : 'Accept task';
+        button.addEventListener('click', () => assignment ? selectWalletTask(task.taskId) : acceptWalletTask(task.taskId));
+        row.append(copy, button);
+        list.appendChild(row);
+    }
+}
+
+function renderOwnerTasks() {
+    const panel = byId('ownerTaskPanel');
+    const list = byId('ownerTaskList');
+    const taskMode = window.hrcRuntimeConfig?.rewards?.version === 'task-rewards-v2';
+    const privileged = ['admin', 'operator'].includes(walletSession.user?.role);
+    if (panel) panel.hidden = !taskMode || !privileged;
+    const ownerOnly = walletSession.user?.role !== 'admin';
+    const createForm = byId('ownerTaskForm');
+    if (createForm) createForm.hidden = ownerOnly;
+    if (!list || !taskMode || !privileged) return;
+    list.replaceChildren();
+    const heading = document.createElement('h4');
+    heading.textContent = 'Tasks';
+    list.appendChild(heading);
+    for (const task of ownerTasks) {
+        const row = document.createElement('div');
+        row.className = 'wallet-task-row';
+        const copy = document.createElement('div');
+        copy.className = 'wallet-task-copy';
+        const title = document.createElement('strong');
+        title.textContent = `${task.title} · ${task.status}`;
+        const detail = document.createElement('span');
+        detail.textContent = `${task.taskId} · ${task.completionRule?.requiredCycles ?? '--'} cycles · ${task.economics?.stakeHrc ?? '0.200'} HRC stake / ${task.economics?.rewardHrc ?? '0.002'} HRC reward`;
+        copy.append(title, detail);
+        row.appendChild(copy);
+        if (task.status === 'DRAFT' && !ownerOnly) {
+            const publish = document.createElement('button');
+            publish.type = 'button'; publish.className = 'view-all-btn'; publish.textContent = 'Publish';
+            publish.disabled = Boolean(walletBusy);
+            publish.addEventListener('click', () => { void publishOwnerTask(task.taskId); });
+            row.appendChild(publish);
+        }
+        list.appendChild(row);
+    }
+    const sessionHeading = document.createElement('h4');
+    sessionHeading.textContent = 'Active task sessions';
+    list.appendChild(sessionHeading);
+    if (!ownerTaskSessions.length) {
+        const empty = document.createElement('p'); empty.textContent = 'No active task sessions require review.'; list.appendChild(empty);
+        return;
+    }
+    for (const session of ownerTaskSessions) {
+        const row = document.createElement('div');
+        row.className = 'wallet-task-row';
+        const copy = document.createElement('div'); copy.className = 'wallet-task-copy';
+        const title = document.createElement('strong'); title.textContent = `${session.task.title} · ${session.stage}`;
+        const detail = document.createElement('span');
+        detail.textContent = `${session.sessionId} · ${session.task.completionRule.requiredCycles} cycles required · ${session.durationS == null ? 'not ended' : `${Math.floor(session.durationS)}s`} · ${session.sampleCount ?? '--'} samples${session.completionEvidence ? ' · completion evidence frozen' : ''}`;
+        copy.append(title, detail); row.appendChild(copy);
+        const review = document.createElement('button');
+        review.type = 'button'; review.className = 'view-all-btn'; review.textContent = session.completionEvidence ? 'Evidence recorded' : 'Review completion';
+        review.disabled = Boolean(session.completionEvidence) || Boolean(walletBusy);
+        review.addEventListener('click', () => {
+            const form = byId('completionApprovalForm');
+            form.elements.sessionId.value = session.sessionId;
+            form.elements.taskId.value = session.taskId;
+            form.elements.observedCycles.value = session.task.completionRule.requiredCycles;
+            form.elements.reason.focus();
+        });
+        row.appendChild(review); list.appendChild(row);
+    }
+}
+
+async function refreshOwnerTasks() {
+    if (!walletSession.token || !['admin', 'operator'].includes(walletSession.user?.role)) return;
+    try {
+        const [tasks, sessions] = await Promise.all([
+            walletRequest('/api/admin/tasks', { token: walletSession.token }),
+            walletRequest('/api/admin/task-sessions', { token: walletSession.token })
+        ]);
+        ownerTasks = tasks.tasks || [];
+        ownerTaskSessions = sessions.sessions || [];
+        text('ownerTaskStatus', 'Task and session review data updated. Approve completion before the worker ends the session.');
+    } catch (error) {
+        text('ownerTaskStatus', 'Owner task data unavailable: ' + error.message);
+    }
+    renderOwnerTasks();
+}
+
+async function publishOwnerTask(taskId) {
+    try {
+        await walletRequest(`/api/tasks/${encodeURIComponent(taskId)}/publish`, { method: 'POST', body: {}, token: walletSession.token });
+        text('ownerTaskStatus', 'Task published and open for wallet assignments.');
+        await refreshOwnerTasks();
+    } catch (error) { text('ownerTaskStatus', 'Could not publish task: ' + error.message); }
+}
+
+async function createOwnerTask(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    try {
+        await walletRequest('/api/tasks', { method: 'POST', token: walletSession.token, body: {
+            title: values.get('title'), description: values.get('description'), deviceId: values.get('deviceId'),
+            completionRule: { type: 'robot_cycle_count', requiredCycles: Number(values.get('requiredCycles')),
+                minimumDurationS: Number(values.get('minimumDurationS')), maximumDurationS: Number(values.get('maximumDurationS')) }
+        } });
+        form.reset();
+        text('ownerTaskStatus', 'Draft task created. Review it below, then publish it.');
+        await refreshOwnerTasks();
+    } catch (error) { text('ownerTaskStatus', 'Could not create task: ' + error.message); }
+}
+
+async function approveTaskCompletion(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const sessionId = String(values.get('sessionId') || '').trim();
+    try {
+        const result = await walletRequest(`/api/sessions/${encodeURIComponent(sessionId)}/completion-evidence`, {
+            method: 'POST', token: walletSession.token,
+            body: { taskId: values.get('taskId'), observedCycles: Number(values.get('observedCycles')), reason: values.get('reason') }
+        });
+        text('ownerTaskStatus', `${result.duplicate ? 'Existing' : 'New'} completion evidence frozen: ${result.evidence.evidenceHash}`);
+        await refreshOwnerTasks();
+    } catch (error) { text('ownerTaskStatus', 'Completion approval failed: ' + error.message); }
+}
+
+function selectWalletTask(taskId) {
+    selectedTaskId = taskId;
+    try { sessionStorage.setItem('hrc-selected-task-' + walletSession.user.userId, taskId); } catch { /* Current page state remains usable. */ }
+    walletMessage = 'Task selected. Approve the exact stake if needed, then start the task session.';
+    renderWallet();
+}
+
+async function acceptWalletTask(taskId) {
+    if (walletBusy || !walletSession.token) return;
+    const session = walletSession;
+    walletBusy = 'task';
+    renderWallet();
+    try {
+        const result = await walletRequest(`/api/tasks/${encodeURIComponent(taskId)}/accept`, {
+            method: 'POST', token: session.token, body: {}, extraHeaders: { 'Idempotency-Key': `accept-${session.user.userId}-${taskId}` }
+        });
+        if (session !== walletSession) return;
+        walletAssignments = [...walletAssignments.filter(row => row.taskId !== taskId), result.assignment];
+        selectWalletTask(taskId);
+    } catch (error) {
+        if (session === walletSession) walletMessage = 'Could not accept task: ' + error.message;
+    } finally {
+        walletBusy = null;
+        renderWallet();
+    }
 }
 
 function renderWallet() {
@@ -296,6 +519,16 @@ function renderWallet() {
     text('rewardBalance', wallet ? formatWalletAmount(wallet.balance) : '-- HRC');
     text('rewardSettlementStatus', walletSessions[0] ? walletResultLabel(walletSessions[0]) : 'No session');
     text('walletMessage', walletMessage);
+    renderWalletTasks();
+    renderOwnerTasks();
+    const fundingStatus = walletFunding?.status;
+    text('walletFundingStatus', fundingStatus === 'FUNDED' ? 'Local test funding complete.'
+        : fundingStatus === 'AVAILABLE' ? 'Local test funding is available for this wallet.'
+        : fundingStatus === 'PREPARING' ? 'Local test funding is processing.'
+        : fundingStatus === 'FAILED' ? 'Local test funding failed: ' + (walletFunding.reason || 'see API status')
+        : fundingStatus === 'DISABLED' ? 'Local test funding is disabled on this network.'
+        : fundingStatus === 'UNAVAILABLE' ? 'Funding status unavailable: ' + (walletFunding.reason || 'check local API')
+        : 'Local test funding status is not available.');
     for (const [id, visible] of [['walletPanel', customer], ['walletAccountEmpty', !user]]) {
         const element = byId(id); if (element) element.hidden = !visible;
     }
@@ -308,12 +541,14 @@ function renderWallet() {
     if (approve) {
         approve.hidden = !customer;
         approve.disabled = busy || !customer || !wallet || ready;
-        approve.textContent = walletBusy === 'approve' ? 'Approving...' : ready ? 'Approved 2 HRC' : 'Approve 2 HRC';
+        const stakeLabel = wallet ? formatWalletAmount(wallet.stakeAmount) : 'HRC';
+        approve.textContent = walletBusy === 'approve' ? 'Approving...' : ready ? `Approved ${stakeLabel}` : `Approve ${stakeLabel}`;
     }
     if (start) {
-        start.hidden = !customer;
+        const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
+        start.hidden = !customer || (taskMode && !selectedTaskId);
         start.disabled = busy || !customer || !wallet || ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(active?.stage) || (!wallet.canStart && !walletSessionRef);
-        start.textContent = walletBusy === 'start' ? 'Starting...' : walletSessionRef ? 'Retry Start Session' : 'Start Session';
+        start.textContent = walletBusy === 'start' ? 'Starting...' : walletSessionRef ? 'Retry Start Session' : taskMode ? 'Start Task Session' : 'Start Session';
     }
     const end = byId('walletEndBtn');
     if (end) {
@@ -322,12 +557,20 @@ function renderWallet() {
         end.textContent = walletBusy === 'end' ? 'Ending...' : active?.stage === 'SETTLEMENT_PENDING' ? 'Retry Settlement' : 'End Session';
     }
     const sensor = wallet?.device;
-    text('walletSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least 30 seconds / 270 samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
+    const requirements = walletSessionRequirements(active);
+    text('walletSensorStatus', sensor ? sensor.ready ? `${sensor.deviceId} · ESP32 LIVE · Valid session: at least ${requirements.durationS} seconds / ${requirements.minimumSamples.toLocaleString('en-US')} samples at 10 Hz${sensor.busySessionId && sensor.busySessionId !== active?.sessionId ? ' · Device busy' : ''}` : 'Sensor unavailable: ' + sensor.reason : 'Checking live sensor...');
     const last = active || walletSessions[0];
+    const taskMode = wallet?.rewardProtocolVersion === 'task-rewards-v2';
+    const blockedReason = wallet?.canStartReason === 'REWARD_POOL_EMPTY' ? 'Reward pool is empty; a task cannot be started.'
+        : wallet?.canStartReason === 'INSUFFICIENT_HRC_BALANCE' ? 'Not enough HRC for the displayed stake.'
+        : wallet?.canStartReason === 'APPROVAL_REQUIRED' ? 'Approve the displayed stake before starting.' : null;
     text('walletSessionState', last ? last.settled
         ? `${walletResultLabel(last)} · Stake returned +${formatWalletAmount(last.stakeReturned)} · Reward +${formatWalletAmount(last.rewardPaid)} · Penalty ${formatWalletAmount(last.penaltyCollected)}${last.outcomeReason ? ' · ' + last.outcomeReason : ''}`
         : `${walletSessionStage(last)} · ${formatWalletAmount(last.stakedAmount)} locked${last.lastError ? ' · ' + last.lastError : last.stage === 'RUNNING' ? ' · Press End Session to calculate the result' : ' · Recovering the same session'}`
-        : wallet && !ready ? 'Step 1: approve 2 HRC. Approval does not change your balance.' : 'Ready to open a live sensor session and lock 2 HRC.');
+        : blockedReason || (wallet && !ready ? `Approve ${formatWalletAmount(wallet.stakeAmount)}. Approval does not change your balance.`
+            : taskMode && !wallet.canEarnSafeReward ? 'Daily reward cap reached. You may complete the task, but it will not pay the safe reward.'
+            : taskMode ? `Ready to start the selected task and lock ${formatWalletAmount(wallet.stakeAmount)}.`
+                : `Ready to open a live sensor session and lock ${formatWalletAmount(wallet?.stakeAmount)}.`));
     renderWalletSessionTimer();
     const latest = [walletReceipt, walletTransactions[0]].filter(Boolean).sort((a, b) => Number(b.blockNumber || 0) - Number(a.blockNumber || 0))[0];
     text('walletTransactionStatus', walletReceipt?.stage
@@ -339,7 +582,8 @@ function renderWallet() {
 
 function clearWalletSession() {
     walletSession = { token: null, user: null };
-    wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletSessionRef = null;
+    wallet = null; walletSessions = []; walletTransactions = []; walletReceipt = null; walletFunding = null; walletTasks = []; walletAssignments = []; selectedTaskId = null; walletSessionRef = null;
+    ownerTasks = []; ownerTaskSessions = [];
 }
 
 function pendingWalletSession(userId) {
@@ -381,6 +625,35 @@ async function loadWalletAccountData({ fresh = false } = {}) {
                     try { sessionStorage.removeItem('hrc-wallet-pending-' + session.user.userId); } catch { /* in-memory reference is already cleared */ }
                 }
             }
+            try {
+                const funding = await walletRequest('/api/me/funding', { token });
+                if (session !== walletSession) return false;
+                walletFunding = funding.funding || null;
+            } catch {
+                walletFunding ||= { status: 'UNAVAILABLE', reason: 'could not read funding state' };
+            }
+            if (wallet?.rewardProtocolVersion === 'task-rewards-v2') {
+                try {
+                    const [tasks, assignments] = await Promise.all([
+                        walletRequest('/api/tasks', { token }), walletRequest('/api/me/assignments', { token })
+                    ]);
+                    if (session !== walletSession) return false;
+                    walletTasks = tasks.tasks || [];
+                    walletAssignments = assignments.assignments || [];
+                    selectedTaskId = selectedTaskId || (() => {
+                        try { return sessionStorage.getItem('hrc-selected-task-' + session.user.userId); } catch { return null; }
+                    })();
+                    if (!walletAssignments.some(row => row.taskId === selectedTaskId)) selectedTaskId = null;
+                } catch (error) {
+                    walletTasks = [];
+                    walletMessage = 'Task service unavailable: ' + error.message;
+                }
+            } else {
+                walletTasks = [];
+                walletAssignments = [];
+                selectedTaskId = null;
+            }
+            if (session.user.role === 'admin' || session.user.role === 'operator') await refreshOwnerTasks();
             if (!walletBusy) {
                 walletMessage = session.user.role === 'admin' ? 'Admin account is read-only.'
                     : walletSessions.some(row => row.stage === 'RUNNING') ? 'The sensor is measuring. End Session calculates the result.'
@@ -423,9 +696,12 @@ async function startWalletSession() {
     const session = walletSession;
     if (!walletSessionRef) walletSessionRef = 'wallet-' + randomId();
     try { sessionStorage.setItem('hrc-wallet-pending-' + session.user.userId, walletSessionRef); } catch { /* same-page retries still keep their session id */ }
-    walletBusy = 'start'; walletMessage = 'Submitting the 2 HRC session stake...'; renderWallet();
+    const taskMode = wallet.rewardProtocolVersion === 'task-rewards-v2';
+    if (taskMode && !walletAssignments.some(row => row.taskId === selectedTaskId)) return;
+    walletBusy = 'start'; walletMessage = `Submitting the ${formatWalletAmount(wallet.stakeAmount)} session stake...`; renderWallet();
     try {
-        const prepared = await walletRequest('/api/me/sessions/start', { method: 'POST', token: session.token, body: { sessionRef: walletSessionRef } });
+        const prepared = await walletRequest('/api/me/sessions/start', { method: 'POST', token: session.token,
+            body: { sessionRef: walletSessionRef, ...(taskMode ? { taskId: selectedTaskId } : {}) } });
         walletReceipt = { stage: 'PREPARED', sessionId: prepared.sessionId };
         renderWallet();
         const signed = await sendWalletPrepared(prepared);
@@ -434,7 +710,7 @@ async function startWalletSession() {
         });
         if (session !== walletSession) return;
         walletReceipt = { ...result, stage: result.pending ? 'START_PENDING' : result.stage === 'RUNNING' ? 'RUNNING' : 'CONFIRMED' };
-        walletMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : '2 HRC locked. The sensor is measuring. Press End Session to settle from its samples.';
+        walletMessage = result.pending ? 'Opening the same sensor session. Transaction recovery is in progress.' : result.stage === 'START_FAILED' ? 'Start failed without moving HRC: ' + (result.lastError || 'Sensor session closed') : result.settled ? 'This session has already been settled.' : `${formatWalletAmount(wallet.stakeAmount)} locked. The sensor is measuring. End the session to evaluate its evidence.`;
         if (!result.pending) {
             walletSessionRef = null;
             try { sessionStorage.removeItem('hrc-wallet-pending-' + session.user.userId); } catch { /* ignore storage policy */ }
@@ -649,6 +925,7 @@ async function syncWalletApplication(state) {
         }});
         if (!authFlowIsCurrent(run, key)) return;
         appSession = { token: login.token, user: login.user, key, inFlightKey: key, error: null };
+        walletFunding = login.funding || null;
         bindWalletSession(login.user, login.token);
         saveAppSession();
         renderAppIdentity();
@@ -901,6 +1178,29 @@ function renderRuntimeConfig(config) {
     text("settingsIotApi", IOT_API_URL);
     text("settingsNetwork", String(network).toUpperCase() + " · " + chainId);
     text("transactionsDescription", "Safety and reward transactions recorded on " + network + " (chain " + chainId + ").");
+    const v2 = config?.rewards?.version === 'task-rewards-v2';
+    if (v2) {
+        const policy = config.rewards.policy || {};
+        const stake = formatPolicyWei(policy.stakeAmount);
+        const reward = formatPolicyWei(policy.safeReward);
+        const penalty = formatPolicyWei(policy.violationPenalty);
+        text('walletPolicyContract', 'HRCTaskRewards · V2');
+        text('walletPolicyStake', 'Lock ' + stake);
+        text('walletPolicySafeTitle', 'COMPLETED SAFE TASK');
+        text('walletPolicySafe', 'Return ' + stake + ' + ' + reward);
+        text('walletPolicySafeDetail', `Task completion and at least ${policy.minimumSafeDuration || 120} seconds are required. Daily reward cap: ${formatPolicyWei(policy.dailyRewardCap)}.`);
+        text('walletPolicyPenalty', 'Return 0.190 HRC · route ' + penalty + ' to treasury');
+        text('walletPolicyRefund', 'Return ' + stake + ' · no reward or penalty');
+        text('walletPolicyNoteTitle', 'Task-bound settlement');
+        text('walletPolicyNote', 'A published task, completed cycle evidence, sensor coverage and frozen policy snapshot are required. Outcome and amounts are decided by backend evidence and contract policy.');
+        text('walletSessionTimerDetail', 'A completed task requires at least 120 seconds, its cycle target, and valid sensor evidence.');
+        text('walletSensorStatus', 'Sensor readiness is checked before the task stake is submitted.');
+        const scale = byId('walletRewardScale'); if (scale) scale.hidden = true;
+    } else {
+        text('walletPolicyContract', 'HRCSessionRewards · V1');
+        text('walletPolicyNote', 'Approve grants permission and does not change your balance. Start locks the displayed stake and opens a live sensor session. End closes it; backend evidence determines the outcome.');
+        const scale = byId('walletRewardScale'); if (scale) scale.hidden = false;
+    }
 }
 async function loadRuntimeConfig() {
     try {
@@ -1495,6 +1795,9 @@ byId("walletApproveBtn")?.addEventListener("click", () => { void approveWallet()
 byId("walletStartBtn")?.addEventListener("click", () => { void startWalletSession(); });
 byId('walletLogoutBtn')?.addEventListener('click', () => { clearAppSession(); renderWallet(); });
 byId('walletEndBtn')?.addEventListener('click', () => { void endWalletSession(); });
+byId('ownerTaskRefresh')?.addEventListener('click', () => { void refreshOwnerTasks(); });
+byId('ownerTaskForm')?.addEventListener('submit', event => { void createOwnerTask(event); });
+byId('completionApprovalForm')?.addEventListener('submit', event => { void approveTaskCompletion(event); });
 window.addEventListener("hashchange", navigate);
 navigate();
 async function bootstrap() {

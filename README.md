@@ -304,6 +304,25 @@ Giữ blockchain/API chạy mà không khởi động Docker:
 ./scripts/run_local_metamask.sh --blockchain-only
 ```
 
+Chạy task-bound rewards V2 trên deployment riêng:
+
+```bash
+HRC_DASHBOARD_HOST_PORT=18081 HRC_BLOCKCHAIN_API_HOST_PORT=13000 \
+HRC_RPC_HOST_PORT=18545 HRC_API_HOST_PORT=18002 HRC_MQTT_HOST_PORT=11886 \
+./scripts/run_local_metamask.sh --task-rewards-v2
+```
+
+V2 không thay contract V1 đang chạy. Launcher tạo task contract mới, dùng stake
+`0.200 HRC`, safe-task reward `0.002 HRC`, penalty `0.010 HRC` và minimum safe
+duration `120` giây. Ví customer account 2 được cấp HRC/gas local; account 0 có
+quyền admin/operator để tạo task và duyệt completion. Chỉ dùng các khóa trong
+`.runtime/local-metamask/` trên Hardhat local; file khóa được tạo với quyền
+`0600`. Để chỉ xác minh deploy/API mà không chạy Docker, dùng option
+`--smoke --blockchain-only` và đặt ít nhất `HRC_RPC_HOST_PORT` cùng
+`HRC_BLOCKCHAIN_API_HOST_PORT` sang cổng trống. Smoke V2 tự kiểm tra admin SIWE,
+tạo/publish task và customer assignment; nó không mô phỏng cảm biến hoặc
+settlement phiên.
+
 Các bước dưới đây chỉ dành cho trường hợp muốn chạy thủ công từng service.
 
 ### 0. Điều kiện máy

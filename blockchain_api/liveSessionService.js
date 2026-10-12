@@ -1,7 +1,9 @@
 const crypto = require('node:crypto');
+const { ethers } = require('ethers');
 const { ApiError, identifier, canonicalJson } = require('./eventPayload');
 const { normalizeOutcome, sessionKey } = require('./rewardPolicy');
 const { IotSessionClient } = require('./iotSessionClient');
+const { validateTaskEvidence } = require('./taskEvidencePolicy');
 
 const FINAL = new Set(['SETTLED', 'START_FAILED', 'INTENT_EXPIRED']);
 const TERMINAL_ERRORS = new Set(['SETTLEMENT_CONFLICT', 'STORE_INTEGRITY_ERROR', 'BENEFICIARY_MISMATCH', 'TRANSACTION_REVERTED', 'IOT_SESSION_MISMATCH']);
@@ -21,8 +23,8 @@ function unixSecondsFromIso(value) {
 }
 
 class LiveSessionService {
-    constructor({ walletService, iot, settler, deviceId = 'esp32_01', clock = Date.now, logger = message => console.log(message) }) {
-        Object.assign(this, { walletService, iot, settler, deviceId, clock, logger });
+    constructor({ walletService, iot, settler, completionStore = null, deviceId = 'esp32_01', clock = Date.now, logger = message => console.log(message) }) {
+        Object.assign(this, { walletService, iot, settler, completionStore, deviceId, clock, logger });
         this.store = walletService.store;
         this.tail = Promise.resolve(); this.timer = null; this.deviceRead = null; this.deviceCache = null; this.deviceVersion = 0;
         // All operator routes use the same durable transaction store once the live bridge is loaded.
@@ -30,6 +32,12 @@ class LiveSessionService {
     }
     serial(work) { const task = this.tail.catch(() => {}).then(work); this.tail = task.catch(() => {}); return task; }
     log(event, record, extra = {}) { this.logger(JSON.stringify({ event, sessionId: record.sessionId, userId: record.userId, stage: record.stage, ...extra })); }
+    setAssignmentStage(record, status, fields = {}) {
+        if (!record.assignmentId) return;
+        const store = this.walletService.identityStore;
+        const assignment = store?.getAssignment?.(record.assignmentId);
+        if (assignment) store.updateAssignment(record.assignmentId, { status, sessionId: record.sessionId, ...fields });
+    }
     owner(userId, id) {
         this.walletService._user(userId);
         identifier(id, 'sessionId');
@@ -55,7 +63,7 @@ class LiveSessionService {
             throw new ApiError(503, 'OPERATOR_NOT_CONFIGURED', 'The backend operator is not configured for this reward contract');
         }
     }
-    reserveWalletStart(userId, sessionId) {
+    reserveWalletStart(userId, sessionId, assignment = null) {
         return this.serial(async () => {
             const user = this.walletService._user(userId);
             if (!user.walletFirst) throw new ApiError(400, 'NOT_WALLET_FIRST', 'Wallet intent is only for wallet-first users');
@@ -99,11 +107,20 @@ class LiveSessionService {
                     policySnapshot[key] = String(await this.walletService.rewards[method]());
                 }
             }
+            if (this.walletService.config.rewardProtocolVersion === 'task-rewards-v2') {
+                policySnapshot.stakeAmount = String(await this.walletService.rewards.STAKE_AMOUNT());
+                policySnapshot.rewardAmount = String(await this.walletService.rewards.SAFE_REWARD());
+                policySnapshot.penaltyAmount = String(await this.walletService.rewards.VIOLATION_PENALTY());
+                policySnapshot.dailyRewardCap = String(await this.walletService.rewards.DAILY_REWARD_CAP());
+                policySnapshot.minimumSafeDuration = String(await this.walletService.rewards.MIN_SAFE_DURATION());
+            }
             const now = this.clock();
             return this.store.save({
                 sessionId: id, sessionRef: null, userId, beneficiary: user.walletAddress,
                 createdAt: new Date(now).toISOString(), source: 'esp32', deviceId: this.deviceId,
                 stage: 'WALLET_INTENT', intentExpiresAt: now + WALLET_INTENT_TTL_MS,
+                taskId: assignment?.taskId || null, assignmentId: assignment?.assignmentId || null,
+                taskSnapshot: assignment ? structuredClone(assignment.policySnapshot) : null,
                 policySnapshot, leaseId: crypto.randomUUID(), startAttempts: 0
             });
         });
@@ -127,12 +144,16 @@ class LiveSessionService {
             || String(receipt.hash || receipt.transactionHash || '').toLowerCase() !== transactionHash.toLowerCase()) {
             throw new ApiError(409, 'START_RECEIPT_MISMATCH', 'Transaction receipt does not match the wallet, chain or reward contract');
         }
+        const taskRewards = this.walletService.config.rewardProtocolVersion === 'task-rewards-v2';
         let parsedTransaction;
         try { parsedTransaction = this.walletService.rewardInterface.parseTransaction({ data: transaction.data, value: transaction.value }); }
         catch { parsedTransaction = null; }
         const expectedSessionKey = sessionKey(sessionId);
         if (!parsedTransaction || parsedTransaction.name !== 'startSession'
-            || String(parsedTransaction.args[0]).toLowerCase() !== expectedSessionKey.toLowerCase()) {
+            || String(parsedTransaction.args[0]).toLowerCase() !== expectedSessionKey.toLowerCase()
+            || (taskRewards && (!record.taskSnapshot?.task?.taskId
+                || String(parsedTransaction.args[1]).toLowerCase() !== ethers.id(record.taskSnapshot.task.taskId).toLowerCase()
+                || String(parsedTransaction.args[2]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()))) {
             throw new ApiError(409, 'START_TRANSACTION_MISMATCH', 'Transaction calldata does not start this session');
         }
         let startedEvent = null;
@@ -145,8 +166,10 @@ class LiveSessionService {
         }
         if (!startedEvent
             || String(startedEvent.args.sessionId).toLowerCase() !== expectedSessionKey.toLowerCase()
-            || String(startedEvent.args.beneficiary).toLowerCase() !== user.walletAddress.toLowerCase()
-            || (record.policySnapshot?.stakeAmount && String(startedEvent.args.amount) !== record.policySnapshot.stakeAmount)) {
+            || String(startedEvent.args.beneficiary ?? startedEvent.args[taskRewards ? 2 : 1]).toLowerCase() !== user.walletAddress.toLowerCase()
+            || (taskRewards && (String(startedEvent.args.taskIdHash ?? startedEvent.args[1]).toLowerCase() !== ethers.id(record.taskSnapshot.task.taskId).toLowerCase()
+                || String(startedEvent.args.policyHash ?? startedEvent.args[3]).toLowerCase() !== String(record.taskSnapshot.snapshotHash).toLowerCase()))
+            || (record.policySnapshot?.stakeAmount && String(startedEvent.args.amount ?? startedEvent.args.stakeAmount ?? startedEvent.args[taskRewards ? 4 : 2]) !== record.policySnapshot.stakeAmount)) {
             throw new ApiError(409, 'SESSION_STARTED_EVENT_MISSING', 'Successful receipt lacks the expected SessionStarted event');
         }
         return { receipt, event: startedEvent };
@@ -156,6 +179,8 @@ class LiveSessionService {
         const version = this.deviceVersion;
         if (!fresh && this.deviceCache && this.clock() - this.deviceCache.at < 2000) return this.deviceCache.data;
         if (!fresh && this.deviceRead) return this.deviceRead;
+        const minDurationS = this.walletService.config.rewardProtocolVersion === 'task-rewards-v2' ? 120 : 30;
+        const minSamplesAtMinimumDuration = Math.ceil(minDurationS * 10 * 0.9);
         const task = (async () => {
             try {
                 const [health, latest, sessions] = await Promise.all([this.iot.health(), this.iot.latest(), this.iot.list()]);
@@ -168,14 +193,14 @@ class LiveSessionService {
                 else if (latest.source_mode !== 'esp32') reason = 'The active source is not ESP32';
                 else if (!health.mqtt || sampleDevice !== this.deviceId || !Number.isFinite(ageMs) || ageMs < -1000 || ageMs > 5000) reason = 'No recent sensor telemetry is available';
                 const data = { ready: !reason, reason, deviceId: this.deviceId, source: latest.source_mode, latestReceivedAt: sample?.received_at || null,
-                    busySessionId: running?.session_id || null, minDurationS: 30, sampleRateHz: 10,
-                    minSamplesAtMinimumDuration: 270 };
+                    busySessionId: running?.session_id || null, minDurationS, sampleRateHz: 10,
+                    minSamplesAtMinimumDuration };
                 if (version === this.deviceVersion) this.deviceCache = { at: this.clock(), data };
                 return data;
             } catch (error) {
                 const data = { ready: false, reason: error.message, deviceId: this.deviceId,
-                    busySessionId: null, minDurationS: 30, sampleRateHz: 10,
-                    minSamplesAtMinimumDuration: 270 };
+                    busySessionId: null, minDurationS, sampleRateHz: 10,
+                    minSamplesAtMinimumDuration };
                 if (version === this.deviceVersion) this.deviceCache = { at: this.clock(), data };
                 return data;
             }
@@ -186,9 +211,14 @@ class LiveSessionService {
     async wallet(userId) {
         const [wallet, device] = await Promise.all([this.walletService.getWallet(userId), this.deviceState()]);
         const record = this.store.list(userId).find(row => row.stage && !FINAL.has(row.stage));
+        const sessionMinimum = Number(record?.taskSnapshot?.task?.completionRule?.minimumDurationS
+            ?? record?.policySnapshot?.minimumSafeDuration ?? device.minDurationS);
+        const minDurationS = Number.isFinite(sessionMinimum) && sessionMinimum > 0 ? sessionMinimum : device.minDurationS;
+        const sessionDevice = { ...device, minDurationS,
+            minSamplesAtMinimumDuration: Math.ceil(minDurationS * (device.sampleRateHz || 10) * 0.9) };
         let operatorReady = true;
         try { await this.checkOperator(userId); } catch { operatorReady = false; }
-        return { ...wallet, device: { ...device, operatorReady }, activeSessionId: record?.sessionId || null,
+        return { ...wallet, device: { ...sessionDevice, operatorReady }, activeSessionId: record?.sessionId || null,
             canEnd: Boolean(record?.source === 'esp32' && ['RUNNING', 'STOPPING_SENSOR', 'SETTLEMENT_PENDING'].includes(record.stage)),
             canStart: wallet.canStart && device.ready && operatorReady && !device.busySessionId };
     }
@@ -235,6 +265,7 @@ class LiveSessionService {
     }
     async confirmWalletStartNow(userId, sessionId, body) {
             const user = this.walletService._user(userId);
+            const taskRewards = this.walletService.config.rewardProtocolVersion === 'task-rewards-v2';
             const id = identifier(sessionId, 'sessionId');
             let record = this.store.get(id);
             if (!record) throw new ApiError(409, 'SESSION_INTENT_REQUIRED', 'A live sensor lease must be prepared before signing the stake');
@@ -258,9 +289,11 @@ class LiveSessionService {
                 receiptBlockNumber: verified.receipt.blockNumber,
                 startedEvent: {
                     sessionKey: String(verified.event.args.sessionId),
-                    beneficiary: String(verified.event.args.beneficiary),
-                    amount: String(verified.event.args.amount),
-                    startedAt: String(verified.event.args.startedAt)
+                    beneficiary: String(verified.event.args.beneficiary ?? verified.event.args[2]),
+                    amount: String(verified.event.args.amount ?? verified.event.args.stakeAmount ?? verified.event.args[4]),
+                    startedAt: String(verified.event.args.startedAt ?? verified.event.args[5]),
+                    taskIdHash: taskRewards ? String(verified.event.args.taskIdHash ?? verified.event.args[1]) : null,
+                    policyHash: taskRewards ? String(verified.event.args.policyHash ?? verified.event.args[3]) : null
                 }
             });
 
@@ -294,6 +327,7 @@ class LiveSessionService {
                     throw new ApiError(409, 'IOT_SESSION_MISMATCH', 'Sensor session identity does not match the wallet session');
                 }
                 record = this.store.update(id, { source: 'esp32', stage: 'RUNNING', iotSession: this.sensorInfo(info), lastError: null, nextRetryAt: null });
+                this.setAssignmentStage(record, 'ACTIVE', { startedAt: record.startedEvent?.startedAt || new Date(this.clock()).toISOString() });
                 this.log('WALLET_SESSION_STARTED', record, { transactionHash: body.transactionHash });
                 return this.response(record, { duplicate: false, transactionHash: body.transactionHash });
             } catch (error) {
@@ -360,6 +394,27 @@ class LiveSessionService {
         if (record.settlementPayload) return record;
         normalizeOutcome(document.result.outcome);
         const frozenEvidence = structuredClone(document);
+        if (record.taskSnapshot?.task) {
+            const task = record.taskSnapshot.task;
+            const completion = this.completionStore?.getCompletionEvidence?.(record.sessionId) || null;
+            frozenEvidence.completionEvidence = completion;
+            const reasonCodes = [];
+            if (frozenEvidence.result.outcome === 'VALID_NO_VIOLATION') {
+                if (!completion?.achieved) reasonCodes.push(completion ? 'task_completion_rule_not_met' : 'task_completion_evidence_missing');
+                const validation = validateTaskEvidence(frozenEvidence, task);
+                frozenEvidence.taskEvidenceValidation = validation;
+                reasonCodes.push(...validation.reasons);
+                if (reasonCodes.length) {
+                    frozenEvidence.result.outcome = 'INCOMPLETE';
+                    frozenEvidence.result.reason = reasonCodes[0];
+                    frozenEvidence.result.dataValid = false;
+                    frozenEvidence.result.coverageValid = false;
+                }
+            }
+            frozenEvidence.result.reasonCodes = [...new Set([...(frozenEvidence.result.reasonCodes || []), ...reasonCodes])];
+            frozenEvidence.task = { taskId: task.taskId, definitionHash: this.store.get(record.sessionId)?.taskSnapshot?.snapshotHash || null,
+                assignmentId: record.assignmentId, policySnapshot: record.taskSnapshot };
+        }
         const endedAtIso = frozenEvidence.session?.ended_at || frozenEvidence.observedAt;
         const endedAt = unixSecondsFromIso(endedAtIso);
         if (!frozenEvidence.session) frozenEvidence.session = { ended_at: endedAtIso, boundary_source: 'recovery_observed_at' };
@@ -405,6 +460,8 @@ class LiveSessionService {
             const result = await this.settler.processSessionOutcome(record.settlementPayload);
             if (result.pending) return this.response(record, { transactionHash: result.transactionHash });
             record = this.store.update(id, { stage: 'SETTLED', settlementResult: result, lastError: null, nextRetryAt: null });
+            this.setAssignmentStage(record, 'SETTLED', { outcome: result.outcome, evidenceHash: record.settlementPayload.evidenceHash,
+                transactionHash: result.transactionHash || null, settledAt: new Date(this.clock()).toISOString() });
             this.log('SESSION_SETTLED', record, { outcome: result.outcome, stakeReturned: result.stakeReturned, rewardPaid: result.rewardPaid,
                 penaltyCollected: result.penaltyCollected, transactionHash: result.transactionHash });
             return this.response(record, { duplicate: Boolean(result.duplicate) });
@@ -461,7 +518,9 @@ class LiveSessionService {
 }
 function buildLiveSessionService(walletService, env = process.env) {
     const { getRewardService } = require('./rewardService');
-    return new LiveSessionService({ walletService, settler: getRewardService(), deviceId: env.HRC_DEVICE_ID || 'esp32_01',
+    let completionStore = null;
+    try { completionStore = require('./customerService').getCustomerService(env).store; } catch { /* Task workflow is unavailable without identity storage. */ }
+    return new LiveSessionService({ walletService, completionStore, settler: getRewardService(), deviceId: env.HRC_DEVICE_ID || 'esp32_01',
         iot: new IotSessionClient({ baseUrl: env.HRC_IOT_API_URL || 'http://127.0.0.1:8002' }) });
 }
 module.exports = { LiveSessionService, buildLiveSessionService, unixSecondsFromIso };

@@ -24,7 +24,9 @@ function getPublicConfig(env = process.env) {
         rewards: {
             tokenAddress: env.HRC_REWARD_TOKEN_ADDRESS || deployment.tokenAddress || null,
             address: env.HRC_REWARD_ADDRESS || deployment.rewardsAddress || null,
-            deploymentBlock: Number(env.HRC_REWARD_DEPLOYMENT_BLOCK ?? deployment.deploymentBlock ?? 0)
+            deploymentBlock: Number(env.HRC_REWARD_DEPLOYMENT_BLOCK ?? deployment.deploymentBlock ?? 0),
+            version: deployment.version || "session-rewards-v1",
+            policy: deployment.policy || null
         }
     };
 }

@@ -69,6 +69,21 @@ test('API reads an externally staked session after reopening and isolates its ow
     assert.equal(f.service.approve, undefined); assert.equal(f.service.startSession, undefined);
 });
 
+test('wallet session response carries the persisted task policy snapshot for its owner', t => {
+    const f = fixture(t);
+    const taskSnapshot = { task: { taskId: 'task-1', completionRule: { minimumDurationS: 120 } }, snapshotHash: hash('e') };
+    const session = f.service._formatSession({ sessionId: 'task-session', userId: 'user_1', taskId: 'task-1',
+        assignmentId: 'assignment-1', taskSnapshot, policySnapshot: { minimumSafeDuration: '120' } }, {
+        beneficiary: USER1, startedAt: 100n, endedAt: 0n, settledAt: 0n, stakedAmount: ethers.parseEther('0.2'),
+        rewardPaid: 0n, penaltyCollected: 0n, outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash,
+        outcomeTimestamp: 0n, started: true, settled: false
+    }, []);
+    assert.equal(session.taskId, 'task-1');
+    assert.equal(session.assignmentId, 'assignment-1');
+    assert.deepEqual(session.taskSnapshot, taskSnapshot);
+    assert.equal(session.policySnapshot.minimumSafeDuration, '120');
+});
+
 test('wallet history includes approvals, start and settlement events belonging only to the signed-in user', async t => {
     const f = fixture(t); const key = sessionKey('demo-user_1-history');
     f.state.logs = [

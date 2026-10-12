@@ -18,6 +18,7 @@ APP_AUTH_MODE="${HRC_APP_AUTH_MODE:-siwe}"
 BLOCKCHAIN_ONLY=false
 SMOKE=false
 SKIP_INSTALL=false
+TASK_REWARDS_V2=false
 COMPOSE_STARTED=false
 HARDHAT_PID=""
 API_PID=""
@@ -31,6 +32,7 @@ By default it also starts MQTT, IoT/AI and the dashboard with Docker Compose.
 
   --blockchain-only  Start only Hardhat and blockchain_api
   --smoke            Verify the clean blockchain/API startup, then exit
+  --task-rewards-v2  Deploy and select the isolated task-bound V2 reward contract
   --skip-install     Do not run npm ci when node_modules is missing
   -h, --help         Show this help
 EOF
@@ -41,6 +43,7 @@ for argument in "$@"; do
         --blockchain-only) BLOCKCHAIN_ONLY=true ;;
         --smoke) SMOKE=true; BLOCKCHAIN_ONLY=true ;;
         --skip-install) SKIP_INSTALL=true ;;
+        --task-rewards-v2) TASK_REWARDS_V2=true ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $argument" >&2; usage >&2; exit 2 ;;
     esac
@@ -50,6 +53,7 @@ if [[ "$APP_AUTH_MODE" != "siwe" ]]; then
     echo "This launcher only supports MetaMask SIWE authentication (HRC_APP_AUTH_MODE=siwe)" >&2
     exit 2
 fi
+if [[ "$TASK_REWARDS_V2" == true ]]; then export HRC_EXPECT_TASK_REWARDS=true; fi
 
 for command_name in node npm curl; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -141,6 +145,13 @@ NODE
 chmod 0600 "$RUN_DIR/metamask-local-import.txt"
 echo "Local MetaMask test wallet: $HRC_LOCAL_TEST_WALLET_ADDRESS (20 HRC, funded Hardhat ETH)"
 echo "Import instructions/key file: $RUN_DIR/metamask-local-import.txt"
+ADMIN_WALLET="$(HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node -e 'const { ethers } = require("./blockchain_api/node_modules/ethers"); console.log(ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44\x27/60\x27/0\x27/0/0").address)')"
+ADMIN_PRIVATE_KEY="$(HRC_LOCAL_CHAIN_MNEMONIC="$LOCAL_MNEMONIC" node -e 'const { ethers } = require("./blockchain_api/node_modules/ethers"); console.log(ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44\x27/60\x27/0\x27/0/0").privateKey)')"
+printf 'Local Hardhat only (31337) - admin/operator wallet; never use for real funds.\nAddress: %s\nPrivate key for MetaMask import: %s\n' \
+    "$ADMIN_WALLET" "$ADMIN_PRIVATE_KEY" >"$RUN_DIR/metamask-admin-import.txt"
+chmod 0600 "$RUN_DIR/metamask-admin-import.txt"
+echo "Local task admin/operator wallet: $ADMIN_WALLET"
+echo "Admin import instructions/key file: $RUN_DIR/metamask-admin-import.txt"
 
 echo "Starting a fresh Hardhat chain..."
 (
@@ -177,6 +188,9 @@ echo "Deploying safety and reward contracts..."
     export HRC_DEPLOYMENT_DIR="$DEPLOYMENT_DIR"
     npx hardhat run scripts/deploy.js --network localhost
     npx hardhat run scripts/deploy_reward.js --network localhost
+    if [[ "$TASK_REWARDS_V2" == true ]]; then
+        HRC_REWARD_DEPLOYMENT="$DEPLOYMENT_DIR/reward-localhost.json" npx hardhat run scripts/deploy_task_rewards.js --network localhost
+    fi
 ) >"$LOG_DIR/deploy.log" 2>&1
 
 if [[ ! -s "$DEPLOYMENT_DIR/localhost.json" || ! -s "$DEPLOYMENT_DIR/reward-localhost.json" ]]; then
@@ -195,10 +209,12 @@ const derive = index => ethers.HDNodeWallet.fromPhrase(
 );
 console.log(derive(0).privateKey);
 console.log(derive(2).address);
+console.log(derive(0).address);
 NODE
 )
 OPERATOR_PRIVATE_KEY="${WALLET_VALUES[0]}"
 LOCAL_BENEFICIARY="${WALLET_VALUES[1]}"
+LOCAL_ADMIN_WALLET="${WALLET_VALUES[2]}"
 INGEST_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
 
 cat >"$RUN_DIR/run.json" <<EOF
@@ -219,13 +235,19 @@ echo "Starting blockchain API..."
     export RPC_URL="$RPC_URL"
     export HRC_BLOCKCHAIN_NETWORK=localhost
     export HRC_SAFETY_DEPLOYMENT="$DEPLOYMENT_DIR/localhost.json"
-    export HRC_REWARD_DEPLOYMENT="$DEPLOYMENT_DIR/reward-localhost.json"
+    if [[ "$TASK_REWARDS_V2" == true ]]; then
+        export HRC_REWARD_DEPLOYMENT="$DEPLOYMENT_DIR/task-rewards-localhost.json"
+    else
+        export HRC_REWARD_DEPLOYMENT="$DEPLOYMENT_DIR/reward-localhost.json"
+    fi
     export CONTRACT_ADDRESS=""
     export HRC_REWARD_ADDRESS=""
     export HRC_REWARD_TOKEN_ADDRESS=""
     export PRIVATE_KEY="$OPERATOR_PRIVATE_KEY"
     export PORT="$API_PORT"
     export HRC_INGEST_API_TOKEN="$INGEST_TOKEN"
+    export HRC_LOCAL_FAUCET_PRIVATE_KEY="$OPERATOR_PRIVATE_KEY"
+    export HRC_LOCAL_ONBOARDING_FUNDING=true
     export HRC_DASHBOARD_BENEFICIARY="$LOCAL_BENEFICIARY"
     unset HRC_LOCAL_CHAIN_MNEMONIC
     export HRC_EVENT_STORE_PATH="$RUN_DIR/events"
@@ -236,6 +258,8 @@ echo "Starting blockchain API..."
     export HRC_APP_SESSION_DB_PATH="$RUN_DIR/wallet-sessions.db"
     export HRC_IOT_API_URL="http://127.0.0.1:${HRC_API_HOST_PORT:-8002}"
     export HRC_APP_AUTH_MODE="$APP_AUTH_MODE"
+    export HRC_APP_ADMIN_WALLETS="$LOCAL_ADMIN_WALLET"
+    export HRC_APP_OPERATOR_WALLETS="$LOCAL_ADMIN_WALLET"
     export HRC_APP_CHAIN_ID=31337
     export HRC_APP_ORIGIN="$APP_ORIGIN"
     export HRC_CORS_ORIGINS="$APP_ORIGIN,http://127.0.0.1:$UI_PORT"
@@ -307,23 +331,50 @@ const fs = require("node:fs");
 const { ethers } = require("./blockchain_api/node_modules/ethers");
 async function main() {
     const [api, output] = process.argv.slice(2);
-    const wallet = ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, "m/44'/60'/0'/0/2");
-    const challengeResponse = await fetch(`${api}/api/auth/challenge`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337 })
-    });
-    const challenge = await challengeResponse.json();
-    const signature = await wallet.signMessage(challenge.message);
-    const loginResponse = await fetch(`${api}/api/auth/wallet`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337, message: challenge.message, signature })
-    });
-    const login = await loginResponse.json();
-    if (!loginResponse.ok || !login.success || !login.token) throw new Error(login.error || "SIWE smoke login failed");
-    const walletResponse = await fetch(`${api}/api/me/wallet`, { headers: { authorization: `Bearer ${login.token}` } });
-    const account = await walletResponse.json();
-    if (!walletResponse.ok || !account.success) throw new Error(account.error || "SIWE wallet read failed");
-    fs.writeFileSync(output, JSON.stringify({ success: true, walletAddress: wallet.address, balance: account.balance }));
+    const derive = index => ethers.HDNodeWallet.fromPhrase(process.env.HRC_LOCAL_CHAIN_MNEMONIC, undefined, `m/44'/60'/0'/0/${index}`);
+    async function login(wallet) {
+        const challengeResponse = await fetch(`${api}/api/auth/challenge`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337 })
+        });
+        const challenge = await challengeResponse.json();
+        const signature = await wallet.signMessage(challenge.message);
+        const response = await fetch(`${api}/api/auth/wallet`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ walletAddress: wallet.address, chainId: 31337, message: challenge.message, signature })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.token) throw new Error(result.error || "SIWE smoke login failed");
+        return result;
+    }
+    async function call(path, token, method = "GET", body) {
+        const response = await fetch(`${api}${path}`, { method,
+            headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+            body: body === undefined ? undefined : JSON.stringify(body) });
+        const value = await response.json();
+        if (!response.ok || value.success !== true) throw new Error(value.error || `${path} returned ${response.status}`);
+        return value;
+    }
+    const customer = await login(derive(2));
+    const account = await call("/api/me/wallet", customer.token);
+    if (process.env.HRC_EXPECT_TASK_REWARDS === "true" && account.rewardProtocolVersion !== "task-rewards-v2") {
+        throw new Error("Task rewards V2 was not selected by the wallet API");
+    }
+    if (account.rewardProtocolVersion === "task-rewards-v2" && Number(account.rewardPoolBalance) <= 0) {
+        throw new Error("Task reward pool is unavailable");
+    }
+    if (account.rewardProtocolVersion === "task-rewards-v2") {
+        const admin = await login(derive(0));
+        if (admin.user.role !== "admin") throw new Error("Local owner wallet did not receive the admin SIWE role");
+        const draft = await call("/api/tasks", admin.token, "POST", { title: "Launcher smoke task", description: "Local disposable task",
+            deviceId: "esp32_01", zoneId: "smoke", completionRule: { type: "robot_cycle_count", requiredCycles: 1,
+                minimumDurationS: 120, maximumDurationS: 120 } });
+        const published = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/publish`, admin.token, "POST", {});
+        const accepted = await call(`/api/tasks/${encodeURIComponent(draft.task.taskId)}/accept`, customer.token, "POST", {});
+        if (accepted.assignment.taskDefinitionHash !== published.task.definitionHash) throw new Error("Task assignment snapshot did not match the published task");
+    }
+    fs.writeFileSync(output, JSON.stringify({ success: true, walletAddress: customer.user.walletAddress,
+        balance: account.balance, rewardProtocolVersion: account.rewardProtocolVersion }));
 }
 main().catch(error => { console.error(error.message); process.exit(1); });
 NODE
@@ -334,7 +385,7 @@ for (const file of process.argv.slice(2)) {
     if (value.success !== true) throw new Error(`Smoke response failed: ${file}`);
 }
 NODE
-    echo "Smoke passed: Hardhat 31337, SIWE wallet login, wallet readback and one safety transaction."
+    echo "Smoke passed: Hardhat 31337, SIWE wallet readback, safety transaction and configured reward workflow."
     exit 0
 fi
 

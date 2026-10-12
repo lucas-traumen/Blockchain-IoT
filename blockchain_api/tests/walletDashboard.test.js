@@ -310,3 +310,37 @@ test('session timer never extrapolates missing or malformed sensor timestamps', 
     f.run("walletSessions[0].iotSession = {started_at: 'invalid', durationS: NaN}; walletSessions[0].durationS = null; renderWalletSessionTimer()");
     assert.equal(f.elements.get('walletSessionTimer').textContent, '--:--:--');
 });
+
+test('V2 task session guidance uses its snapshotted duration and 10 Hz sample threshold', () => {
+    const f = fixture();
+    f.select('user_1');
+    f.run(`wallet = { success: true, address: '0x1111', balance: '20', allowance: '2',
+            requiredAllowance: '2', stakeAmount: '0.2', chainId: 31337, canStart: true,
+            rewardProtocolVersion: 'task-rewards-v2', device: { ready: true, deviceId: 'esp32_01' } };
+        walletSessions = [{ sessionId: 'task-session', taskId: 'task-1', assignmentId: 'asg-1',
+            taskSnapshot: { task: { completionRule: { minimumDurationS: 120 } } },
+            stage: 'RUNNING', settled: false, sampleCount: 900,
+            iotSession: { started_at: '2026-10-12T10:00:00Z', ended_at: null } }];
+        renderWallet()`);
+    assert.match(f.elements.get('walletSessionTimerDetail').textContent, /Minimum 120s/);
+    assert.match(f.elements.get('walletSessionTimerDetail').textContent, /about 1,080 samples at 10 Hz/);
+    assert.match(f.elements.get('walletSensorStatus').textContent, /120 seconds \/ 1,080 samples/);
+});
+
+test('V2 outcome labels use actual payout and do not misreport refunds as rewarded', () => {
+    const f = fixture();
+    for (const [outcomeCode, rewardPaid, penaltyCollected, expected] of [
+        [0, '0.002', '0', 'REWARDED'], [0, '0', '0', 'COMPLETED · NO REWARD'],
+        [1, '0', '0.010', 'PENALTY'], [2, '0', '0', 'REFUNDED · NO REWARD'],
+        [3, '0', '0', 'REFUNDED · NO REWARD'], [4, '0', '0', 'REFUNDED · NO REWARD'],
+        [5, '0', '0', 'REFUNDED · NO REWARD']
+    ]) {
+        f.context.labelSession = { settled: true, rewardProtocolVersion: 'task-rewards-v2',
+            settlementStatusCode: null, outcomeCode, rewardPaid, penaltyCollected };
+        assert.equal(f.run('walletResultLabel(labelSession)'), expected);
+    }
+    assert.equal(f.run('walletOutcomeName(4)'), 'OWNER CANCELLED');
+    assert.equal(f.run('walletOutcomeName(5)'), 'SYSTEM CANCELLED');
+    assert.equal(f.run('walletResultLabel({settled:true,settlementStatusCode:null})'), 'NO REWARD');
+    assert.equal(f.run('walletResultLabel({settled:true,settlementStatusCode:1})'), 'DAILY LIMIT');
+});

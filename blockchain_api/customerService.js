@@ -80,7 +80,7 @@ function publicUser(user) {
 }
 
 class CustomerService {
-    constructor({ store, chainId = 31337, challengeTtlMs = 300000, sessionTtlMs = 86400000, adminWallets = [], appOrigin = "http://localhost:8081", authMode = "siwe" } = {}) {
+    constructor({ store, chainId = 31337, challengeTtlMs = 300000, sessionTtlMs = 86400000, adminWallets = [], operatorWallets = [], auditorWallets = [], appOrigin = "http://localhost:8081", authMode = "siwe" } = {}) {
         this.store = store;
         this.chainId = safeChainId(chainId);
         this.challengeTtlMs = positiveTtl(challengeTtlMs, "challengeTtlMs");
@@ -91,11 +91,17 @@ class CustomerService {
         if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) throw new Error("HRC_APP_ORIGIN must be an HTTP(S) origin");
         this.appOrigin = origin.origin;
         this.adminWallets = new Set(adminWallets.map(item => address(item)));
+        this.operatorWallets = new Set(operatorWallets.map(item => address(item)));
+        this.auditorWallets = new Set(auditorWallets.map(item => address(item)));
     }
 
     static fromEnv(env = process.env) {
         const file = env.HRC_CUSTOMER_STORE_PATH || path.join(__dirname, "data", "customers.json");
         const configuredAdmins = String(env.HRC_APP_ADMIN_WALLETS || "")
+            .split(",").map(value => value.trim()).filter(Boolean);
+        const configuredOperators = String(env.HRC_APP_OPERATOR_WALLETS || "")
+            .split(",").map(value => value.trim()).filter(Boolean);
+        const configuredAuditors = String(env.HRC_APP_AUDITOR_WALLETS || "")
             .split(",").map(value => value.trim()).filter(Boolean);
         const network = configuredNetwork(env);
         const store = env.HRC_APP_STORE !== "json"
@@ -107,6 +113,8 @@ class CustomerService {
             challengeTtlMs: Number(env.HRC_AUTH_CHALLENGE_TTL_S || 300) * 1000,
             sessionTtlMs: Number(env.HRC_APP_SESSION_TTL_S || 86400) * 1000,
             adminWallets: configuredAdmins,
+            operatorWallets: configuredOperators,
+            auditorWallets: configuredAuditors,
             appOrigin: env.HRC_APP_ORIGIN || "http://localhost:8081",
             authMode: env.HRC_APP_AUTH_MODE || "siwe"
         });
@@ -129,6 +137,14 @@ class CustomerService {
         });
         this.store.saveChallenge({ walletAddress, chainId, nonce, message, issuedAt, expiresAt, used: false });
         return { success: true, mode: this.authMode, walletAddress: ethers.getAddress(walletAddress), chainId, message, expiresAt };
+    }
+
+    roleForWallet(walletAddress) {
+        const normalized = String(walletAddress).toLowerCase();
+        if (this.adminWallets.has(normalized)) return "admin";
+        if (this.operatorWallets.has(normalized)) return "operator";
+        if (this.auditorWallets.has(normalized)) return "auditor";
+        return "customer";
     }
 
     authenticateWallet(input) {
@@ -166,7 +182,7 @@ class CustomerService {
         const user = {
             userId,
             walletAddress,
-            role: this.adminWallets.has(walletAddress) ? "admin" : "customer",
+            role: this.roleForWallet(walletAddress),
             status: existing?.status || "active",
             createdAt: existing?.createdAt || timestamp,
             lastSeenAt: timestamp,
@@ -209,7 +225,7 @@ class CustomerService {
         if (!session || Date.parse(session.expiresAt) <= Date.now()) return null;
         const user = this.store.getUser(session.userId);
         if (!user || user.status !== "active") return null;
-        user.role = this.adminWallets.has(user.walletAddress) ? "admin" : "customer";
+        user.role = this.roleForWallet(user.walletAddress);
         return { session, user };
     }
 
@@ -283,7 +299,7 @@ class CustomerService {
 
     listCustomers(limit = 500) {
         const users = this.store.listUsers().sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt))).slice(0, parseLimit(limit));
-        return { success: true, count: users.length, customers: users.map(user => publicUser({ ...user, role: this.adminWallets.has(user.walletAddress) ? "admin" : "customer" })) };
+        return { success: true, count: users.length, customers: users.map(user => publicUser({ ...user, role: this.roleForWallet(user.walletAddress) })) };
     }
 
     getCustomerBehavior(userId, limit) {

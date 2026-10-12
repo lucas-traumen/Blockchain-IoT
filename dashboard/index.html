@@ -150,17 +150,44 @@
             </div>
             <p id="walletFirstStatus" class="wallet-account-hint" role="status" aria-live="polite" hidden></p>
         </section>
+        <section id="ownerTaskPanel" class="panel owner-task-panel" hidden aria-labelledby="ownerTaskHeading">
+            <div class="panel-header compact-panel-header"><div><span class="wallet-card-label">OWNER WORKSPACE</span><h3 id="ownerTaskHeading">Task and completion review</h3></div><button type="button" id="ownerTaskRefresh" class="view-all-btn">Refresh tasks</button></div>
+            <form id="ownerTaskForm" class="owner-task-form">
+                <label>Task title<input name="title" maxlength="120" required></label>
+                <label>Description<input name="description" maxlength="2000" required></label>
+                <label>Device ID<input name="deviceId" value="esp32_01" maxlength="80" required></label>
+                <label>Required cycles<input name="requiredCycles" type="number" min="1" max="100000" value="20" required></label>
+                <label>Minimum seconds<input name="minimumDurationS" type="number" min="120" max="86400" value="120" required></label>
+                <label>Maximum seconds<input name="maximumDurationS" type="number" min="120" max="86400" value="900" required></label>
+                <button type="submit" class="view-all-btn primary-action">Create draft</button>
+            </form>
+            <p id="ownerTaskStatus" class="view-message" role="status" aria-live="polite"></p>
+            <div id="ownerTaskList" class="wallet-task-list"></div>
+            <form id="completionApprovalForm" class="owner-task-form completion-approval-form">
+                <h4>Approve completion evidence</h4>
+                <label>Session ID<input name="sessionId" required></label>
+                <label>Task ID<input name="taskId" required></label>
+                <label>Observed cycles<input name="observedCycles" type="number" min="0" required></label>
+                <label>Reason<input name="reason" maxlength="1000" required></label>
+                <button type="submit" class="view-all-btn">Approve and audit</button>
+            </form>
+        </section>
         <section id="walletPanel" class="panel wallet-wallet-panel" hidden aria-labelledby="walletHeading">
             <div class="panel-header compact-panel-header">
                 <div>
                     <span class="panel-kicker">USER TRANSACTION AREA</span>
                     <h3 id="walletHeading">My Wallet / My Sessions</h3>
-                    <p>1. Approve 2 HRC · 2. Start sensor session · 3. End session to settle.</p>
+                    <p>1. Approve the displayed stake · 2. Select a task and start · 3. End the session to settle its evidence.</p>
                 </div>
                 <div class="wallet-panel-controls"><button type="button" id="walletLogoutBtn" class="view-all-btn">Sign out</button><span id="walletRole" class="live-badge">WALLET NOT CONNECTED</span><button type="button" class="view-all-btn" data-wallet-refresh>Refresh wallet</button></div>
             </div>
 
             <p id="walletMessage" class="view-message" role="status" aria-live="polite">Connect MetaMask to load this wallet.</p>
+            <section id="walletTaskBoard" class="wallet-task-board" hidden aria-labelledby="walletTaskHeading">
+                <div class="panel-header compact-panel-header"><div><span class="wallet-card-label">TASKS</span><h4 id="walletTaskHeading">Available robot tasks</h4></div><span id="walletTaskCount" class="live-badge">0 OPEN</span></div>
+                <p id="walletTaskRewardPool" class="wallet-account-hint" role="status"></p>
+                <div id="walletTaskList" class="wallet-task-list"><p>Loading tasks...</p></div>
+            </section>
 
             <div class="wallet-wallet-layout">
                 <section class="wallet-wallet-card" aria-labelledby="walletCardHeading">
@@ -182,6 +209,7 @@
                         <button type="button" id="walletStartBtn" class="view-all-btn primary-action" disabled>Start Session</button>
                         <button type="button" id="walletEndBtn" class="view-all-btn primary-action" hidden disabled>End Session</button>
                     </div>
+                    <p id="walletFundingStatus" class="wallet-account-hint" role="status" aria-live="polite">Local test funding status will appear after SIWE sign-in.</p>
                     <div class="wallet-session-timer">
                         <span id="walletSessionTimerLabel" class="wallet-card-label">Session time</span>
                         <strong id="walletSessionTimer" class="mono">--:--:--</strong>
@@ -198,23 +226,23 @@
                             <span class="wallet-card-label">AUTOMATIC SETTLEMENT</span>
                             <h4 id="policyHeading">How reward &amp; penalty works</h4>
                         </div>
-                        <span class="wallet-policy-contract">HRCSessionRewards</span>
+                        <span id="walletPolicyContract" class="wallet-policy-contract">HRCSessionRewards</span>
                     </div>
                     <div class="wallet-policy-list">
-                        <div class="wallet-policy-row stake-policy"><span>START SESSION</span><strong>Lock 2 HRC</strong><small>Approve again whenever allowance is below 2 HRC.</small></div>
-                        <div class="wallet-policy-row reward-policy"><span>VALID / NO VIOLATION</span><strong>Return 2 + reward up to 6 HRC</strong><small>Base reward is 3 HRC at 30s. The bonus rises to 100% at 60s, then caps.</small></div>
-                        <div class="wallet-policy-row penalty-policy"><span>VIOLATION CONFIRMED</span><strong>Forfeit the 2 HRC stake</strong><small>The stake goes to the configured penalty treasury.</small></div>
-                        <div class="wallet-policy-row neutral-policy"><span>SENSOR FAULT / INCOMPLETE</span><strong>Return 2 HRC · no reward</strong><small>Sensor faults and incomplete data receive no reward or penalty.</small></div>
+                        <div class="wallet-policy-row stake-policy"><span>START SESSION</span><strong id="walletPolicyStake">Lock 2 HRC</strong><small>Approve the exact stake before starting.</small></div>
+                        <div class="wallet-policy-row reward-policy"><span id="walletPolicySafeTitle">VALID / NO VIOLATION</span><strong id="walletPolicySafe">Return 2 + reward up to 6 HRC</strong><small id="walletPolicySafeDetail">Base reward is 3 HRC at 30s. The bonus rises to 100% at 60s, then caps.</small></div>
+                        <div class="wallet-policy-row penalty-policy"><span>VIOLATION CONFIRMED</span><strong id="walletPolicyPenalty">Forfeit the 2 HRC stake</strong><small>The policy penalty goes to the configured treasury.</small></div>
+                        <div class="wallet-policy-row neutral-policy"><span>SENSOR FAULT / INCOMPLETE</span><strong id="walletPolicyRefund">Return 2 HRC · no reward</strong><small>Technical faults and incomplete tasks are refunded.</small></div>
                     </div>
                 </section>
             </div>
 
-            <div class="wallet-reward-scale" aria-label="Duration reward scale">
+            <div id="walletRewardScale" class="wallet-reward-scale" aria-label="Duration reward scale">
                 <div class="wallet-reward-scale-heading"><strong>Duration reward</strong><span>Longer clear sessions earn more</span></div>
                 <div class="wallet-reward-scale-track" aria-hidden="true"><span></span></div>
                 <div class="wallet-reward-scale-points"><span><b>30s</b><small>3 HRC</small></span><span><b>45s</b><small>4.5 HRC</small></span><span><b>60s+</b><small>6 HRC max</small></span></div>
             </div>
-            <div class="wallet-settlement-note"><strong>End to receive the result</strong><span><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and approximately 270 samples at 10 Hz. Confirmed violations never receive the duration bonus.</span></div>
+            <div class="wallet-settlement-note"><strong id="walletPolicyNoteTitle">End to receive the result</strong><span id="walletPolicyNote"><b>Approve</b> grants permission and does not change your balance. <b>Start</b> locks 2 HRC and opens a live sensor session. <b>End Session</b> closes it; the backend calculates the outcome from its samples and the contract settles. A valid session needs at least 30 seconds and approximately 270 samples at 10 Hz. Confirmed violations never receive the duration bonus.</span></div>
 
             <section class="wallet-ledger" aria-labelledby="walletLedgerHeading">
                 <div class="wallet-ledger-header"><h4 id="walletLedgerHeading">Recent wallet activity</h4><span>Amounts verified from contract events and token transfers</span></div>

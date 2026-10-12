@@ -43,7 +43,9 @@ test("dashboard proxies return JSON when an upstream API is unreachable", () => 
 
 test("dashboard proxy sets CSP and browser security headers", () => {
     assert.match(nginxConfig, /Content-Security-Policy/);
-    assert.match(source, /270 samples at 10 Hz/);
+    assert.match(source, /function walletSessionRequirements\(session\)/);
+    assert.match(source, /durationS: 30, minimumSamples: 270/);
+    assert.match(source, /Math\.ceil\(durationS \* 10 \* 0\.9\)/);
     assert.match(nginxConfig, /X-Frame-Options "DENY"/);
     assert.match(nginxConfig, /X-Content-Type-Options "nosniff"/);
     assert.match(nginxConfig, /Referrer-Policy "no-referrer"/);

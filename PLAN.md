@@ -1611,3 +1611,60 @@ syntax, local launcher shell syntax, active-doc stale-reference scan and
 use chain `31337` and SIWE origin `http://localhost:8081`. No live-stack restart,
 chain deployment, data reset, or write-producing smoke request was performed.
 Preserve the user-owned ESP32 VS Code port change and exclude it from staging.
+
+## R25 — HRC Safe-to-Earn V3 implementation (2026-10-12)
+
+Approved scope: implement the software/local roadmap in
+`docs/complete-product-implementation-plan.md`; preserve the running local
+deployment and all user-owned workspace changes. No hardware flash, public
+testnet deployment, or active-chain migration. Keep HRCSessionRewards V1
+semantics intact; V3 uses a separate contract and versioned deployment.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R25:orchestrator | `PLAN.md`, `PROJECT_MEMORY.md`; inspect complete V3 dependencies | Existing policy, identity, sensor and chain behavior audited; no active deployment/data reset | done |
+| R25a:orchestrator | Blockchain API SQLite stores/services/routes/tests; local launcher | SIWE local funding is allowlisted to chain 31337, one-time and idempotent, capped, best-effort, visible; task/assignment/policy snapshot/completion/audit APIs enforce RBAC and idempotency | done (API/local tests) |
+| R25b:orchestrator | New `HRCTaskRewards.sol`, deploy script, tests, versioned manifest/ABI selection | Approved 0.200/0.002/0.010 HRC economics, frozen per-session amounts/hash, secure settlement/refund, exact accounting; V1 unchanged | done (98 Hardhat tests; isolated deployment smoke) |
+| R25c:orchestrator | IoT reward policy/API bridge, blockchain outbox/reconciliation and tests | Completion and telemetry evidence freeze once; deterministic outcomes; immutable retry payload, receipt/event reconciliation, no duplicate settlement | partial (V2 real-contract lifecycle integration now drives real Python IoT HTTP/SQLite; warning/spike matrix and chaos/fault-injection matrix open) |
+| R25d:orchestrator | Dashboard task/session/owner/audit surfaces and browser/API tests | Wallet can discover/accept task, see funding state and session/settlement states; privileged actions server-authorized and audited | partial (UI/API implemented; V2 timer now uses session policy snapshot for 120s/1,080 samples; browser visual/interaction verification open) |
+| R25e:orchestrator | Firmware/edge model provenance/API and isolated local E2E/docs | Existing V1 stack remains untouched; new isolated V3 stack exercises safe, warning, spike, violation, fault, chain outage and unauthorized actor; external HIL/public-chain gates remain explicit | partial (safe/incomplete/violation/fault with real V2 contract; warning/spike telemetry, real IoT E2E, edge parity and HIL open) |
+
+Implementation evidence: `npm --prefix blockchain_api test` — 180 passed;
+`.venv/bin/python -m pytest tests/ -q` — 449 passed, 12 skipped;
+`npx hardhat test` from `smart_contracts/` — 105 passing, including a new V2
+task lifecycle integration suite that runs the production wallet calldata
+builder, owner completion service, live-session coordinator, durable transaction
+writer, and settlement service against the actual deployed `HRCTaskRewards`
+contract. Safe retry checks that the on-chain end timestamp/evidence hash remain frozen and accounting
+balances; incomplete, confirmed-violation, and sensor-fault outcomes are also
+covered. The suite also boots the real Python FastAPI ingestion/session service
+on an ephemeral port with its own SQLite database and drives it over HTTP through
+`IotSessionClient`; only MQTT transport, device ACKs and wall-clock are
+deterministic. Safe, single-spike, confirmed-violation, sensor-fault and
+insufficient-coverage telemetry all settle once with correct outcomes, penalties
+and `accountingInvariant()`; recovery after coordinator recreation keeps the
+frozen end timestamp/evidence hash and does not re-close the sensor. No ESP32,
+broker or public chain is involved, and no production endpoint or data is used.
+`blockchain_api/taskEvidencePolicy.js` is now the single source for the frozen
+evidence policy: task snapshots carry it, and `LiveSessionService` re-derives
+duration, raw/processed coverage, cadence, timing span/gap and gap/violation
+counts from the raw session boundary instead of trusting the IoT `result` flags.
+An `INCOMPLETE` verdict also clears `dataValid`/`coverageValid`, and V2 dashboard
+outcome labels read actual payout so a refunded stake is never shown as
+`REWARDED`.
+V2 wallet responses now include the persisted task/assignment policy snapshot;
+API readiness and dashboard guidance consistently show the snapshotted
+120-second minimum and 1,080 samples at 10 Hz (90% coverage), while V1 remains
+30 seconds / 270 samples. Regression coverage verifies these contracts.
+Syntax checks and `git diff --check` pass. Isolated V2 launcher smoke on RPC/API
+ports 18545/13000
+deployed the versioned contract, verified SIWE customer/admin roles, wallet pool
+readback, task create/publish/accept and a safety transaction. It did not start
+Docker/IoT, use a sensor, or settle a task. The live ports 8081/3000/8545/8002/1886
+were not touched. Preserve `firmware/esp32/.vscode/settings.json` (`/dev/ttyACM0`)
+and exclude it from changes. Remaining gates are real IoT backend-to-chain V2
+E2E and recovery/chaos matrix, dashboard browser/visual validation, model
+provenance and edge parity, hardware/HIL, public testnet, TLS and multisig/timelock
+deployment.
+Checkpoint plugin tools are not available in this Codex session; no external
+checkpoint IDs are claimed.

@@ -2830,6 +2830,20 @@ tbody tr:not(.empty-row):hover {
 .wallet-account-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 .wallet-account-hint { flex-basis: 100%; margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .wallet-account-hint:empty { display: none; }
+.wallet-task-board { margin: 18px 0 22px; border-top: 1px solid var(--border); padding-top: 16px; }
+.wallet-task-list { display: grid; gap: 0; }
+.wallet-task-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.wallet-task-copy { min-width: 0; }
+.wallet-task-copy strong, .wallet-task-copy span { display: block; }
+.wallet-task-copy strong { font-size: 14px; }
+.wallet-task-copy span { margin-top: 4px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.owner-task-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end; padding: 14px 0; }
+.owner-task-form label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 12px; }
+.owner-task-form input { min-width: 0; min-height: 38px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text-primary); padding: 7px 9px; }
+.owner-task-form h4 { grid-column: 1 / -1; margin: 4px 0; }
+.completion-approval-form { margin-top: 16px; border-top: 1px solid var(--border); }
+@media (max-width: 760px) { .owner-task-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px) { .wallet-task-row { align-items: flex-start; flex-direction: column; } }
 .wallet-account-empty h3 { font-size: 14px; margin-bottom: 6px; }
 .wallet-account-empty p { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .wallet-account-empty button { flex-shrink: 0; }

@@ -41,6 +41,26 @@ test("sqlite customer store keeps users, challenges, sessions and behavior", t =
     assert.equal(store.listBehavior("user_1", 1).length, 1);
 });
 
+test("sqlite stores task records and atomically claims one-time local funding", t => {
+    const directory = tempDir(t);
+    const store = new SqliteCustomerStore(path.join(directory, "domain.db"));
+    t.after(() => store.close());
+    const task = { taskId: "task-1", status: "OPEN", createdAt: "2026-10-12T00:00:00.000Z", updatedAt: "2026-10-12T00:00:00.000Z" };
+    store.saveTask(task);
+    assert.deepEqual(store.listTasks("OPEN"), [task]);
+    const assignment = { assignmentId: "assignment-1", taskId: task.taskId, userId: "user-1", status: "ASSIGNED", createdAt: task.createdAt };
+    assert.equal(store.saveAssignment(assignment).assignmentId, assignment.assignmentId);
+    assert.equal(store.saveAssignment({ ...assignment, assignmentId: "another" }).assignmentId, assignment.assignmentId);
+    store.saveCompletionEvidence({ sessionId: "session-1", evidenceId: "evidence-1", createdAt: task.createdAt });
+    assert.equal(store.getCompletionEvidence("session-1").evidenceId, "evidence-1");
+    const first = store.claimFunding("0xabc", "31337:deployment", task.createdAt);
+    const retry = store.claimFunding("0xabc", "31337:deployment", task.createdAt);
+    assert.equal(first.claimed, true);
+    assert.equal(retry.claimed, false);
+    store.updateFunding("0xabc", "31337:deployment", { status: "FAILED" });
+    assert.equal(store.getFunding("0xabc", "31337:deployment").status, "FAILED");
+});
+
 test("sqlite session store keeps session ownership and transaction snapshots", t => {
     const directory = tempDir(t);
     const store = new SqliteSessionStore(path.join(directory, "sessions.db"));

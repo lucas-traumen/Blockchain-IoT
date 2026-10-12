@@ -1023,3 +1023,47 @@ safety outcome.
   idempotency. Contract is not a proxy: deployments with the old ABI keep the
   old behavior until redeploy and deployment-manifest update. No chain or
   manifest was changed during R23.
+
+## Safe-to-Earn task rewards V3 (R25, 2026-10-12)
+
+- Keep `HRCSessionRewards` V1 unchanged. Task-bound V2 is a separate
+  `HRCTaskRewards` contract selected only by its versioned deployment manifest.
+  Local economics are 0.200 HRC stake, 0.002 HRC safe-task reward, 0.010 HRC
+  confirmed-violation penalty and 120-second minimum safe duration.
+- Task definition hash/policy snapshot is pinned into the assignment and the
+  on-chain start event. Completion evidence is owner/operator approved and must
+  be stored while the sensor session is still RUNNING, before End freezes the
+  evidence document and settlement payload. Retry cannot replace frozen values.
+- The local MetaMask launcher keeps V1 as default. `--task-rewards-v2` deploys
+  into a fresh run directory; account 0 is local-only SIWE admin/operator and
+  account 2 is the funded customer. Their private-key files are mode 0600.
+  Never import these local keys on a public network.
+- V2 lifecycle integration in `smart_contracts/test/HRCTaskLifecycle.integration.js`
+  uses the production wallet calldata builder, task completion service, live
+  session coordinator, durable transaction writer, settlement service, and a
+  real local `HRCTaskRewards` deployment. It verifies delayed safe settlement
+  and immutable `endedAt` /
+  evidence hash after retry, plus incomplete, confirmed-violation, sensor-fault,
+  and accounting-invariant outcomes. It now also boots the real Python FastAPI
+  ingestion/session service on an ephemeral port with its own SQLite database and
+  drives it over HTTP through `IotSessionClient`; only MQTT transport, device ACKs
+  and wall-clock are deterministic. No ESP32, broker, production endpoint or
+  public chain is involved.
+- `blockchain_api/taskEvidencePolicy.js` owns the frozen evidence policy
+  (10 Hz, 90% sample/raw coverage, 95% processed coverage, 8–12 Hz cadence, 90%
+  timing span, 0.5 s max gap, zero sequence gaps). Task snapshots carry it and
+  `LiveSessionService` re-derives those checks from the raw session boundary
+  instead of trusting IoT `result` flags; a failed check forces `INCOMPLETE` and
+  clears `dataValid`/`coverageValid`.
+- Wallet session responses preserve task/assignment IDs and policy snapshots.
+  Dashboard duration/sample guidance uses that snapshot (V2: 120 seconds and
+  1,080 minimum samples at 90% of 10 Hz); V1 retains 30 seconds / 270 samples.
+  API/dashboard regression tests cover both response propagation and rendering;
+  browser visual/interaction validation remains open.
+- Verification after the lifecycle suite and policy-guidance fix: Blockchain API 180/180, Hardhat
+  105/105, Python IoT/model 449 passed/12 skipped; JS/shell syntax and
+  `git diff --check` pass. The earlier isolated launcher smoke still covers SIWE
+  role separation and task create/publish/accept. Real IoT-to-chain recovery/
+  chaos, dashboard browser/visual verification, warning/spike telemetry, edge
+  parity, HIL, public testnet, TLS, and multisig readiness remain open. No active
+  ports, live deployment, hardware, or deployment manifest was changed.

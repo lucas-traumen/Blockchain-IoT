@@ -18,6 +18,7 @@ const { operatorPrivateKey } = require("./operatorKey");
 
 const DEFAULT_REWARD_DEPLOYMENT = path.join(__dirname, "../smart_contracts/deployments/reward-localhost.json");
 const REWARD_ABI_PATH = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCSessionRewards.sol/HRCSessionRewards.json");
+const TASK_REWARD_ABI_PATH = path.join(__dirname, "../smart_contracts/artifacts/contracts/HRCTaskRewards.sol/HRCTaskRewards.json");
 
 function readJson(file) {
     try { return JSON.parse(fs.readFileSync(file, "utf8")); }
@@ -25,7 +26,10 @@ function readJson(file) {
 }
 
 function rewardConfig(env = process.env) {
-    const deployment = readJson(env.HRC_REWARD_DEPLOYMENT || DEFAULT_REWARD_DEPLOYMENT) || {};
+    const deploymentPath = env.HRC_REWARD_DEPLOYMENT || (env.HRC_REWARD_PROTOCOL_VERSION === "task-rewards-v2"
+        ? path.join(__dirname, "../smart_contracts/deployments/task-rewards-localhost.json") : DEFAULT_REWARD_DEPLOYMENT);
+    const deployment = readJson(deploymentPath) || {};
+    const taskRewards = deployment.version === "task-rewards-v2";
     const address = env.HRC_REWARD_ADDRESS || deployment.rewardsAddress;
     const rpcUrl = env.RPC_URL || "http://127.0.0.1:8545";
     const network = configuredNetwork(env, deployment.network || "localhost");
@@ -33,9 +37,10 @@ function rewardConfig(env = process.env) {
     if (!address || !ethers.isAddress(address)) {
         throw new ApiError(503, "REWARD_NOT_CONFIGURED", "HRC reward contract address is not configured");
     }
-    const artifact = readJson(env.HRC_REWARD_ABI || REWARD_ABI_PATH);
+    const artifact = readJson(env.HRC_REWARD_ABI || (taskRewards ? TASK_REWARD_ABI_PATH : REWARD_ABI_PATH));
     if (!artifact?.abi) throw new ApiError(503, "REWARD_NOT_CONFIGURED", "HRC reward contract ABI is unavailable");
-    return { address, rpcUrl, privateKey, abi: artifact.abi, deployment, network };
+    return { address, rpcUrl, privateKey, abi: artifact.abi, deployment, network,
+        protocolVersion: taskRewards ? "task-rewards-v2" : "session-rewards-v1" };
 }
 
 function readSessionTuple(tuple) {
@@ -330,7 +335,12 @@ class RewardService {
 
 let singleton;
 function getRewardService() {
-    if (!singleton) singleton = RewardService.fromEnv();
+    if (!singleton) {
+        const config = rewardConfig();
+        singleton = config.protocolVersion === "task-rewards-v2"
+            ? require("./taskRewardService").TaskRewardService.fromEnv()
+            : RewardService.fromEnv();
+    }
     return singleton;
 }
 
