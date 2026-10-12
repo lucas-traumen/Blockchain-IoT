@@ -1,0 +1,74 @@
+{
+  "simulatedEvidence": {
+    "source": "simulated-ui-verification",
+    "sessionId": "demo-user_2-ui-6dd00b8c-0a0b-4949-99ed-c427f2ae3d11",
+    "beneficiary": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    "outcome": "VALID_NO_VIOLATION",
+    "timestamp": 1791710833
+  },
+  "result": {
+    "success": true,
+    "duplicate": false,
+    "policyVersion": "session-reward-v2",
+    "sessionId": "demo-user_2-ui-6dd00b8c-0a0b-4949-99ed-c427f2ae3d11",
+    "sessionKey": "0x4d4cb11eff4b38723eda97157a3dc1c447e65e4a8db806c68f2d3acca3e1317e",
+    "beneficiary": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    "outcome": "VALID_NO_VIOLATION",
+    "outcomeCode": 0,
+    "settlementStatus": "REWARD_DAILY_LIMIT",
+    "stakeReturned": "2.0",
+    "rewardPaid": "0.0",
+    "penaltyCollected": "0.0",
+    "evidenceHash": "0x513754afa83e67f48b4c8496e41163b95dfd54c56b49f5f24dd7079985b716b1",
+    "outcomeTimestamp": 1791710833,
+    "transactionHash": "0x088680a55ff374a6aa63072e57c74ffa3d2e958b2e377bd15c2f3b5d26f7f5a0",
+    "blockNumber": 42
+  },
+  "readback": {
+    "sessionId": "demo-user_2-ui-6dd00b8c-0a0b-4949-99ed-c427f2ae3d11",
+    "sessionRef": "ui-6dd00b8c-0a0b-4949-99ed-c427f2ae3d11",
+    "sessionKey": "0x4d4cb11eff4b38723eda97157a3dc1c447e65e4a8db806c68f2d3acca3e1317e",
+    "userId": "user_2",
+    "beneficiary": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    "started": true,
+    "settled": true,
+    "startedAt": 1791710850,
+    "settledAt": 1791710851,
+    "stakedAmount": "2.0",
+    "rewardPaid": "0.0",
+    "penaltyCollected": "0.0",
+    "stakeReturned": "2.0",
+    "outcomeCode": 0,
+    "settlementStatusCode": 1,
+    "evidenceHash": "0x513754afa83e67f48b4c8496e41163b95dfd54c56b49f5f24dd7079985b716b1",
+    "outcomeTimestamp": 1791710833,
+    "transactionHash": "0x088680a55ff374a6aa63072e57c74ffa3d2e958b2e377bd15c2f3b5d26f7f5a0",
+    "blockNumber": 42,
+    "events": [
+      {
+        "name": "SessionStarted",
+        "transactionHash": "0x2ab1f1cc80bd249c6567612c6c7cbcf77c80c17c6f45fda16c70e04343bcdadb",
+        "blockNumber": 41,
+        "sessionKey": "0x4d4cb11eff4b38723eda97157a3dc1c447e65e4a8db806c68f2d3acca3e1317e",
+        "beneficiary": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+        "amount": "2.0",
+        "startedAt": 1791710850
+      },
+      {
+        "name": "SessionSettled",
+        "transactionHash": "0x088680a55ff374a6aa63072e57c74ffa3d2e958b2e377bd15c2f3b5d26f7f5a0",
+        "blockNumber": 42,
+        "sessionKey": "0x4d4cb11eff4b38723eda97157a3dc1c447e65e4a8db806c68f2d3acca3e1317e",
+        "beneficiary": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+        "outcomeCode": 0,
+        "settlementStatusCode": 1,
+        "stakeReturned": "2.0",
+        "rewardPaid": "0.0",
+        "penaltyCollected": "0.0",
+        "evidenceHash": "0x513754afa83e67f48b4c8496e41163b95dfd54c56b49f5f24dd7079985b716b1",
+        "timestamp": 1791710833
+      }
+    ]
+  },
+  "balance": "23.0"
+}

@@ -1,0 +1,42 @@
+{
+  "synthetic": true,
+  "dataset_sha256": "0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8",
+  "source_rows": 96000,
+  "split_sessions": {
+    "train": 280,
+    "val": 60,
+    "test": 60
+  },
+  "test_windows": 13560,
+  "checks": {
+    "synthetic_labels": true,
+    "artifact_dataset_hash": true,
+    "split_unchanged": true,
+    "no_session_overlap": true,
+    "regression_recomputed_from_csv": true
+  },
+  "real_files_preserved": {},
+  "debounced": {
+    "n_events": 51,
+    "n_episodes": 33,
+    "n_tp_episodes": 33,
+    "n_matched_events": 33,
+    "precision": 1.0,
+    "recall": 0.6470588235294118,
+    "f1": 0.7857142857142858,
+    "false_warning_rate": 0.0,
+    "miss_rate": 0.3529411764705882,
+    "false_alarms_per_min": 0.0,
+    "undefined_reason": null,
+    "lead_time_s": {
+      "mean": 0.12424242424242668,
+      "min": 0.0999999999999659,
+      "max": 0.20000000000001705
+    },
+    "lead_time_ms": {
+      "mean": 124.24242424242668,
+      "min": 99.9999999999659,
+      "max": 200.00000000001705
+    }
+  }
+}

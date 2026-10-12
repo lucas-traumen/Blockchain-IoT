@@ -1,0 +1,104 @@
+{
+  "generated_at": "2026-10-10T13:19:22.716681+07:00",
+  "scope": "local deployment evidence; Hardhat chain 31337 only",
+  "blockchain": {
+    "rpc": "http://127.0.0.1:8545",
+    "network": "localhost",
+    "chain_id": 31337,
+    "hrc_safety_log": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "token_address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    "session_rewards_address": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    "reward_pool_address": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    "penalty_treasury": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "reward_pool_initial_hrc": "1000",
+    "contract_tests": "64 passing",
+    "reward_smoke": {
+      "evidence_file": "reward-smoke.json",
+      "beneficiary": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+      "valid_session": "REWARDED",
+      "daily_limit_session": "REWARD_DAILY_LIMIT",
+      "violation_session": "PENALTY",
+      "sensor_fault_session": "NO_REWARD",
+      "duplicate_retry": true,
+      "final_beneficiary_balance_hrc": "21.0",
+      "final_reward_pool_balance_hrc": "997.0"
+    },
+    "api_smoke": {
+      "root_message": "HRC Safety Log Backend is running",
+      "start_session": {
+        "sessionId": "api-live-evidence-20261010-v2",
+        "transactionHash": "0x84c065a0b5914e5cbbd6cb1f79a72d89f5cc12ddf9719c7d1948d5b609b01bae",
+        "blockNumber": 16
+      },
+      "settlement": {
+        "success": true,
+        "duplicate": false,
+        "policyVersion": "session-reward-v2",
+        "sessionId": "api-live-evidence-20261010-v2",
+        "sessionKey": "0x5bcc5ab43335ee36b2d72da028a3892562cb27a741d76300be0b88dfb5d95f89",
+        "beneficiary": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+        "outcome": "SENSOR_FAULT",
+        "outcomeCode": 2,
+        "settlementStatus": "NO_REWARD",
+        "stakeReturned": "2.0",
+        "rewardPaid": "0.0",
+        "penaltyCollected": "0.0",
+        "evidenceHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "outcomeTimestamp": 1791612518,
+        "transactionHash": "0x1ae18d843407374dc11624a776841c7f52905df22bf4e86f5346b0afcbf36291",
+        "blockNumber": 17
+      },
+      "evidence_files": [
+        "api-root.json",
+        "api-session-start.json",
+        "api-session-settlement.json"
+      ]
+    },
+    "api_tests": "49 passing"
+  },
+  "edge_ai": {
+    "model": "LSTM",
+    "artifact": "ai_model/artifacts/lstm-real-20261010",
+    "model_sha256": "6713054121907c92645924d7e34a13db10867d19871fa161fe747f1fab1a9f0b",
+    "scaler_sha256": "164c42206f8214f0be20d8788b018a2fcb46c0ef132b3dc53f19b2ff43457734",
+    "input_shape": [
+      10,
+      2
+    ],
+    "output_shape": [
+      5
+    ],
+    "threshold_m": 0.04,
+    "threshold_mm": 40,
+    "native_parity_tests": "7 passed, 1 skipped (h5py-only reproducibility test)",
+    "esp_idf": "6.0.1",
+    "target": "esp32s3",
+    "build_status": "PASS",
+    "binary": "firmware/esp32/build/hrc_esp32.bin",
+    "binary_sha256": "8fb42e11b4e107b756b3827906548cfe00709b74ff9a586ccb1915a41b7d02bf",
+    "build_log": "esp32s3-build.log",
+    "artifact_check_log": "lstm-artifact-check.log",
+    "serial_ports_seen": [],
+    "flash_status": "NOT_FLASHED",
+    "flash_reason": "No /dev/ttyACM* or /dev/ttyUSB* device was present during deployment.",
+    "runtime_health": {
+      "status": "ok",
+      "mqtt": true,
+      "db": "/app/data/hrc.db",
+      "processor_version": "safety-v1",
+      "model_type": "lstm",
+      "model_available": true
+    }
+  },
+  "runtime_processes": {
+    "hardhat_node": "running on http://127.0.0.1:8545",
+    "blockchain_api": "running on http://127.0.0.1:3000",
+    "iot_backend_edge_model": "health verified separately with model_type=lstm and model_available=true",
+    "iot_backend_health_evidence": "iot-backend-health.json"
+  },
+  "reports": {
+    "lstm_real_report": "data/results/lstm-only-20261010",
+    "reward_policy_chart_png": "reward-policy.png",
+    "reward_policy_chart_svg": "reward-policy.svg"
+  }
+}

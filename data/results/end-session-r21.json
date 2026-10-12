@@ -1,0 +1,18 @@
+{
+  "sessionId": "hrc-e9a65572-demo-dbf840be-4b1b-4979-8ea8-ef9e358b4aa1",
+  "stage": "SETTLED",
+  "pending": false,
+  "stakeReturned": "0.0",
+  "rewardPaid": "0.0",
+  "penaltyCollected": "2.0",
+  "availableBefore": "18.0",
+  "availableAfter": "18.0",
+  "lockedAfter": "0.0",
+  "sensorStatus": "closed",
+  "durationS": 726.856,
+  "sampleCount": 7266,
+  "transactionHash": "0xb25a50e57c6f2c133afe6cd1a8d0ec2fb9ecccb7e056eeb8843d3aa8898eccda",
+  "duplicate": true,
+  "poolEscrowInvariant": true,
+  "lastError": null
+}

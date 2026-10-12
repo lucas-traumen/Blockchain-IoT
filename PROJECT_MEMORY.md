@@ -1146,3 +1146,20 @@ safety outcome.
   requires the base reward (`0.001`) to be available; the actual payout and
   daily-cap decision remains on-chain at settlement. No active runtime,
   deployment, database, firmware setting or manifest was changed.
+
+## Benchmark evidence is source-controlled (R29, 2026-10-13)
+
+- `data/*` remains ignored, but `data/results/` is committed: LSTM evaluation
+  JSON/CSV/figures, square-bench, edge/ESP32 deployment reports, wallet-first
+  browser verification and live-session evidence.
+- `data/results/**/*.pid` stays ignored; pid files are runtime artifacts, not
+  evidence. `.runtime/`, `.opencode/state/`, `.env*`, `compose.env` and
+  `ai_model/artifacts/*` (except the canonical `lstm-v1` artifact) stay ignored.
+- Text evidence was scanned for private keys, mnemonics, tokens and bearer
+  headers before staging; the only match is a test name mentioning private
+  keys. Contract/session identifiers in the evidence are `sessionKey` hashes
+  and transaction hashes, not key material.
+- Local stack restart/redeploy with the V2 duration-curve contract is a
+  separate, destructive operation that still requires explicit user approval
+  (new chain resetting demo data vs. deploying rewards V2 onto the existing
+  chain and orphaning existing stakes).

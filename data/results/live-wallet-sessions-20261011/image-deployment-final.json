@@ -1,0 +1,211 @@
+{
+  "standardDockerfile": true,
+  "base": "python:3.12-slim-bookworm",
+  "image": "sha256:0710e46941e8f04bf4cc42f6ecc9f2c1c0fb0762832f224a940340bdebfed5cc",
+  "healthy": true,
+  "sqliteMount": {
+    "name": "blockchain-hrc_backend_data",
+    "destination": "/app/data"
+  },
+  "matchingSourceHashes": {
+    "iot_backend/main.py": "a4c570c9f85c87a0914a0345c624100bb8fca00a561a9af9f2dc7dfd93935026",
+    "iot_backend/ingestion/service.py": "ce020b195f3e75810792a3542591c1550fa429829ab9bc232966289d93e6c5ac",
+    "iot_backend/ingestion/store.py": "87571769a8592a413bb4dbe513ec7aac1f9ee042c45872279923573dc5bfffae",
+    "scripts/verify_demo_wallet_ui.mjs": "66ec637970b05aafd415c7a78196012317b43c2d9b4cd1f194d50c99639eb058"
+  },
+  "health": {
+    "status": "ok",
+    "mqtt": true,
+    "db": "/app/data/hrc.db",
+    "processor_version": "safety-v1",
+    "model_type": "lstm",
+    "model_available": true,
+    "reward_bridge": false,
+    "reward_auto_start": false,
+    "reward_auto_settle": false,
+    "chain_bridge": {
+      "configured": false,
+      "running": false
+    },
+    "violation_confirmation": {
+      "enabled": true,
+      "rule": "2_of_3_valid_consecutive"
+    }
+  },
+  "model": {
+    "status": "ACTIVE",
+    "model_type": "lstm",
+    "model_version": "lstm-v1",
+    "model_sha256": "94d017fa94ca25ee22bacba740ac37102bd1537c82b009a61817cb62506b2b52",
+    "scaler_sha256": "20281417e61b5847f61413afa12245284ac88e6ae16b0d1c12b01da53e03986d",
+    "dataset_sha256": "0823c297f9248cce2dcb49dab682a9c24ce19a6aebda9e84f3838485de67d6d8",
+    "split_manifest_sha256": "601e58319c6514c3231a7e64c33eb3a4a2ba4346dd1aeb72851ad0a4b87e43c5",
+    "preprocessing_version": "pp-lstm-v1",
+    "input_shape": [
+      10,
+      2
+    ],
+    "output_shape": [
+      5
+    ],
+    "horizons_ms": [
+      100,
+      200,
+      300,
+      400,
+      500
+    ],
+    "training_data": "synthetic-only",
+    "simulation_mode": true,
+    "threshold_verified_on_hardware": false,
+    "artifact_path": "/app/ai_model/artifacts/lstm-v1",
+    "load_error": null,
+    "metrics": {
+      "model_version": "lstm-v1",
+      "preprocessing_version": "pp-lstm-v1",
+      "n_windows": {
+        "train": 63280,
+        "val": 13560,
+        "test": 13560
+      },
+      "metrics": {
+        "train": {
+          "n_windows": 63280,
+          "loss": 0.0018602010095492005,
+          "mae": 0.0481671467423439,
+          "mae_m_per_horizon": [
+            0.0025075315752113585,
+            0.0022011169729626886,
+            0.0024402774515372276,
+            0.0025278758477985455,
+            0.0029235696479401746
+          ],
+          "mae_m_mean": 0.002520074299089999
+        },
+        "val": {
+          "n_windows": 13560,
+          "loss": 0.0019441806944087148,
+          "mae": 0.04898349568247795,
+          "mae_m_per_horizon": [
+            0.00252748241460349,
+            0.0022153274165958936,
+            0.0024937952941899914,
+            0.002581810307139522,
+            0.0029955142448010352
+          ],
+          "mae_m_mean": 0.0025627859354659865
+        },
+        "test": {
+          "n_windows": 13560,
+          "loss": 0.0019480175105854869,
+          "mae": 0.048868197947740555,
+          "mae_m_per_horizon": [
+            0.0025462470974656516,
+            0.002211610714074693,
+            0.0024895896905523245,
+            0.002564813913309044,
+            0.0029715003922695755
+          ],
+          "mae_m_mean": 0.0025567523615342576
+        }
+      },
+      "history": {
+        "loss": [
+          0.01135809626430273,
+          0.0030788395088166,
+          0.0019692766945809126,
+          0.001600812072865665,
+          0.00141588831320405,
+          0.0013033468276262283,
+          0.0011588218621909618,
+          0.0011385775869712234,
+          0.001108335331082344,
+          0.0010853341082111,
+          0.0010618758387863636
+        ],
+        "mae": [
+          0.09095899760723114,
+          0.05767516419291496,
+          0.04609337076544762,
+          0.04129857197403908,
+          0.03873363137245178,
+          0.03688620403409004,
+          0.03445609658956528,
+          0.034085825085639954,
+          0.03362315148115158,
+          0.033201150596141815,
+          0.03283937647938728
+        ],
+        "val_loss": [
+          0.0019441806944087148,
+          0.0037443076726049185,
+          0.006987901870161295,
+          0.010144793428480625,
+          0.011704347096383572,
+          0.011133157648146152,
+          0.013322248123586178,
+          0.01196981780230999,
+          0.01294879149645567,
+          0.01296108216047287,
+          0.012050888501107693
+        ],
+        "val_mae": [
+          0.04898349568247795,
+          0.0675790011882782,
+          0.092483289539814,
+          0.11520826816558838,
+          0.1275520920753479,
+          0.1252792477607727,
+          0.1386750042438507,
+          0.1301647126674652,
+          0.1347018927335739,
+          0.13735631108283997,
+          0.13113252818584442
+        ],
+        "learning_rate": [
+          0.0010000000474974513,
+          0.0010000000474974513,
+          0.0010000000474974513,
+          0.0010000000474974513,
+          0.0010000000474974513,
+          0.0010000000474974513,
+          0.0005000000237487257,
+          0.0005000000237487257,
+          0.0005000000237487257,
+          0.0005000000237487257,
+          0.0005000000237487257
+        ]
+      }
+    },
+    "promotion_status": "SYNTHETIC_VALIDATED",
+    "limitations": [
+      "synthetic-only training and evaluation",
+      "threshold is a mathematical benchmark, not hardware calibration"
+    ]
+  },
+  "source": "esp32",
+  "preservedSensorSession": "demo-user_2-live-2fa2a61a-c366-40b1-9ed2-70a9c449c1a5",
+  "preservedOutcome": {
+    "policyVersion": "session-reward-v2",
+    "outcome": "VALID_NO_VIOLATION",
+    "durationS": 33.334,
+    "sampleCount": 329,
+    "violationCount": 0,
+    "confirmedViolationCount": 0,
+    "unknownCount": 0,
+    "gapCount": 0,
+    "lateCount": 0,
+    "bootChange": false,
+    "dataValid": true,
+    "coverageValid": true,
+    "reason": "complete_and_clear"
+  },
+  "outcomeReadMs": 12,
+  "installedVersions": {
+    "tensorflow": "2.20.0",
+    "keras": "3.15.1",
+    "matplotlib": "3.10.8",
+    "numpy": "2.5.3",
+    "fastapi": "0.141.1"
+  }
+}

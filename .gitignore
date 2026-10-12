@@ -5,6 +5,11 @@ __pycache__/
 .pytest_cache/
 data/*
 !data/samples/
+# Benchmark/evaluation evidence (reports, metrics, screenshots) is reviewed
+# evidence rather than runtime state, so it is source-controlled. Runtime
+# process artifacts created inside those directories stay local.
+!data/results/
+data/results/**/*.pid
 release/
 # Keep the canonical production artifact available to Docker builds; ignore
 # candidate models and generated reports.

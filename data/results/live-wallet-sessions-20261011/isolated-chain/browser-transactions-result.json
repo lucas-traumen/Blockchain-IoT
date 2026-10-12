@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "transact": true,
+  "source": "isolated-hardhat-real-esp32",
+  "apiUrl": "http://127.0.0.1:38761",
+  "url": "http://127.0.0.1:8080/",
+  "screenshots": 6
+}

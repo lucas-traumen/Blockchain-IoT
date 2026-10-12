@@ -1,0 +1,59 @@
+{
+  "checks": {
+    "dataset_hash": true,
+    "fault_sessions": true,
+    "forecast_sessions": true,
+    "ground_truth_hash": true,
+    "runtime_ground_truth_separation": true,
+    "sample_count": true,
+    "seed_disjoint": true,
+    "session_disjoint": true,
+    "simulation_mode": true,
+    "telemetry_hash": true
+  },
+  "crossing_support": {
+    "above_threshold": 199773,
+    "below_threshold": 70227
+  },
+  "dataset_sha256": "56fd67c14a155361f37f7e90f5e21b3341e7fc8463d193c4b57043818440c87c",
+  "fault_sample_counts": {
+    "BURST_NOISE": 480,
+    "ECHO_TIMEOUT": 480,
+    "FROZEN": 480,
+    "SEQUENCE_GAP": 480,
+    "SPIKE": 480
+  },
+  "fault_session_count": 150,
+  "forecast_session_count": 1200,
+  "ground_truth_sha256": "e3af08bc6e50941f338d787ac71771e7e60c04f05eed74805aa6b7b5863cf783",
+  "limitations": [
+    "synthetic-only",
+    "no hardware calibration",
+    "no public-chain evidence"
+  ],
+  "release": "data/synthetic/square-bench-v2",
+  "runtime_leakage_fields": [],
+  "sample_count": 270000,
+  "scenario_sample_counts": {
+    "approach_fast": 24000,
+    "approach_medium": 24000,
+    "approach_slow": 24000,
+    "fault_only": 30000,
+    "mixed_motion": 16000,
+    "oscillation": 32000,
+    "recede": 20000,
+    "stationary_clear": 24000,
+    "stationary_near_threshold": 24000,
+    "stop_before": 36000,
+    "sudden_step": 16000
+  },
+  "schema_version": "synthetic-v2-audit",
+  "session_count": 1350,
+  "split_session_counts": {
+    "test": 180,
+    "train": 840,
+    "val": 180
+  },
+  "status": "PASS",
+  "telemetry_sha256": "de0bfdf4f258811b2b70241948de8a532c25bc2016ca25fac357ade57837c069"
+}

@@ -1734,3 +1734,18 @@ active Docker/local runtime retain the old ABI and 120-second policy until a
 fresh explicit deployment is launched. Do not restart, reset, migrate or
 overwrite the running deployment as part of R28. Source verification is
 complete; deployment/redeployment remains an explicit follow-up gate.
+
+## R29 — Source-control benchmark evidence (2026-10-13)
+
+User decision: benchmark/evaluation output under `data/results/` is reviewed
+evidence and must be committed, unlike runtime state. `data/*` stays ignored;
+`data/results/` is re-included with an explicit `.gitignore` exception, and
+`data/results/**/*.pid` stays ignored because it is a runtime process artifact.
+
+| Task key | Goal / allowed files | Acceptance / checks | Status |
+| --- | --- | --- | --- |
+| R29:orchestrator | `.gitignore`, `PLAN.md`, `PROJECT_MEMORY.md`, `data/results/**` | Secret scan of all text evidence finds no key/token/mnemonic; only runtime `.pid` excluded; benchmark reports, metrics, logs and screenshots staged | done |
+
+Restart/redeploy of the local stack is **not** part of R29 and is still gated on
+explicit user approval of the destructive option (fresh chain vs. new rewards
+contract on the existing chain).

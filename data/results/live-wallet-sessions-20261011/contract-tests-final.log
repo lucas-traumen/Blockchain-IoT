@@ -1,0 +1,100 @@
+
+> smart-contracts@1.0.0 test
+> hardhat test
+
+
+
+  Account sensor session API and contract ledger (isolated sensor fixtures)
+    ✔ Approve changes allowance only; Start and End produce exact stake/refund/reward transfers and visible ledger amounts (266ms)
+    ✔ same-reference Start and repeated End are idempotent, and users/admin cannot End another user session (202ms)
+    ✔ confirmed violation moves the existing stake to treasury without charging the wallet twice (184ms)
+    ✔ SENSOR_FAULT returns the stake without reward (181ms)
+    ✔ INCOMPLETE returns the stake without reward (175ms)
+    ✔ the daily limit returns stake on a second valid session and the ledger shows zero additional reward (359ms)
+    ✔ a pending signed stake survives recreation and resumes the same hash/nonce, followed by one real settlement (225ms)
+    ✔ legacy orphan recovery refunds once without inventing sensor evidence or resetting chain history (122ms)
+    ✔ an unavailable sensor rejects Start before any stake transaction is sent
+
+  HRCRewardToken
+    ✔ mints the fixed supply once and exposes no mint function
+    ✔ supports standard ERC-20 transfer and allowance flows
+
+  HRCSessionRewards policy
+    ✔ exposes stable policy constants, outcome values, and addresses
+    ✔ requires a two-coin stake and pays stake plus three-coin reward
+    ✔ only an operator can submit outcome and client cannot provide amounts
+    ✔ moves exactly the two-coin stake to the penalty treasury
+    ✔ returns stake without reward or penalty for sensor fault and incomplete sessions
+    ✔ settles a session only once
+    ✔ pays only one reward per beneficiary per UTC day
+    ✔ returns stake and reports an empty reward pool
+    ✔ rejects invalid outcomes and preserves an unsettled session
+    ✔ preview reports the same fixed policy before settlement
+    ✔ supports operator-assisted session start for a beneficiary
+    ✔ does not change total supply during pool, stake, reward, or penalty flows
+    ✔ stores evidence and timestamp without changing policy amounts
+
+  Ownership
+    ✔ deployer is owner and operator
+    ✔ two-step transfer: new owner must accept
+    ✔ old owner loses owner rights after transfer
+    ✔ only owner can start transfer; only pending owner can accept
+    ✔ rejects zero address as new owner
+
+  Operators
+    ✔ owner adds operator and event is emitted
+    ✔ rejects zero address operator
+    ✔ non-owner cannot add or remove operator
+    ✔ owner removes operator; removed operator cannot record
+    ✔ cannot remove the owner from operators
+
+  Recording safety events
+    ✔ stores all fields and emits SafetyEventRecorded
+    ✔ increases count and supports index lookup
+    ✔ tracks per-device event count and last event time
+    ✔ rejects duplicate event ID
+    ✔ rejects invalid risk level
+    ✔ rejects empty eventId, deviceId and zero hash
+    ✔ unauthorized wallet cannot record
+    ✔ operator can record
+    ✔ reading a missing event reverts
+
+  Automatic Emergency Stop
+    ✔ DANGER locks the robot in the same transaction
+    ✔ SAFE, LOW and WARNING do not lock the robot
+    ✔ stores lock info (which event, who, when)
+    ✔ second DANGER on a locked robot is recorded without a second stop
+    ✔ locks are independent per device
+
+  Manual Emergency Stop and Unlock
+    ✔ operator can escalate a WARNING event
+    ✔ rejects unknown event
+    ✔ rejects event that belongs to another robot
+    ✔ rejects events below WARNING
+    ✔ rejects when robot is already locked
+    ✔ non-operator cannot trigger emergency stop
+    ✔ owner unlocks a locked robot
+    ✔ unlocking a robot that is not locked reverts
+    ✔ only owner can unlock (operator cannot)
+    ✔ robot can be locked again after unlock
+
+  Device identity and signatures
+    ✔ owner registers a device
+    ✔ register rejects non-owner, duplicate, empty id, zero address
+    ✔ unsigned recording is refused for a registered device
+    ✔ on-chain EIP-712 digest matches ethers TypedDataEncoder
+    ✔ accepts a valid device signature relayed by an operator
+    ✔ signed DANGER event also triggers automatic stop
+    ✔ rejects a signature from the wrong key
+    ✔ rejects tampered data (operator cannot change risk level)
+    ✔ rejects replaying the same signed event
+    ✔ rejects signature bound to a different contract/chain domain
+    ✔ rejects malleable (high-s) signatures
+    ✔ rejects signature with wrong length
+    ✔ signed recording for an unregistered device is rejected
+    ✔ revoked device can no longer submit events
+    ✔ revoke rejects non-owner and unknown device
+
+
+  73 passing (3s)
+

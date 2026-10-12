@@ -1,0 +1,51 @@
+{
+  "source": "esp32",
+  "verification": "sensor-outcome-only-original-rpc-unavailable",
+  "latencyMs": 47,
+  "observedAt": "2026-10-11T11:11:56.970Z",
+  "sessionId": "demo-user_2-live-2fa2a61a-c366-40b1-9ed2-70a9c449c1a5",
+  "deviceId": "esp32_01",
+  "session": {
+    "session_id": "demo-user_2-live-2fa2a61a-c366-40b1-9ed2-70a9c449c1a5",
+    "device_id": "esp32_01",
+    "scenario": "user_session",
+    "object": "person",
+    "zone_note": "Account-bound live sensor session",
+    "status": "closed",
+    "started_at": "2026-10-11T10:41:26.734Z",
+    "ended_at": "2026-10-11T10:42:00.068Z",
+    "start_boot_id": "213acaa0f7852eb1",
+    "start_sequence": 233821,
+    "stop_sequence": 234149,
+    "boundary_source": "device_ack",
+    "boot_change": false,
+    "sample_count": 329,
+    "late_count": 0,
+    "gap_count": 0
+  },
+  "stats": {
+    "sample_count": 329,
+    "late_count": 0,
+    "gap_count": 0,
+    "violation_count": 0,
+    "clear_count": 329,
+    "unknown_count": 0,
+    "confirmed_violation_count": 0,
+    "observed_violation_count": 0
+  },
+  "result": {
+    "policyVersion": "session-reward-v2",
+    "outcome": "VALID_NO_VIOLATION",
+    "durationS": 33.334,
+    "sampleCount": 329,
+    "violationCount": 0,
+    "confirmedViolationCount": 0,
+    "unknownCount": 0,
+    "gapCount": 0,
+    "lateCount": 0,
+    "bootChange": false,
+    "dataValid": true,
+    "coverageValid": true,
+    "reason": "complete_and_clear"
+  }
+}
