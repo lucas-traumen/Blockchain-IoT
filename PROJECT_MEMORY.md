@@ -981,3 +981,22 @@ safety outcome.
   TLS/HSTS behavior, browser CSP compatibility and multisig/timelock ownership
   transfer remain unverified or undeployed. This work did not deploy contracts,
   alter a running chain, transfer ownership or configure external TLS.
+
+## Frozen reward end time (R23, 2026-10-12)
+
+- `submitSessionOutcome`, compatibility `settleSession`, and
+  `previewSettlement` accept the sensor-close `endedAt` Unix timestamp. The
+  contract rejects `endedAt < startedAt` or `endedAt > block.timestamp`, stores
+  it on the session, emits it in `SessionSettled`, and computes reward duration
+  as `endedAt - startedAt`. `getSessionEndTime` provides a direct read while
+  preserving the prior `getSession` output ordering.
+- Live Node settlement derives seconds from the ISO-8601 `ended_at` in the
+  frozen evidence; the SHA-256 evidence hash includes that same evidence. The
+  optional IoT bridge also sends seconds and persists them in its outbox response
+  so retries reuse the same value. Sensor-missing recovery is explicitly marked
+  with a chain-bounded timestamp and stays `INCOMPLETE`.
+- Delayed-settlement regression cases cover 30s→3 HRC at settlement +60s and
+  45s→4.5 HRC after delay, invalid bounds, preview/settlement parity and retry
+  idempotency. Contract is not a proxy: deployments with the old ABI keep the
+  old behavior until redeploy and deployment-manifest update. No chain or
+  manifest was changed during R23.

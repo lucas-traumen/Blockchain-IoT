@@ -264,18 +264,24 @@ class RewardService {
         if (!Number.isSafeInteger(timestamp) || timestamp <= 0) {
             throw new ApiError(400, "INVALID_PAYLOAD", "timestamp must be a positive safe integer");
         }
+        const endedAt = input.endedAt;
+        if (!Number.isSafeInteger(endedAt) || endedAt <= 0) {
+            throw new ApiError(400, "INVALID_PAYLOAD", "endedAt must be a positive Unix timestamp in seconds");
+        }
         const key = sessionKey(sessionId);
         const existing = readSessionTuple(await this.contract.getSession(key));
+        existing.endedAt = BigInt(await this.contract.getSessionEndTime(key));
         if (!existing.started) throw new ApiError(409, "SESSION_NOT_STARTED", "Session stake was not started on-chain");
         beneficiary ||= existing.beneficiary;
         if (existing.beneficiary.toLowerCase() !== beneficiary.toLowerCase()) {
             throw new ApiError(409, "BENEFICIARY_MISMATCH", "Session beneficiary does not match the requested wallet");
         }
         if (existing.settled) {
-            if (existing.outcome !== outcome.code || existing.evidenceHash.toLowerCase() !== evidence.toLowerCase()) {
+            if (existing.outcome !== outcome.code || existing.evidenceHash.toLowerCase() !== evidence.toLowerCase()
+                || existing.endedAt !== BigInt(endedAt)) {
                 throw new ApiError(409, "SETTLEMENT_CONFLICT", "Session was already settled with different outcome/evidence");
             }
-            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp: Number(existing.outcomeTimestamp), existing, duplicate: true });
+            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp: Number(existing.outcomeTimestamp), endedAt: Number(existing.endedAt), existing, duplicate: true });
         }
 
         let transaction;
@@ -283,22 +289,23 @@ class RewardService {
             let receipt;
             const writer = options.transactionSender || this.transactionSender;
             if (writer) {
-                transaction = await writer.send('settlement:' + sessionId, this.wallet, this.contract, 'submitSessionOutcome', [key, beneficiary, outcome.code, evidence, timestamp]);
+                transaction = await writer.send('settlement:' + sessionId, this.wallet, this.contract, 'submitSessionOutcome', [key, beneficiary, outcome.code, evidence, timestamp, endedAt]);
                 if (transaction.pending) return { success: true, httpStatus: 202, pending: true, sessionId, transactionHash: transaction.hash, outcome: outcome.name };
                 receipt = transaction.receipt;
             } else {
-                transaction = await this.contract.submitSessionOutcome(key, beneficiary, outcome.code, evidence, timestamp);
+                transaction = await this.contract.submitSessionOutcome(key, beneficiary, outcome.code, evidence, timestamp, endedAt);
                 receipt = await transaction.wait(this.waitConfirmations);
             }
             const after = readSessionTuple(await this.contract.getSession(key));
-            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, existing: after, transaction, receipt, duplicate: false });
+            after.endedAt = BigInt(await this.contract.getSessionEndTime(key));
+            return this._formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, endedAt, existing: after, transaction, receipt, duplicate: false });
         } catch (error) {
             if (error instanceof ApiError) throw error;
             throw new ApiError(503, "REWARD_SETTLEMENT_FAILED", error.shortMessage || error.message || "Reward settlement failed");
         }
     }
 
-    _formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, existing, transaction, receipt, duplicate }) {
+    _formatResult({ sessionId, key, beneficiary, outcome, evidence, timestamp, endedAt, existing, transaction, receipt, duplicate }) {
         return {
             success: true,
             duplicate,
@@ -314,6 +321,7 @@ class RewardService {
             penaltyCollected: amountToCoins(existing.penaltyCollected),
             evidenceHash: evidence,
             outcomeTimestamp: timestamp,
+            endedAt: endedAt ?? Number(existing.endedAt),
             transactionHash: transaction?.hash || null,
             blockNumber: receipt?.blockNumber ?? null
         };

@@ -71,6 +71,7 @@ function formatSession(sessionId, tuple, event = null, key = sessionKey(sessionI
         sessionKey: key,
         beneficiary: row.beneficiary,
         startedAt: Number(row.startedAt),
+        endedAt: Number(row.endedAt || (event ? named(event.args, "endedAt", 9) : 0)),
         settledAt: Number(row.settledAt),
         stakedAmount: ethers.formatEther(row.stakedAmount),
         rewardPaid: ethers.formatEther(row.rewardPaid),

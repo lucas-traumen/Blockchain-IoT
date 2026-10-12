@@ -18,6 +18,18 @@ __all__ = [
     "evaluate_session",
 ]
 
-from .client import RewardClient, RewardSettlementError, build_reward_client, evidence_hash
+from .client import (
+    RewardClient,
+    RewardSettlementError,
+    build_reward_client,
+    ended_at_unix_seconds,
+    evidence_hash,
+)
 
-__all__ += ["RewardClient", "RewardSettlementError", "build_reward_client", "evidence_hash"]
+__all__ += [
+    "RewardClient",
+    "RewardSettlementError",
+    "build_reward_client",
+    "ended_at_unix_seconds",
+    "evidence_hash",
+]

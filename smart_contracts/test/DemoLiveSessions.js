@@ -24,7 +24,7 @@ async function fixture() {
     for(const user of [user1,user2])await(await token.transfer(user.address,ethers.parseEther('20'))).wait();
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'hrc-live-contract-'));
     const file=path.join(directory,'sessions.json'),store=new DemoSessionStore(file);
-    const state={rows:new Map(),outcome:'VALID_NO_VIOLATION',sensorStarts:0,stops:0,ready:true,dropBroadcast:false};
+    const state={rows:new Map(),endAtBySession:new Map(),outcome:'VALID_NO_VIOLATION',sensorStarts:0,stops:0,ready:true,dropBroadcast:false};
     const sensor=http.createServer(async(req,res)=>{
         let raw='';for await(const chunk of req)raw+=chunk;
         const body=raw?JSON.parse(raw):null;const parts=req.url.split('/').filter(Boolean);let status=200,result;
@@ -38,7 +38,7 @@ async function fixture() {
             const row=state.rows.get(decodeURIComponent(parts[1]||''));
             if(!row){status=404;result={detail:'not found'};}
             else if(parts[2]==='stop'){
-                if(row.status!=='closed'){state.stops++;row.status='closed';row.ended_at=new Date().toISOString();}result=row;
+                if(row.status!=='closed'){state.stops++;row.status='closed';const chainSession=await rewards.sessions(ethers.id(row.session_id));const endAt=state.endAtBySession.get(row.session_id)??Number(chainSession.startedAt);row.ended_at=new Date(endAt*1000).toISOString();}result=row;
             }else if(parts[2]==='outcome')result={sessionId:row.session_id,deviceId:'esp32_01',session:row,stats:{sample_count:40,confirmed_violation_count:state.outcome==='VIOLATION_CONFIRMED'?1:0},
                 result:{outcome:state.outcome,sampleCount:40,durationS:31,reason:'isolated_test_'+state.outcome}};
             else result=row;
@@ -74,6 +74,7 @@ describe('Account sensor session API and contract ledger (isolated sensor fixtur
         const start=await f.call('/api/me/sessions/start','user_1',{sessionRef:'complete'});expect(start.status).to.equal(200);expect(start.data.stage).to.equal('RUNNING');
         expect(f.state.rows.has(start.data.sessionId)).to.equal(true);expect(await f.token.balanceOf(f.user1.address)).to.equal(initial-ethers.parseEther('2'));
         const chainSession=await f.rewards.sessions(ethers.id(start.data.sessionId));
+        f.state.endAtBySession.set(start.data.sessionId,Number(chainSession.startedAt)+30);
         await network.provider.send('evm_setNextBlockTimestamp',[Number(chainSession.startedAt)+30]);
         const end=await f.call('/api/me/sessions/'+start.data.sessionId+'/end','user_1',{});expect(end.data.settled).to.equal(true);expect(end.data.rewardPaid).to.equal('3.0');
         expect(await f.token.balanceOf(f.user1.address)).to.equal(initial+ethers.parseEther('3'));
@@ -109,7 +110,7 @@ describe('Account sensor session API and contract ledger (isolated sensor fixtur
         expect((await f.call('/api/me/wallet/transactions')).data.transactions.find(row=>row.action==='SETTLEMENT').walletDelta).to.equal('2.0');
     });
     it('the daily limit returns stake on a second valid session and the ledger shows zero additional reward',async()=>{
-        for(const ref of ['first','second']){await f.call('/api/me/wallet/approve','user_1',{});const start=(await f.call('/api/me/sessions/start','user_1',{sessionRef:ref})).data;const chainSession=await f.rewards.sessions(ethers.id(start.sessionId));await network.provider.send('evm_setNextBlockTimestamp',[Number(chainSession.startedAt)+30]);await f.call('/api/me/sessions/'+start.sessionId+'/end','user_1',{});}
+        for(const ref of ['first','second']){await f.call('/api/me/wallet/approve','user_1',{});const start=(await f.call('/api/me/sessions/start','user_1',{sessionRef:ref})).data;const chainSession=await f.rewards.sessions(ethers.id(start.sessionId));f.state.endAtBySession.set(start.sessionId,Number(chainSession.startedAt)+30);await network.provider.send('evm_setNextBlockTimestamp',[Number(chainSession.startedAt)+30]);await f.call('/api/me/sessions/'+start.sessionId+'/end','user_1',{});}
         const latest=(await f.call('/api/me/wallet/transactions')).data.transactions.find(row=>row.action==='SETTLEMENT');expect(latest.walletDelta).to.equal('2.0');expect(latest.settlementStatusCode).to.equal(1);
         expect(await f.token.balanceOf(f.user1.address)).to.equal(ethers.parseEther('23'));
     });
@@ -125,6 +126,7 @@ describe('Account sensor session API and contract ledger (isolated sensor fixtur
         await f.walletService.approve('user_1');await f.walletService.startSession('user_1',{sessionRef:'orphan'});
         await f.live.drain();await f.live.drain();const row=(await f.live.sessions('user_1')).sessions[0];
         expect(row.source).to.equal('recovery');expect(row.recoveryReason).to.equal('missing_iot_session');expect(row.rewardPaid).to.equal('0.0');expect(row.stakeReturned).to.equal('2.0');
+        expect(row.endedAt).to.be.greaterThan(0);
         expect(await f.token.balanceOf(f.user1.address)).to.equal(ethers.parseEther('20'));expect(f.state.sensorStarts).to.equal(0);expect((await f.rewards.queryFilter(f.rewards.filters.SessionSettled())).length).to.equal(1);
     });
     it('an unavailable sensor rejects Start before any stake transaction is sent',async()=>{

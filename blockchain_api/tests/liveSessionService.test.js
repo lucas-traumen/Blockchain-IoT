@@ -17,14 +17,14 @@ const OPERATOR = '0x0000000000000000000000000000000000000055';
 const unit = ethers.parseEther;
 const eventAbi = new ethers.Interface([
     'event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)',
-    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)'
+    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp,uint256 endedAt)'
 ]);
 const rewardAbi = new ethers.Interface([
     'function startSession(bytes32 sessionId)',
     'event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)',
-    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)'
+    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp,uint256 endedAt)'
 ]);
-const empty = { beneficiary: ethers.ZeroAddress, startedAt: 0n, settledAt: 0n, stakedAmount: 0n, rewardPaid: 0n, penaltyCollected: 0n,
+const empty = { beneficiary: ethers.ZeroAddress, startedAt: 0n, endedAt: 0n, settledAt: 0n, stakedAmount: 0n, rewardPaid: 0n, penaltyCollected: 0n,
     outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash, outcomeTimestamp: 0n, started: false, settled: false };
 
 function fixture(t) {
@@ -38,6 +38,7 @@ function fixture(t) {
     const provider = { getNetwork: async () => ({ chainId: 31337 }), getBalance: async () => unit('1'), getCode: async () => '0x1234',
         getTransaction: async hash => state.walletTransactions?.[hash] || null,
         getTransactionReceipt: async hash => state.walletReceipts?.[hash] || null,
+        getBlock: async () => ({ timestamp: Math.floor(state.now / 1000) }),
         getBlockNumber: async () => state.block,
         getLogs: async filter => state.logs.filter(log => log.address === filter.address && filter.topics.every((topic,i) => topic == null || (Array.isArray(topic) ? topic.includes(log.topics[i]) : topic === log.topics[i]))) };
     const token = { balanceOf: async address => state.balances.get(address), allowance: async address => state.allowances.get(address), symbol: async () => 'HRC', decimals: async () => 18 };
@@ -78,8 +79,8 @@ function fixture(t) {
             const code=['VALID_NO_VIOLATION','VIOLATION_CONFIRMED','SENSOR_FAULT','INCOMPLETE'].indexOf(payload.outcome);
             const status=penalty>0n?3:reward>0n?0:4;
             state.balances.set(current.beneficiary,state.balances.get(current.beneficiary)+returned+reward);
-            state.tuples.set(key,{...current,settled:true,settledAt:BigInt(Math.floor(state.now/1000)),rewardPaid:reward,penaltyCollected:penalty,outcome:code,settlementStatus:status,evidenceHash:payload.evidenceHash});
-            emit('SessionSettled',[key,current.beneficiary,code,status,returned,reward,penalty,payload.evidenceHash,payload.timestamp]);
+            state.tuples.set(key,{...current,settled:true,endedAt:BigInt(payload.endedAt),settledAt:BigInt(Math.floor(state.now/1000)),rewardPaid:reward,penaltyCollected:penalty,outcome:code,settlementStatus:status,evidenceHash:payload.evidenceHash});
+            emit('SessionSettled',[key,current.beneficiary,code,status,returned,reward,penalty,payload.evidenceHash,payload.timestamp,payload.endedAt]);
             return {success:true,outcome:payload.outcome,stakeReturned:ethers.formatEther(returned),rewardPaid:ethers.formatEther(reward),penaltyCollected:ethers.formatEther(penalty),transactionHash:ethers.id('tx-'+state.block)};
         }};
     const options={walletService,iot,settler,clock:()=>state.now,logger:()=>{}};
@@ -97,6 +98,8 @@ test('Start/End bind one sensor session to the user, and concurrent retries do n
     const ended=await Promise.all([f.live.end('user_1',starts[0].sessionId),f.live.end('user_1',starts[0].sessionId)]);
     assert.equal(ended[0].stage,'SETTLED');assert.equal(ended[1].duplicate,true);assert.equal(f.state.stops,1);assert.equal(f.state.settlementCalls.length,1);
     assert.equal(f.state.settlementCalls[0].beneficiary,USER1);
+    assert.equal(f.state.settlementCalls[0].endedAt, Math.floor(f.state.now / 1000));
+    assert.equal(f.state.settlementCalls[0].evidenceHash, '0x' + require('node:crypto').createHash('sha256').update(require('../eventPayload').canonicalJson(f.walletService.store.get(starts[0].sessionId).evidence)).digest('hex'));
     assert.equal((await f.live.wallet('user_1')).balance,'23.0');assert.equal((await f.live.wallet('user_1')).lockedBalance,'0.0');
 });
 
@@ -228,9 +231,12 @@ test('operator failure and service recreation retain frozen outcome/evidence and
     const f=fixture(t);const started=await f.live.start('user_1',{sessionRef:'restart'});f.state.now+=30000;f.state.failSettlement=true;
     const pending=await f.live.end('user_1',started.sessionId);assert.equal(pending.stage,'SETTLEMENT_PENDING');
     const payload=f.state.settlementCalls[0];
+    assert.equal(payload.endedAt, Math.floor(f.state.now / 1000));
+    assert.equal(payload.endedAt, Math.floor(Date.parse(f.walletService.store.get(started.sessionId).evidence.session.ended_at) / 1000));
     f.walletService.store=new DemoSessionStore(f.storePath);f.state.outcome='VIOLATION_CONFIRMED';f.state.now+=31000;
     const resumed=new LiveSessionService({...f.options,walletService:f.walletService});await resumed.drain();
     assert.deepEqual(f.state.settlementCalls[1],payload);assert.equal((await resumed.session('user_1',started.sessionId)).session.stage,'SETTLED');
+    assert.equal(f.state.logs.filter(log => log.topics[0] === ethers.id('SessionSettled(bytes32,address,uint8,uint8,uint256,uint256,uint256,bytes32,uint256,uint256)')).length,1);
     assert.equal(f.state.stops,1);assert.equal(f.state.stakes,1);
 });
 

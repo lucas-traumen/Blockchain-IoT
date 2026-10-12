@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -90,7 +91,8 @@ def test_reward_client_posts_start_and_settlement():
         )
         assert client.start_session("s1")["success"] is True
         result = {"outcome": "SENSOR_FAULT", "policyVersion": "session-reward-v2"}
-        assert client.settle("s1", {"session_id": "s1"}, {"sample_count": 1}, result)["success"] is True
+        session = {"session_id": "s1", "ended_at": "2026-10-10T00:00:30.500Z"}
+        assert client.settle("s1", session, {"sample_count": 1}, result)["success"] is True
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -99,6 +101,7 @@ def test_reward_client_posts_start_and_settlement():
     assert requests[1][0] == "/api/session-outcome"
     assert requests[0][2] == "Bearer " + "i" * 40
     assert requests[1][1]["outcome"] == "SENSOR_FAULT"
+    assert requests[1][1]["endedAt"] == int(datetime(2026, 10, 10, 0, 0, 30, 500000, tzinfo=UTC).timestamp())
     assert len(requests[1][1]["evidenceHash"]) == 66
 
 
@@ -118,8 +121,8 @@ def test_settlement_outbox_retries_with_same_evidence_and_is_idempotent(tmp_path
             self.start_calls.append(session_id)
             return {"success": True, "duplicate": len(self.start_calls) > 1}
 
-        def settle(self, session_id, session, stats, result, *, evidence=None):
-            self.settle_calls.append((session_id, evidence, result["outcome"]))
+        def settle(self, session_id, session, stats, result, *, evidence=None, ended_at=None):
+            self.settle_calls.append((session_id, evidence, result["outcome"], ended_at))
             if self.fail_once:
                 self.fail_once = False
                 raise RewardSettlementError("temporary signer outage", status_code=503)
@@ -147,6 +150,7 @@ def test_settlement_outbox_retries_with_same_evidence_and_is_idempotent(tmp_path
         saved_after_error = app.state.store.get_reward_settlement("bridge-outbox-001")
         assert saved_after_error["status"] == "ERROR"
         first_evidence = saved_after_error["evidence_hash"]
+        first_ended_at = json.loads(saved_after_error["response_json"])["endedAt"]
 
         second = client.post("/sessions/bridge-outbox-001/settle")
         assert second.status_code == 200
@@ -155,6 +159,8 @@ def test_settlement_outbox_retries_with_same_evidence_and_is_idempotent(tmp_path
         assert saved_after_success["status"] == "SETTLED"
         assert saved_after_success["evidence_hash"] == first_evidence
         assert fake.settle_calls[0][1] == fake.settle_calls[1][1] == first_evidence
+        assert fake.settle_calls[0][3] == fake.settle_calls[1][3] == first_ended_at
+        assert json.loads(saved_after_success["response_json"])["endedAt"] == first_ended_at
 
         third = client.post("/sessions/bridge-outbox-001/settle")
         assert third.status_code == 200

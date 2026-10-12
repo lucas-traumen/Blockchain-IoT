@@ -81,22 +81,26 @@ async function settle(
     label,
     beneficiary,
     outcome,
-    labelSuffix = label
+    labelSuffix = label,
+    endedAt = null
 ) {
+    const current = await rewards.getSession(sessionId(label));
+    const latest = await ethers.provider.getBlock("latest");
     if (outcome === VALID) {
-        const current = await rewards.getSession(sessionId(label));
-        const minimumEnd = Number(current.startedAt) + Number(await rewards.MIN_REWARD_DURATION());
-        const block = await ethers.provider.getBlock("latest");
-        if (Number(block.timestamp) < minimumEnd) {
-            await ethers.provider.send("evm_setNextBlockTimestamp", [minimumEnd]);
-        }
+        endedAt ??= Number(current.startedAt) + Number(await rewards.MIN_REWARD_DURATION());
+    } else {
+        endedAt ??= Number(latest.timestamp);
+    }
+    if (Number(latest.timestamp) < endedAt) {
+        await ethers.provider.send("evm_setNextBlockTimestamp", [endedAt]);
     }
     return rewards.connect(operator).submitSessionOutcome(
         sessionId(label),
         beneficiary.address,
         outcome,
         evidence(labelSuffix),
-        1_791_532_800
+        1_791_532_800,
+        endedAt
     );
 }
 
@@ -165,6 +169,7 @@ describe("HRCSessionRewards policy", function () {
 
         expect(await token.balanceOf(user.address)).to.equal(userBefore - COIN("2"));
         expect(await rewards.escrowedStakeTotal()).to.equal(COIN("2"));
+        const started = await rewards.getSession(id);
 
         await expect(settle(rewards, operator, "valid", user, VALID))
             .to.emit(rewards, "RewardPaid")
@@ -179,7 +184,8 @@ describe("HRCSessionRewards policy", function () {
                 COIN("3"),
                 0,
                 hash,
-                1_791_532_800
+                1_791_532_800,
+                Number(started.startedAt) + 30
             );
 
         expect(await token.balanceOf(user.address)).to.equal(userBefore + COIN("3"));
@@ -197,15 +203,16 @@ describe("HRCSessionRewards policy", function () {
         const started = await rewards.getSession(id);
         await time.increaseTo(Number(started.startedAt) + 1);
 
-        const preview = await rewards.previewSettlement(id, user.address, VALID);
+        const endedAt = Number(started.startedAt) + 1;
+        const preview = await rewards.previewSettlement(id, user.address, VALID, endedAt);
         expect(preview.settlementStatus).to.equal(4);
         expect(preview.rewardPaid).to.equal(0);
 
         await expect(rewards.connect(operator).submitSessionOutcome(
-            id, user.address, VALID, evidence("short-session"), 1_791_532_800
+            id, user.address, VALID, evidence("short-session"), 1_791_532_800, endedAt
         ))
             .to.emit(rewards, "SessionSettled")
-            .withArgs(id, user.address, VALID, 4, COIN("2"), 0, 0, evidence("short-session"), anyValue)
+            .withArgs(id, user.address, VALID, 4, COIN("2"), 0, 0, evidence("short-session"), 1_791_532_800, endedAt)
             .and.to.not.emit(rewards, "RewardPaid");
 
         expect(await token.balanceOf(user.address)).to.equal(before);
@@ -214,6 +221,69 @@ describe("HRCSessionRewards policy", function () {
         expect(await token.balanceOf(await rewards.getAddress())).to.equal(
             await rewards.rewardPoolBalance()
         );
+    });
+
+    it("uses the sensor end time when settlement is delayed", async function () {
+        const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("delayed-settlement-30");
+        await start(rewards, user, "delayed-settlement-30");
+        const started = await rewards.getSession(id);
+        const endedAt = Number(started.startedAt) + 30;
+        await ethers.provider.send("evm_setNextBlockTimestamp", [Number(started.startedAt) + 60]);
+
+        await expect(rewards.connect(operator).submitSessionOutcome(
+            id, user.address, VALID, evidence("delayed-settlement-30"), 1_791_532_800, endedAt
+        ))
+            .to.emit(rewards, "RewardPaid")
+            .withArgs(id, user.address, COIN("3"), anyValue)
+            .and.to.emit(rewards, "SessionSettled")
+            .withArgs(id, user.address, VALID, 0, COIN("2"), COIN("3"), 0,
+                evidence("delayed-settlement-30"), 1_791_532_800, endedAt);
+
+        expect(await rewards.getSessionEndTime(id)).to.equal(endedAt);
+    });
+
+    it("caps a delayed 45-second session at the reward for its frozen end time", async function () {
+        const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("delayed-settlement-45");
+        await start(rewards, user, "delayed-settlement-45");
+        const started = await rewards.getSession(id);
+        const endedAt = Number(started.startedAt) + 45;
+        await ethers.provider.send("evm_setNextBlockTimestamp", [Number(started.startedAt) + 600]);
+
+        await expect(rewards.connect(operator).submitSessionOutcome(
+            id, user.address, VALID, evidence("delayed-settlement-45"), 1_791_532_800, endedAt
+        ))
+            .to.emit(rewards, "RewardPaid")
+            .withArgs(id, user.address, COIN("4.5"), anyValue);
+        expect(await rewards.getSessionEndTime(id)).to.equal(endedAt);
+    });
+
+    it("rejects an end time before the on-chain start", async function () {
+        const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("ended-before-start");
+        await start(rewards, user, "ended-before-start");
+        const started = await rewards.getSession(id);
+
+        await expect(rewards.connect(operator).submitSessionOutcome(
+            id, user.address, VALID, evidence("ended-before-start"), 1_791_532_800,
+            Number(started.startedAt) - 1
+        )).to.be.revertedWithCustomError(rewards, "InvalidSessionEndTimestamp");
+    });
+
+    it("rejects an end time in the future", async function () {
+        const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("ended-in-future");
+        await start(rewards, user, "ended-in-future");
+        const started = await rewards.getSession(id);
+        const latest = await ethers.provider.getBlock("latest");
+
+        await expect(rewards.connect(operator).submitSessionOutcome(
+            id, user.address, VALID, evidence("ended-in-future"), 1_791_532_800,
+            Number(latest.timestamp) + 100
+        )).to.be.revertedWithCustomError(rewards, "InvalidSessionEndTimestamp");
+        expect((await rewards.getSession(id)).settled).to.equal(false);
+        expect(Number(started.startedAt)).to.be.lessThan(Number(latest.timestamp) + 100);
     });
 
     it("scales a valid reward from three to six coins and caps the bonus at 100 percent", async function () {
@@ -232,13 +302,14 @@ describe("HRCSessionRewards policy", function () {
                 user.address,
                 VALID,
                 hash,
-                1_791_532_800
+                1_791_532_800,
+                Number(started.startedAt) + 45
             )
         )
             .to.emit(rewards, "RewardPaid")
             .withArgs(id, user.address, COIN("4.5"), anyValue)
             .and.to.emit(rewards, "SessionSettled")
-            .withArgs(id, user.address, VALID, 0, COIN("2"), COIN("4.5"), 0, hash, 1_791_532_800);
+            .withArgs(id, user.address, VALID, 0, COIN("2"), COIN("4.5"), 0, hash, 1_791_532_800, Number(started.startedAt) + 45);
 
         expect(await token.balanceOf(user.address)).to.equal(userBefore + COIN("4.5"));
         expect(await rewards.rewardPoolBalance()).to.equal(COIN("995.5"));
@@ -258,6 +329,7 @@ describe("HRCSessionRewards policy", function () {
             "address",
             "uint8",
             "bytes32",
+            "uint256",
             "uint256"
         ]);
     });
@@ -289,7 +361,8 @@ describe("HRCSessionRewards policy", function () {
                 0,
                 COIN("2"),
                 evidence("violation"),
-                1_791_532_800
+                1_791_532_800,
+                anyValue
             );
 
         expect(await token.balanceOf(treasury.address)).to.equal(
@@ -318,12 +391,33 @@ describe("HRCSessionRewards policy", function () {
 
     it("settles a session only once", async function () {
         const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("duplicate");
         await start(rewards, user, "duplicate");
-        await settle(rewards, operator, "duplicate", user, VALID);
+        const started = await rewards.getSession(id);
+        const endedAt = Number(started.startedAt) + 30;
+        await settle(rewards, operator, "duplicate", user, VALID, "duplicate", endedAt);
 
         await expect(
-            settle(rewards, operator, "duplicate", user, VALID, "duplicate-retry")
+            rewards.connect(operator).submitSessionOutcome(
+                id, user.address, VALID, evidence("duplicate-retry"), 1_791_532_800, endedAt + 30
+            )
         ).to.be.revertedWithCustomError(rewards, "SessionAlreadySettled");
+        expect(await rewards.getSessionEndTime(id)).to.equal(endedAt);
+        expect((await rewards.queryFilter(rewards.filters.SessionSettled(id))).length).to.equal(1);
+    });
+
+    it("keeps the compatibility settlement alias on the frozen end-time policy", async function () {
+        const { rewards, operator, user } = await loadFixture(deploySystem);
+        const id = sessionId("settle-alias");
+        await start(rewards, user, "settle-alias");
+        const started = await rewards.getSession(id);
+        const endedAt = Number(started.startedAt) + 30;
+        await time.increaseTo(endedAt + 20);
+
+        await expect(rewards.connect(operator).settleSession(
+            id, user.address, VALID, evidence("settle-alias"), 1_791_532_800, endedAt
+        )).to.emit(rewards, "RewardPaid").withArgs(id, user.address, COIN("3"), anyValue);
+        expect(await rewards.getSessionEndTime(id)).to.equal(endedAt);
     });
 
     it("pays only one reward per beneficiary per UTC day", async function () {
@@ -345,7 +439,8 @@ describe("HRCSessionRewards policy", function () {
                 0,
                 0,
                 evidence("daily-2"),
-                1_791_532_800
+                1_791_532_800,
+                anyValue
             );
 
         expect(await token.balanceOf(user.address)).to.equal(userBefore + COIN("3"));
@@ -372,7 +467,8 @@ describe("HRCSessionRewards policy", function () {
                 0,
                 0,
                 evidence("pool-empty"),
-                1_791_532_800
+                1_791_532_800,
+                anyValue
             );
 
         expect(await token.balanceOf(user.address)).to.equal(userBefore);
@@ -390,7 +486,8 @@ describe("HRCSessionRewards policy", function () {
                 user.address,
                 4,
                 evidence("invalid-outcome"),
-                1_791_532_800
+                1_791_532_800,
+                1
             )
         ).to.be.revertedWithCustomError(rewards, "InvalidOutcome");
 
@@ -400,22 +497,34 @@ describe("HRCSessionRewards policy", function () {
     });
 
     it("preview reports the same fixed policy before settlement", async function () {
-        const { rewards, user } = await loadFixture(deploySystem);
+        const { rewards, operator, user } = await loadFixture(deploySystem);
         await start(rewards, user, "preview");
         const started = await rewards.getSession(sessionId("preview"));
-        await time.increaseTo(Number(started.startedAt) + 30);
+        const endedAt = Number(started.startedAt) + 45;
+        await time.increaseTo(endedAt);
         const preview = await rewards.previewSettlement(
             sessionId("preview"),
             user.address,
-            VALID
+            VALID,
+            endedAt
         );
 
         expect(preview.settlementStatus).to.equal(0);
         expect(preview.stakeReturned).to.equal(COIN("2"));
-        expect(preview.rewardPaid).to.equal(COIN("3"));
+        expect(preview.rewardPaid).to.equal(COIN("4.5"));
         expect(preview.penaltyCollected).to.equal(0);
         expect(preview.dailyLimitReached).to.equal(false);
         expect(preview.poolEmpty).to.equal(false);
+
+        await time.increaseTo(endedAt + 300);
+        const tx = await rewards.connect(operator).submitSessionOutcome(
+            sessionId("preview"), user.address, VALID, evidence("preview"), 1_791_532_800, endedAt
+        );
+        await tx.wait();
+        const settled = await rewards.getSession(sessionId("preview"));
+        expect(await rewards.getSessionEndTime(sessionId("preview"))).to.equal(endedAt);
+        expect(settled.settlementStatus).to.equal(preview.settlementStatus);
+        expect(settled.rewardPaid).to.equal(preview.rewardPaid);
     });
 
     it("supports operator-assisted session start for a beneficiary", async function () {

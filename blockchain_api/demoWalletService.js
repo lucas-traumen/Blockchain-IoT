@@ -29,9 +29,10 @@ const TOKEN_ABI = [
 const REWARD_ABI = [
     "function stakeAmount() view returns (uint256)",
     "function getSession(bytes32) view returns (address,uint256,uint256,uint256,uint256,uint256,uint8,uint8,bytes32,uint256,bool,bool)",
+    "function getSessionEndTime(bytes32) view returns (uint256)",
     "function startSession(bytes32)",
     "event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)",
-    "event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)",
+    "event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp,uint256 endedAt)",
     "event RewardPaid(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 rewardDay)",
     "event PenaltyCollected(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,address indexed treasury)"
 ];
@@ -113,6 +114,7 @@ function formatEvent(parsed, log) {
         result.penaltyCollected = ethers.formatEther(args.penaltyCollected ?? args[6]);
         result.evidenceHash = args.evidenceHash ?? args[7];
         result.timestamp = Number(args.timestamp ?? args[8]);
+        result.endedAt = Number(args.endedAt ?? args[9]);
     } else if (parsed.name === "RewardPaid") {
         result.sessionKey = args.sessionId ?? args[0];
         result.beneficiary = args.beneficiary ?? args[1];
@@ -388,7 +390,7 @@ class DemoWalletService {
     _rewardTopics() {
         return [
             ethers.id("SessionStarted(bytes32,address,uint256,uint256)"),
-            ethers.id("SessionSettled(bytes32,address,uint8,uint8,uint256,uint256,uint256,bytes32,uint256)"),
+            ethers.id("SessionSettled(bytes32,address,uint8,uint8,uint256,uint256,uint256,bytes32,uint256,uint256)"),
             ethers.id("RewardPaid(bytes32,address,uint256,uint256)"),
             ethers.id("PenaltyCollected(bytes32,address,uint256,address)")
         ];
@@ -462,7 +464,7 @@ class DemoWalletService {
             sessionId: record.sessionId, sessionRef: record.sessionRef, sessionKey: sessionKey(record.sessionId),
             userId: record.userId, beneficiary: row.beneficiary,
             started: row.started, settled: row.settled,
-            startedAt: Number(row.startedAt), settledAt: Number(row.settledAt),
+            startedAt: Number(row.startedAt), endedAt: Number(row.endedAt || settledEvent?.endedAt || 0), settledAt: Number(row.settledAt),
             stakedAmount: ethers.formatEther(row.stakedAmount), rewardPaid: ethers.formatEther(row.rewardPaid),
             penaltyCollected: ethers.formatEther(row.penaltyCollected),
             stakeReturned: row.settled ? ethers.formatEther(row.stakedAmount - row.penaltyCollected) : "0.0",

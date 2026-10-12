@@ -34,6 +34,19 @@ def evidence_hash(session: dict[str, Any], stats: dict[str, Any], result: dict[s
     return "0x" + hashlib.sha256(encoded).hexdigest()
 
 
+def ended_at_unix_seconds(session: dict[str, Any]) -> int:
+    value = session.get("ended_at")
+    if not isinstance(value, str):
+        raise ValueError("closed session must include an ISO-8601 ended_at timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("closed session ended_at must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("closed session ended_at must include a timezone")
+    return int(parsed.timestamp())
+
+
 class RewardClient:
     def __init__(
         self,
@@ -92,14 +105,19 @@ class RewardClient:
         result: dict[str, Any],
         *,
         evidence: str | None = None,
+        ended_at: int | None = None,
     ) -> dict[str, Any]:
         timestamp = int(datetime.now(UTC).timestamp())
+        end_timestamp = ended_at if ended_at is not None else ended_at_unix_seconds(session)
+        if not isinstance(end_timestamp, int) or isinstance(end_timestamp, bool) or end_timestamp <= 0:
+            raise ValueError("ended_at must be a positive Unix timestamp in seconds")
         return self._post("/api/session-outcome", {
             "sessionId": session_id,
             "beneficiary": self.beneficiary,
             "outcome": result["outcome"],
             "evidenceHash": evidence or evidence_hash(session, stats, result),
             "timestamp": timestamp,
+            "endedAt": end_timestamp,
         })
 
 

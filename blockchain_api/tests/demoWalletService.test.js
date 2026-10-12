@@ -15,7 +15,7 @@ const REWARDS = '0x0000000000000000000000000000000000000044';
 const tokenEvents = new ethers.Interface(['event Approval(address indexed owner,address indexed spender,uint256 value)']);
 const rewardEvents = new ethers.Interface([
     'event SessionStarted(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 startedAt)',
-    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp)',
+    'event SessionSettled(bytes32 indexed sessionId,address indexed beneficiary,uint8 outcome,uint8 settlementStatus,uint256 stakeReturned,uint256 rewardPaid,uint256 penaltyCollected,bytes32 evidenceHash,uint256 timestamp,uint256 endedAt)',
     'event RewardPaid(bytes32 indexed sessionId,address indexed beneficiary,uint256 amount,uint256 rewardDay)'
 ]);
 const hash = value => '0x' + String(value).repeat(64);
@@ -36,7 +36,7 @@ function fixture(t) {
         symbol: async () => 'HRC', decimals: async () => 18,
         connect() { return { approve: async () => { state.approvals++; return { hash: hash('a'), wait: async () => ({ blockNumber: 10, logs: [] }) }; } }; }
     };
-    const empty = { beneficiary: ethers.ZeroAddress, startedAt: 0n, settledAt: 0n, stakedAmount: 0n, rewardPaid: 0n, penaltyCollected: 0n, outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash, outcomeTimestamp: 0n, started: false, settled: false };
+    const empty = { beneficiary: ethers.ZeroAddress, startedAt: 0n, endedAt: 0n, settledAt: 0n, stakedAmount: 0n, rewardPaid: 0n, penaltyCollected: 0n, outcome: 0, settlementStatus: 0, evidenceHash: ethers.ZeroHash, outcomeTimestamp: 0n, started: false, settled: false };
     const rewards = {
         stakeAmount: async () => ethers.parseEther('2'), getSession: async key => state.tuples.get(key) || empty,
         connect() { return { startSession: async key => {
@@ -78,7 +78,7 @@ test('wallet history includes approvals, start and settlement events belonging o
         log(tokenEvents, 'Approval', [USER1, REWARDS, 0], TOKEN, hash('b'), 11),
         log(rewardEvents, 'SessionStarted', [key, USER1, ethers.parseEther('2'), 100], REWARDS, hash('b'), 11, 1),
         log(rewardEvents, 'RewardPaid', [key, USER1, ethers.parseEther('3'), 1], REWARDS, hash('c'), 12),
-        log(rewardEvents, 'SessionSettled', [key, USER1, 0, 0, ethers.parseEther('2'), ethers.parseEther('3'), 0, hash('d'), 110], REWARDS, hash('c'), 12, 1),
+        log(rewardEvents, 'SessionSettled', [key, USER1, 0, 0, ethers.parseEther('2'), ethers.parseEther('3'), 0, hash('d'), 110, 105], REWARDS, hash('c'), 12, 1),
         log(tokenEvents, 'Approval', [USER2, REWARDS, ethers.parseEther('2')], TOKEN, hash('e'), 13),
         log(tokenEvents, 'Approval', [USER1, USER2, ethers.parseEther('9')], TOKEN, hash('f'), 14)
     ];
@@ -87,6 +87,7 @@ test('wallet history includes approvals, start and settlement events belonging o
     assert.deepEqual(history.transactions.map(row => row.transactionHash), [hash('c'), hash('b'), hash('a')]);
     assert.deepEqual(history.transactions[1].events.map(event => event.name), ['Approval', 'SessionStarted']);
     assert.equal(history.transactions[0].events.find(event => event.name === 'SessionSettled').rewardPaid, '3.0');
+    assert.equal(history.transactions[0].events.find(event => event.name === 'SessionSettled').endedAt, 105);
     assert.equal((await f.service.getTransactions('user_2')).count, 1);
     await assert.rejects(f.service.getTransactions('unknown'), { code: 'DEMO_ACCOUNT_REQUIRED' });
 });

@@ -7,6 +7,18 @@ const FINAL = new Set(['SETTLED', 'START_FAILED', 'INTENT_EXPIRED']);
 const TERMINAL_ERRORS = new Set(['SETTLEMENT_CONFLICT', 'STORE_INTEGRITY_ERROR', 'BENEFICIARY_MISMATCH', 'TRANSACTION_REVERTED', 'IOT_SESSION_MISMATCH']);
 const NO_STAKE_ERRORS = new Set(['APPROVAL_REQUIRED', 'INSUFFICIENT_HRC_BALANCE', 'TRANSACTION_PREPARE_FAILED', 'TRANSACTION_REVERTED', 'SENSOR_UNAVAILABLE']);
 const WALLET_INTENT_TTL_MS = 120000;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function unixSecondsFromIso(value) {
+    if (typeof value !== 'string' || !ISO_TIMESTAMP.test(value)) {
+        throw new ApiError(409, 'SESSION_END_TIME_INVALID', 'Closed sensor evidence must include an ISO-8601 ended_at timestamp');
+    }
+    const milliseconds = Date.parse(value);
+    if (!Number.isFinite(milliseconds)) {
+        throw new ApiError(409, 'SESSION_END_TIME_INVALID', 'Closed sensor ended_at timestamp is invalid');
+    }
+    return Math.floor(milliseconds / 1000);
+}
 
 class LiveSessionService {
     constructor({ walletService, iot, settler, deviceId = 'esp32_01', clock = Date.now, logger = message => console.log(message) }) {
@@ -393,14 +405,27 @@ class LiveSessionService {
     freezeEvidence(record, document) {
         if (record.settlementPayload) return record;
         normalizeOutcome(document.result.outcome);
-        const evidenceHash = '0x' + crypto.createHash('sha256').update(canonicalJson(document)).digest('hex');
-        return this.store.update(record.sessionId, { evidence: document, stage: 'SETTLEMENT_PENDING', endRequested: true,
+        const frozenEvidence = structuredClone(document);
+        const endedAtIso = frozenEvidence.session?.ended_at || frozenEvidence.observedAt;
+        const endedAt = unixSecondsFromIso(endedAtIso);
+        if (!frozenEvidence.session) frozenEvidence.session = { ended_at: endedAtIso, boundary_source: 'recovery_observed_at' };
+        if (frozenEvidence.session.ended_at !== endedAtIso) {
+            throw new ApiError(409, 'SESSION_END_TIME_INVALID', 'Frozen evidence ended_at does not match the settlement boundary');
+        }
+        const evidenceHash = '0x' + crypto.createHash('sha256').update(canonicalJson(frozenEvidence)).digest('hex');
+        return this.store.update(record.sessionId, { evidence: frozenEvidence, stage: 'SETTLEMENT_PENDING', endRequested: true,
             settlementPayload: { sessionId: record.sessionId, beneficiary: this.walletService._user(record.userId).walletAddress,
-                outcome: document.result.outcome, evidenceHash, timestamp: Math.floor(this.clock() / 1000) } });
+                outcome: frozenEvidence.result.outcome, evidenceHash, timestamp: Math.floor(this.clock() / 1000), endedAt } });
     }
     async freezeIncomplete(record, reason) {
         record = this.store.update(record.sessionId, { source: 'recovery', recoveryReason: reason });
+        const chainSession = (await this.walletService.getSession(record.userId, record.sessionId)).session;
+        const latestBlock = await this.walletService.provider.getBlock('latest');
+        const startedAt = Number(chainSession.startedAt);
+        const endedAt = Math.min(Math.max(Math.floor(this.clock() / 1000), startedAt), Number(latestBlock.timestamp));
+        const recoveryEndedAt = new Date(endedAt * 1000).toISOString();
         record = this.freezeEvidence(record, { source: 'recovery', sessionId: record.sessionId, deviceId: this.deviceId,
+            session: { ended_at: recoveryEndedAt, boundary_source: 'recovery_chain_bounded' },
             result: { outcome: 'INCOMPLETE', reason, sampleCount: 0, durationS: null }, observedAt: new Date(this.clock()).toISOString() });
         return this.advanceEnd(record);
     }
@@ -483,4 +508,4 @@ function buildLiveSessionService(walletService, env = process.env) {
     return new LiveSessionService({ walletService, settler: getRewardService(), deviceId: env.HRC_DEMO_DEVICE_ID || 'esp32_01',
         iot: new IotSessionClient({ baseUrl: env.HRC_IOT_API_URL || 'http://127.0.0.1:8001' }) });
 }
-module.exports = { LiveSessionService, buildLiveSessionService };
+module.exports = { LiveSessionService, buildLiveSessionService, unixSecondsFromIso };

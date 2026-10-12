@@ -61,6 +61,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     error InvalidSessionId();
     error InvalidEvidenceHash();
     error InvalidTimestamp();
+    error InvalidSessionEndTimestamp();
     error InvalidOutcome();
     error SessionAlreadyStarted();
     error SessionNotFound();
@@ -80,6 +81,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     struct Session {
         address beneficiary;
         uint256 startedAt;
+        uint256 endedAt;
         uint256 settledAt;
         uint256 stakedAmount;
         uint256 rewardPaid;
@@ -127,7 +129,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 rewardPaid,
         uint256 penaltyCollected,
         bytes32 evidenceHash,
-        uint256 timestamp
+        uint256 timestamp,
+        uint256 endedAt
     );
 
     event RewardPaid(
@@ -377,7 +380,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         address beneficiary,
         uint8 outcome,
         bytes32 evidenceHash,
-        uint256 timestamp
+        uint256 timestamp,
+        uint256 endedAt
     )
         external
         onlyOperator
@@ -389,7 +393,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             beneficiary,
             outcome,
             evidenceHash,
-            timestamp
+            timestamp,
+            endedAt
         );
     }
 
@@ -399,7 +404,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         address beneficiary,
         uint8 outcome,
         bytes32 evidenceHash,
-        uint256 timestamp
+        uint256 timestamp,
+        uint256 endedAt
     )
         external
         onlyOperator
@@ -411,7 +417,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             beneficiary,
             outcome,
             evidenceHash,
-            timestamp
+            timestamp,
+            endedAt
         );
     }
 
@@ -420,7 +427,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         address beneficiary,
         uint8 outcome,
         bytes32 evidenceHash,
-        uint256 timestamp
+        uint256 timestamp,
+        uint256 endedAt
     ) internal returns (uint8 settlementStatus) {
         if (sessionId == bytes32(0)) revert InvalidSessionId();
         if (beneficiary == address(0)) revert InvalidAddress();
@@ -432,10 +440,14 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         if (!current.started) revert SessionNotFound();
         if (current.settled) revert SessionAlreadySettled();
         if (current.beneficiary != beneficiary) revert BeneficiaryMismatch();
+        if (endedAt < current.startedAt || endedAt > block.timestamp) {
+            revert InvalidSessionEndTimestamp();
+        }
 
         // Mark the session before token calls. nonReentrant protects the whole
         // operation, and a failed token transfer reverts all state changes.
         current.settled = true;
+        current.endedAt = endedAt;
         current.settledAt = block.timestamp;
         current.outcome = outcome;
         current.evidenceHash = evidenceHash;
@@ -451,7 +463,7 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             _transferTo(beneficiary, current.stakedAmount);
             stakeReturned = current.stakedAmount;
 
-            uint256 duration = block.timestamp - current.startedAt;
+            uint256 duration = endedAt - current.startedAt;
             if (duration < MIN_REWARD_DURATION) {
                 settlementStatus = SETTLEMENT_NO_REWARD;
             } else {
@@ -506,7 +518,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             rewardPaid,
             penaltyCollected,
             evidenceHash,
-            timestamp
+            timestamp,
+            endedAt
         );
     }
 
@@ -517,7 +530,8 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
     function previewSettlement(
         bytes32 sessionId,
         address beneficiary,
-        uint8 outcome
+        uint8 outcome,
+        uint256 endedAt
     )
         external
         view
@@ -538,11 +552,14 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
         if (current.started && current.beneficiary != beneficiary) {
             revert BeneficiaryMismatch();
         }
+        if (endedAt > block.timestamp || (current.started && endedAt < current.startedAt)) {
+            revert InvalidSessionEndTimestamp();
+        }
 
         if (outcome == OUTCOME_VALID_NO_VIOLATION) {
             stakeReturned = current.started ? current.stakedAmount : stakeAmount;
             uint256 duration = current.started
-                ? block.timestamp - current.startedAt
+                ? endedAt - current.startedAt
                 : 0;
             if (duration < MIN_REWARD_DURATION) {
                 settlementStatus = SETTLEMENT_NO_REWARD;
@@ -602,6 +619,10 @@ contract HRCSessionRewards is Ownable2Step, Pausable, ReentrancyGuard {
             current.started,
             current.settled
         );
+    }
+
+    function getSessionEndTime(bytes32 sessionId) external view returns (uint256) {
+        return sessions[sessionId].endedAt;
     }
 
     function currentRewardDay() external view returns (uint256) {

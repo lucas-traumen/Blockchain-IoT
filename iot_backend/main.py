@@ -32,7 +32,13 @@ from iot_backend.ingestion.mqtt_listener import MqttListener
 from iot_backend.ingestion.service import PROCESSOR_VERSION, IngestionService
 from iot_backend.ingestion.store import Store
 from iot_backend.safety import load_safety_configs
-from iot_backend.rewards import RewardSettlementError, build_reward_client, evaluate_session, evidence_hash
+from iot_backend.rewards import (
+    RewardSettlementError,
+    build_reward_client,
+    ended_at_unix_seconds,
+    evaluate_session,
+    evidence_hash,
+)
 from iot_backend.events.chain_bridge import ChainEventBridge
 from iot_backend.sessions import (
     MqttControlTransport,
@@ -417,6 +423,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     def _settle_session(request: Request, session_id: str, client: Any) -> dict[str, Any]:
         store: Store = request.app.state.store
+        ended_at = None
         try:
             outcome = _session_outcome_data(request, session_id)
             session = outcome["session"]
@@ -424,19 +431,26 @@ def create_app(settings: Settings) -> FastAPI:
             previous = store.get_reward_settlement(session_id)
             if previous is not None and previous["status"] == "SETTLED":
                 return json.loads(previous["response_json"])
+            if previous is not None:
+                previous_response = json.loads(previous["response_json"])
+                ended_at = previous_response.get("endedAt")
+            if ended_at is None:
+                ended_at = ended_at_unix_seconds(session)
             evidence = previous["evidence_hash"] if previous is not None else evidence_hash(session, outcome["stats"], result)
             store.save_reward_settlement(
                 session_id, client.beneficiary, result["outcome"], evidence, "PENDING",
-                {"status": "PENDING", "outcome": result}, utc_now_iso()
+                {"status": "PENDING", "outcome": result, "endedAt": ended_at}, utc_now_iso()
             )
             # Retry the on-chain stake start before settlement. This makes a
             # temporary API outage during START recoverable at STOP without
             # creating a second session or changing the IoT policy result.
             reward_start = client.start_session(session_id)
-            settlement = client.settle(session_id, session, outcome["stats"], result, evidence=evidence)
+            settlement = client.settle(session_id, session, outcome["stats"], result,
+                evidence=evidence, ended_at=ended_at)
             response = {
                 "status": "SETTLED",
                 "outcome": result,
+                "endedAt": ended_at,
                 "reward_start": reward_start,
                 "settlement": settlement,
             }
@@ -446,6 +460,8 @@ def create_app(settings: Settings) -> FastAPI:
             return response
         except RewardSettlementError as exc:
             response = {"status": "ERROR", "error": str(exc), "http_status": exc.status_code}
+            if ended_at is not None:
+                response["endedAt"] = ended_at
             try:
                 current = request.app.state.store.get_reward_settlement(session_id)
                 if current is not None:

@@ -41,15 +41,15 @@ class _RewardClient:
 
     def __init__(self):
         self.start_calls: list[str] = []
-        self.settle_calls: list[tuple[str, str | None]] = []
+        self.settle_calls: list[tuple[str, str | None, int]] = []
         self.fail_once = True
 
     def start_session(self, session_id: str) -> dict:
         self.start_calls.append(session_id)
         return {"success": True, "duplicate": len(self.start_calls) > 1}
 
-    def settle(self, session_id, session, stats, result, *, evidence=None):
-        self.settle_calls.append((session_id, evidence))
+    def settle(self, session_id, session, stats, result, *, evidence=None, ended_at=None):
+        self.settle_calls.append((session_id, evidence, ended_at))
         if self.fail_once:
             self.fail_once = False
             raise RewardSettlementError("simulated chain outage", status_code=503)
@@ -59,6 +59,7 @@ class _RewardClient:
             "sessionId": session_id,
             "settlementStatus": "PENALTY",
             "evidenceHash": evidence,
+            "endedAt": ended_at,
         }
 
 
@@ -153,6 +154,8 @@ def test_local_e2e_confirms_safety_and_recovers_async_bridges(tmp_path):
             assert second.json()["status"] == "SETTLED"
             assert third.json() == second.json()
             assert reward.settle_calls[0][1] == reward.settle_calls[1][1]
+            assert reward.settle_calls[0][2] == reward.settle_calls[1][2]
+            assert second.json()["endedAt"] == reward.settle_calls[0][2]
             assert len(reward.settle_calls) == 2
             assert client.app.state.store.get_reward_settlement(session_id)["status"] == "SETTLED"
     finally:

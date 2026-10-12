@@ -30,7 +30,7 @@ test("session outcome route requires ingest token and returns duration-policy se
     await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
     t.after(() => new Promise(resolve => server.close(resolve)));
     const url = `http://127.0.0.1:${server.address().port}/api/session-outcome`;
-    const input = { sessionId: "run_1", beneficiary: "0x0000000000000000000000000000000000000001", outcome: "VALID_NO_VIOLATION" };
+    const input = { sessionId: "run_1", beneficiary: "0x0000000000000000000000000000000000000001", outcome: "VALID_NO_VIOLATION", endedAt: 1_791_590_430 };
     const denied = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
     assert.equal(denied.status, 401);
     const allowed = await fetch(url, { method: "POST", headers: {

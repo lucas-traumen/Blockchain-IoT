@@ -1581,3 +1581,18 @@ headers have source/tests, but real SQLite migration on deployment, Sepolia/Amoy
 RPC plus deployed contracts, browser CSP under the actual proxy, HTTPS/TLS
 termination, and Safe/timelock ownership transfer have not been verified. No
 chain deployment or governance transfer was performed. Keep these gates open.
+
+## R23 — Freeze reward duration at sensor close — 2026-10-12
+
+| Task | Scope | Acceptance | Status |
+| --- | --- | --- | --- |
+| R23a:contract | `HRCSessionRewards.sol`, `HRCReward.js`, `DemoLiveSessions.js` | Settlement and preview receive `endedAt`; require `startedAt <= endedAt <= block.timestamp`; reward uses `endedAt - startedAt`; persist and emit the boundary | source/tests done; redeploy pending |
+| R23b:backend | `rewardService.js`, `liveSessionService.js`, read/demo wallet ABI, IoT reward client/outbox | Convert frozen ISO-8601 `ended_at` to Unix seconds; bind hash to the same immutable evidence; retries reuse `endedAt` | source/tests done |
+| R23c:docs | integration guide, plan and project memory | Explain recovery boundary and ABI/deployment gate; do not mutate the active deployment manifest | done |
+
+R23 regression evidence: delayed settlement at chain +60 with a sensor end at
+30 seconds pays 3 HRC; a frozen 45-second end pays 4.5 HRC despite delayed
+settlement. Earlier-than-start and future end timestamps revert. Preview and
+settlement match; retry preserves the original `endedAt` and cannot settle
+twice. Existing deployments retain their old ABI and settlement-time duration
+until a new deployment and manifest switch are explicitly verified.

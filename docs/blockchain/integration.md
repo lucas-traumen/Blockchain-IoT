@@ -118,6 +118,14 @@ Users cannot submit outcome, beneficiary, reward or penalty. The protected
 `POST /api/session-outcome` operator route remains available to backend clients;
 a demo app token cannot call it.
 
+For settlement, the frozen evidence `session.ended_at` is converted from
+ISO-8601 to Unix seconds and submitted as `endedAt`. The contract requires
+`startedAt <= endedAt <= block.timestamp`, stores the boundary, emits it in
+`SessionSettled`, and calculates reward duration as `endedAt - startedAt`.
+Delayed operator settlement therefore cannot increase the reward. `evidenceHash`
+covers the same frozen evidence and `ended_at`. Recovery sessions without a
+sensor boundary use a chain-bounded timestamp and remain `INCOMPLETE`.
+
 For wallet-first users, a single SIWE token authorizes application and reward
 routes. Its hash, expiry and revocation are stored in SQLite by default; both
 layers use the same wallet-derived user ID. Legacy `wallet_<address>` session
@@ -154,6 +162,11 @@ deployment and store. Hardhat's default node is in memory: restarting it can
 remove contracts and historical receipts. The API checks saved deployment and
 confirmed receipt anchors; a chain missing that history cannot accept a new
 stake or reuse a saved confirmed response. API persistence is not a chain backup.
+
+The updated reward ABI is source-only until redeployment. Existing contracts
+retain settlement-time duration semantics; deploy the updated contract and
+update its deployment manifest/address and deployment block before enabling the
+new API against a live chain.
 
 From the repo root, run `node scripts/verify_demo_wallet_ui.mjs` for read-only
 Chrome input/click, isolation, refresh, admin/report and desktop/mobile checks.
