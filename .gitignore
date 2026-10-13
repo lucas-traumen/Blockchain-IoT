@@ -1,43 +1,48 @@
+# === Quy dinh nop bai (muc 5): chi giu README, contracts, ai_model, iot_code, Report PDF ===
+/*
+!.gitignore
+!README.md
+!contracts/
+!ai_model/
+!iot_code/
+!Report_*.pdf
+!Report*.pdf
+
+# === Artifact ben trong cac thu muc duoc phep (van ignore) ===
 .opencode/state/
 .venv/
+.venv-ai/
 __pycache__/
 *.pyc
 .pytest_cache/
-data/*
-!data/samples/
-# Benchmark/evaluation evidence (reports, metrics, screenshots) is reviewed
-# evidence rather than runtime state, so it is source-controlled. Runtime
-# process artifacts created inside those directories stay local.
-!data/results/
-data/results/**/*.pid
-release/
-# Keep the canonical production artifact available to Docker builds; ignore
-# candidate models and generated reports.
-ai_model/artifacts/*
-!ai_model/artifacts/lstm-v1/
-!ai_model/artifacts/lstm-v1/**
-# lstm-v2-synthetic is a reviewed candidate kept under version control for
-# seed-stability comparison. Model weights are small enough to track.
-!ai_model/artifacts/lstm-v2-synthetic/
-!ai_model/artifacts/lstm-v2-synthetic/**
-exports/
+core
+core.*
+
+# ESP-IDF build (ca duong cu firmware/ va moi iot_code/)
 firmware/esp32/sdkconfig
 firmware/esp32/sdkconfig.old
 firmware/esp32/managed_components/
 firmware/esp32/build/
-
-.venv-ai/
-core
-core.*
-
-compose.env
-.runtime/
-
+iot_code/esp32/build/
+iot_code/esp32/managed_components/
+**/sdkconfig
+**/sdkconfig.old
 firmware/esp32/main/network_config.local.h
+iot_code/esp32/main/network_config.local.h
 
-# JavaScript dependencies and local credentials
+# AI artifacts: chi giu lstm-v1 va lstm-v2-synthetic (file trong so demo)
+ai_model/artifacts/*
+!ai_model/artifacts/lstm-v1/
+!ai_model/artifacts/lstm-v1/**
+!ai_model/artifacts/lstm-v2-synthetic/
+!ai_model/artifacts/lstm-v2-synthetic/**
+
+# Secrets/credentials (phong khi co trong folder duoc phep)
 node_modules/
 .env
 .env.*
-!.env.example
-!**/.env.example
+compose.env
+.runtime/
+exports/
+release/
+data/

@@ -1,7 +1,0 @@
-{
-  "containerImageBefore": "sha256:71f4ba0979390c18d29e2b260124ae36b03e50ee915831feb5e9048f2914bf77",
-  "sqliteMount": {
-    "name": "blockchain-hrc_backend_data",
-    "destination": "/app/data"
-  }
-}
